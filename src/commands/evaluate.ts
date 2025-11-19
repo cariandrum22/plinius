@@ -1,0 +1,269 @@
+/**
+ * Evaluate command - Run evaluation with multiple evaluators
+ */
+import { OpenRouter } from "@openrouter/sdk";
+import { readdir } from "fs/promises";
+import { join } from "path";
+import { env, validateEnv } from "../env.js";
+import { OpenRouterModels, OpenRouterModel } from "../types/openrouter.js";
+import { EvaluationTask, EvaluationResult } from "../types/evaluation.js";
+import { parseFilename } from "../evaluation/parser.js";
+import { evaluateWithRetry } from "../evaluation/evaluator.js";
+import {
+  loadEvaluationProgress,
+  saveEvaluationProgress,
+  isEvaluationCompleted,
+  saveEvaluationResult,
+  saveEvaluationSummary,
+} from "../evaluation/progress.js";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function executeWithConcurrency<T, R>(
+  tasks: T[],
+  concurrency: number,
+  executor: (task: T, index: number) => Promise<R>,
+  options: { taskStartDelay?: number; workerStartDelay?: number } = {}
+): Promise<R[]> {
+  const results: R[] = [];
+  let taskIndex = 0;
+  const { taskStartDelay = 0, workerStartDelay = 0 } = options;
+
+  const workers = Array(Math.min(concurrency, tasks.length))
+    .fill(null)
+    .map(async (_, workerIndex) => {
+      if (workerIndex > 0 && workerStartDelay > 0) {
+        await sleep(workerStartDelay * workerIndex);
+      }
+
+      while (taskIndex < tasks.length) {
+        const index = taskIndex++;
+        const task = tasks[index];
+
+        try {
+          results[index] = await executor(task, index);
+          if (taskIndex < tasks.length && taskStartDelay > 0) {
+            await sleep(taskStartDelay);
+          }
+        } catch (error) {
+          console.error(`Task ${index} failed:`, error);
+          results[index] = error as R;
+          if (taskIndex < tasks.length) {
+            await sleep(Math.max(taskStartDelay * 2, 2000));
+          }
+        }
+      }
+    });
+
+  await Promise.all(workers);
+  return results;
+}
+
+const EVALUATOR_MODELS: OpenRouterModel[] = [
+  OpenRouterModels.GPT_5_1,
+  OpenRouterModels.CLAUDE_4_5_SONNET,
+  OpenRouterModels.GEMINI_2_5_PRO,
+];
+
+const CONCURRENT_EVALUATIONS = 5;
+const TASK_START_DELAY_MS = 500;
+const WORKER_START_DELAY_MS = 1000;
+
+async function discoverBenchmarkResults(): Promise<EvaluationTask[]> {
+  const resultDir = join(process.cwd(), "artifacts", "result");
+  const files = await readdir(resultDir);
+  const tasks: EvaluationTask[] = [];
+
+  for (const file of files) {
+    if (!file.endsWith(".md") || file === "progress.json") {
+      continue;
+    }
+
+    const parsed = parseFilename(file);
+    if (!parsed) {
+      console.warn(`  ⚠ Skipping invalid filename: ${file}`);
+      continue;
+    }
+
+    tasks.push({
+      benchmarkId: parsed.benchmarkId,
+      model: parsed.model,
+      resultFilePath: join(resultDir, file),
+    });
+  }
+
+  return tasks;
+}
+
+async function runSingleEvaluatorPass(
+  openRouter: OpenRouter,
+  evaluatorModel: OpenRouterModel,
+  allTasks: EvaluationTask[]
+): Promise<void> {
+  const progress = await loadEvaluationProgress();
+
+  const pendingTasks = [];
+  const skippedTasks = [];
+
+  for (const task of allTasks) {
+    const completed = await isEvaluationCompleted(
+      task.benchmarkId,
+      task.model,
+      evaluatorModel
+    );
+    if (completed) {
+      skippedTasks.push(task);
+    } else {
+      pendingTasks.push(task);
+    }
+  }
+
+  console.log(`Already evaluated by ${evaluatorModel}: ${skippedTasks.length}`);
+  console.log(`Pending evaluations: ${pendingTasks.length}`);
+
+  if (skippedTasks.length > 0) {
+    console.log(`\n⏭ Skipping ${skippedTasks.length} completed evaluations`);
+  }
+
+  if (pendingTasks.length === 0) {
+    console.log(`\n✅ All evaluations for ${evaluatorModel} already completed!`);
+    return;
+  }
+
+  const estimatedTokensPerEval = 3000;
+  const totalTokens = pendingTasks.length * estimatedTokensPerEval;
+  const estimatedCost = (totalTokens / 1_000_000) * 3.0;
+
+  console.log(`\n=== Cost Estimation for ${evaluatorModel} ===`);
+  console.log(`Estimated total tokens: ${totalTokens.toLocaleString()} (~${estimatedTokensPerEval.toLocaleString()} per evaluation)`);
+  console.log(`Estimated cost: $${estimatedCost.toFixed(2)}`);
+  console.log(`Estimated cost per evaluation: $${(estimatedCost / pendingTasks.length).toFixed(4)}`);
+
+  console.log(`\n=== Starting Evaluation with ${evaluatorModel} (${CONCURRENT_EVALUATIONS} parallel) ===\n`);
+
+  let completed = 0;
+  let failed = 0;
+  const completedResults: EvaluationResult[] = [];
+
+  await executeWithConcurrency(
+    pendingTasks,
+    CONCURRENT_EVALUATIONS,
+    async (task, index) => {
+      const overallIndex = skippedTasks.length + index + 1;
+
+      console.log(
+        `[${overallIndex}/${allTasks.length}] Evaluating: ${task.benchmarkId} - ${task.model} [Evaluator: ${evaluatorModel}]`
+      );
+
+      const result = await evaluateWithRetry(openRouter, evaluatorModel, task);
+
+      if (result.success && result.result) {
+        completed++;
+        completedResults.push(result.result);
+
+        const filename = await saveEvaluationResult(result.result);
+
+        progress.completed.push({
+          benchmarkId: task.benchmarkId,
+          model: task.model,
+          evaluatedBy: evaluatorModel,
+          evaluationFile: filename,
+        });
+
+        console.log(
+          `✓ Completed: ${task.benchmarkId} - ${task.model} (Score: ${result.result.totalScore}/25) [${evaluatorModel}]\n`
+        );
+      } else {
+        failed++;
+        progress.failed.push({
+          benchmarkId: task.benchmarkId,
+          model: task.model,
+          evaluatedBy: evaluatorModel,
+          error: result.error || "Unknown error",
+        });
+        console.log(`✗ Failed: ${task.benchmarkId} - ${task.model} [${evaluatorModel}]\n`);
+      }
+
+      if ((completed + failed) % 5 === 0) {
+        await saveEvaluationProgress(progress);
+      }
+
+      return result;
+    },
+    {
+      taskStartDelay: TASK_START_DELAY_MS,
+      workerStartDelay: WORKER_START_DELAY_MS,
+    }
+  );
+
+  await saveEvaluationProgress(progress);
+
+  console.log(`\n=== Evaluation Complete ===`);
+  console.log(`Total evaluated: ${skippedTasks.length + completed}/${allTasks.length}`);
+  console.log(`Successfully evaluated this run: ${completed}`);
+  console.log(`Failed this run: ${failed}`);
+
+  if (failed > 0) {
+    console.log(`\n⚠ Failed evaluations can be retried by running again`);
+    console.log(`Failed evaluations:`);
+    for (const f of progress.failed) {
+      console.log(`  - ${f.benchmarkId} - ${f.model}: ${f.error}`);
+    }
+  }
+
+  if (completedResults.length > 0) {
+    console.log(`\nGenerating evaluation summary...`);
+    await saveEvaluationSummary(completedResults);
+  }
+
+  console.log(`\n✅ Evaluation results saved to artifacts/evaluation/`);
+}
+
+/**
+ * Run evaluation for all benchmark results with multiple evaluators
+ */
+export async function runEvaluation(): Promise<void> {
+  console.log(`\n=== Plinius Benchmark Multi-Evaluator Assessment ===\n`);
+
+  validateEnv(["OPENROUTER_API_KEY"]);
+
+  console.log(`Discovering benchmark result files...`);
+  const allTasks = await discoverBenchmarkResults();
+  console.log(`Found ${allTasks.length} benchmark results`);
+
+  if (allTasks.length === 0) {
+    console.log(`\n⚠ No benchmark results found in artifacts/result/`);
+    console.log(`Please run the benchmark first: plinius benchmark`);
+    return;
+  }
+
+  console.log(`\n=== Evaluation Plan ===`);
+  console.log(`Evaluator models: ${EVALUATOR_MODELS.length}`);
+  for (let i = 0; i < EVALUATOR_MODELS.length; i++) {
+    console.log(`  ${i + 1}. ${EVALUATOR_MODELS[i]}`);
+  }
+  console.log(`Total benchmark results: ${allTasks.length}`);
+  console.log(`Total evaluations to perform: ${allTasks.length * EVALUATOR_MODELS.length}`);
+
+  const openRouter = new OpenRouter({
+    apiKey: env.OPENROUTER_API_KEY!,
+  });
+
+  for (let evalIdx = 0; evalIdx < EVALUATOR_MODELS.length; evalIdx++) {
+    const evaluatorModel = EVALUATOR_MODELS[evalIdx];
+
+    console.log(`\n\n${"=".repeat(80)}`);
+    console.log(`EVALUATOR ${evalIdx + 1}/${EVALUATOR_MODELS.length}: ${evaluatorModel}`);
+    console.log(`${"=".repeat(80)}\n`);
+
+    await runSingleEvaluatorPass(openRouter, evaluatorModel, allTasks);
+  }
+
+  console.log(`\n\n${"=".repeat(80)}`);
+  console.log(`ALL EVALUATIONS COMPLETE`);
+  console.log(`${"=".repeat(80)}\n`);
+  console.log(`✅ All ${EVALUATOR_MODELS.length} evaluators have completed their assessments`);
+  console.log(`Results saved to artifacts/evaluation/`);
+}
