@@ -17,6 +17,9 @@ build/
 # Artifacts (benchmark results, evaluations)
 artifacts/
 
+# Benchmark prompts (user-customizable, not tracked)
+benchmark/prompt/
+
 # Logs
 *.log
 npm-debug.log*
