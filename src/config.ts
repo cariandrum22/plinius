@@ -53,6 +53,7 @@ export const defaultCostConfig: CostConfig = {
 export const BENCHMARK_MODELS: OpenRouterModel[] = [
   OpenRouterModels.GPT_5_1,
   OpenRouterModels.CLAUDE_4_5_HAIKU,
+  OpenRouterModels.GEMINI_3_PRO_PREVIEW,
   OpenRouterModels.GEMINI_2_5_PRO,
   OpenRouterModels.LLAMA_4_MAVERIC,
   OpenRouterModels.MISTRAL_MEDIUM_3_1,
@@ -72,7 +73,7 @@ export const BENCHMARK_MODELS: OpenRouterModel[] = [
 export const EVALUATOR_MODELS: OpenRouterModel[] = [
   OpenRouterModels.GPT_5_1,
   OpenRouterModels.CLAUDE_4_5_SONNET,
-  OpenRouterModels.GEMINI_2_5_PRO,
+  OpenRouterModels.GEMINI_3_PRO_PREVIEW,
 ];
 
 /**
@@ -92,8 +93,8 @@ export async function discoverBenchmarkIds(): Promise<string[]> {
   try {
     const files = await readdir(promptDir);
     const benchmarkIds = files
-      .filter(file => file.endsWith(".md"))
-      .map(file => basename(file, ".md"))
+      .filter((file) => file.endsWith(".md"))
+      .map((file) => basename(file, ".md"))
       .sort();
 
     return benchmarkIds;
@@ -122,7 +123,7 @@ export function getDisplayModelName(modelId: string): string {
   const shortName = getShortModelName(modelId);
   return shortName
     .split("-")
-    .map(part => {
+    .map((part) => {
       // Handle version numbers and special cases
       if (/^\d/.test(part) || part.length <= 2) {
         return part.toUpperCase();
@@ -153,12 +154,16 @@ export function sanitizeModelName(model: string): string {
  */
 export function estimateCost(
   totalTasks: number,
-  costConfig: CostConfig = defaultCostConfig
+  costConfig: CostConfig = defaultCostConfig,
 ) {
   const totalPromptTokens = totalTasks * costConfig.estimatedPromptTokens;
-  const totalCompletionTokens = totalTasks * costConfig.estimatedCompletionTokens;
-  const promptCost = (totalPromptTokens / 1_000_000) * costConfig.costPerMillionPromptTokens;
-  const completionCost = (totalCompletionTokens / 1_000_000) * costConfig.costPerMillionCompletionTokens;
+  const totalCompletionTokens =
+    totalTasks * costConfig.estimatedCompletionTokens;
+  const promptCost =
+    (totalPromptTokens / 1_000_000) * costConfig.costPerMillionPromptTokens;
+  const completionCost =
+    (totalCompletionTokens / 1_000_000) *
+    costConfig.costPerMillionCompletionTokens;
   const totalCost = promptCost + completionCost;
 
   return {

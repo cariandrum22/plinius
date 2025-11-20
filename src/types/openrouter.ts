@@ -10,6 +10,7 @@ export const OpenRouterModels = {
   CLAUDE_4_5_SONNET: "anthropic/claude-sonnet-4.5",
 
   // Google Models
+  GEMINI_3_PRO_PREVIEW: "google/gemini-3-pro-preview",
   GEMINI_2_5_PRO: "google/gemini-2.5-pro",
 
   // Meta Models
