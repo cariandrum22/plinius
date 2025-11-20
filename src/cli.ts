@@ -6,6 +6,7 @@
 import { runBenchmarks } from "./commands/benchmark.js";
 import { runEvaluation } from "./commands/evaluate.js";
 import { runComparison } from "./commands/compare.js";
+import { runClean } from "./commands/clean.js";
 
 const VERSION = "0.2.0";
 
@@ -19,6 +20,7 @@ Commands:
   benchmark    Run benchmark prompts against models
   evaluate     Evaluate benchmark results with multiple evaluators
   compare      Compare evaluations across evaluators
+  clean        Remove benchmark artifacts
 
 Options:
   -h, --help     Show this help message
@@ -28,6 +30,10 @@ Examples:
   plinius benchmark              # Run all benchmarks
   plinius evaluate               # Evaluate results with all evaluators
   plinius compare                # Generate comparison report
+  plinius clean                  # Remove all artifacts
+  plinius clean benchmark        # Remove only benchmark results
+  plinius clean evaluate         # Remove only evaluation data
+  plinius clean reports          # Remove only reports
 
 For more information, visit: https://github.com/your-repo/plinius
 `;
@@ -60,6 +66,10 @@ async function main(): Promise<void> {
 
       case "compare":
         await runComparison();
+        break;
+
+      case "clean":
+        await runClean(args[1]);
         break;
 
       default:
