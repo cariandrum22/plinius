@@ -17,8 +17,8 @@ build/
 # Artifacts (benchmark results, evaluations)
 benchmark/artifacts/
 
-# Benchmark prompts (user-customizable, not tracked)
-benchmark/prompt/
+# Benchmark prompts are tracked as samples
+# Users can modify or replace these with their own prompts
 
 # Logs
 *.log

@@ -55,17 +55,22 @@ Examples:
 
 Prompts are automatically discovered from `benchmark/prompt/`.
 
-### A: Quantitative Finance & Algorithms
+**Note:** The included prompts are samples. You can modify or replace them with your own prompts.
+
+#### A: Quantitative Finance & Algorithms
+
 - **A1**: Abstract Market Generation Model Estimation
 - **A2**: Constrained Alpha Construction
 - **A3**: Portfolio Risk Decomposition
 
-### B: Formal Verification (F*/Coq)
+#### B: Formal Verification (F\*/Coq)
+
 - **B1**: Monad Laws Proof Structure Design
-- **B2**: F* Dijkstra Monad for Non-Interference
+- **B2**: F\* Dijkstra Monad for Non-Interference
 - **B3**: Type-Level Secret Key Logging Prevention
 
-### C: Business Strategy & Decision Making
+#### C: Business Strategy & Decision Making
+
 - **C1**: Decision Tree Under Uncertainty
 - **C2**: Causal Modeling of Business Metrics
 - **C3**: Strategic Analysis Through Abstraction
@@ -172,19 +177,19 @@ See [docs/configuration.md](docs/configuration.md) for detailed configuration op
 
 The project supports 13+ models via OpenRouter:
 
-| Provider | Models |
-|----------|--------|
-| OpenAI | GPT-5.1 |
-| Anthropic | Claude 4.5 Haiku, Sonnet |
-| Google | Gemini 3.0 Preview, Gemini 2.5 Pro |
-| Meta | Llama 4 Maverick |
-| Mistral | Mistral Medium 3.1 |
-| DeepSeek | DeepSeek R1-0528 |
-| xAI | Grok 4 |
-| Moonshot AI | Kimi K2 Thinking |
-| Qwen | Qwen3 Max |
-| MiniMax | MiniMax M2 |
-| Microsoft | Phi-4 Reasoning Plus, MAI-DS-R1 |
+| Provider    | Models                             |
+| ----------- | ---------------------------------- |
+| OpenAI      | GPT-5.1                            |
+| Anthropic   | Claude 4.5 Haiku, Sonnet           |
+| Google      | Gemini 3.0 Preview, Gemini 2.5 Pro |
+| Meta        | Llama 4 Maverick                   |
+| Mistral     | Mistral Medium 3.1                 |
+| DeepSeek    | DeepSeek R1-0528                   |
+| xAI         | Grok 4                             |
+| Moonshot AI | Kimi K2 Thinking                   |
+| Qwen        | Qwen3 Max                          |
+| MiniMax     | MiniMax M2                         |
+| Microsoft   | Phi-4 Reasoning Plus, MAI-DS-R1    |
 
 ## Scripts
 
