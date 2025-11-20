@@ -5,7 +5,7 @@ import { OpenRouter } from "@openrouter/sdk";
 import { readdir } from "fs/promises";
 import { join } from "path";
 import { env, validateEnv } from "../env.js";
-import { OpenRouterModels, OpenRouterModel } from "../types/openrouter.js";
+import { OpenRouterModel } from "../types/openrouter.js";
 import { EvaluationTask, EvaluationResult } from "../types/evaluation.js";
 import { parseFilename } from "../evaluation/parser.js";
 import { evaluateWithRetry } from "../evaluation/evaluator.js";
@@ -16,56 +16,8 @@ import {
   saveEvaluationResult,
   saveEvaluationSummary,
 } from "../evaluation/progress.js";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function executeWithConcurrency<T, R>(
-  tasks: T[],
-  concurrency: number,
-  executor: (task: T, index: number) => Promise<R>,
-  options: { taskStartDelay?: number; workerStartDelay?: number } = {}
-): Promise<R[]> {
-  const results: R[] = [];
-  let taskIndex = 0;
-  const { taskStartDelay = 0, workerStartDelay = 0 } = options;
-
-  const workers = Array(Math.min(concurrency, tasks.length))
-    .fill(null)
-    .map(async (_, workerIndex) => {
-      if (workerIndex > 0 && workerStartDelay > 0) {
-        await sleep(workerStartDelay * workerIndex);
-      }
-
-      while (taskIndex < tasks.length) {
-        const index = taskIndex++;
-        const task = tasks[index];
-
-        try {
-          results[index] = await executor(task, index);
-          if (taskIndex < tasks.length && taskStartDelay > 0) {
-            await sleep(taskStartDelay);
-          }
-        } catch (error) {
-          console.error(`Task ${index} failed:`, error);
-          results[index] = error as R;
-          if (taskIndex < tasks.length) {
-            await sleep(Math.max(taskStartDelay * 2, 2000));
-          }
-        }
-      }
-    });
-
-  await Promise.all(workers);
-  return results;
-}
-
-const EVALUATOR_MODELS: OpenRouterModel[] = [
-  OpenRouterModels.GPT_5_1,
-  OpenRouterModels.CLAUDE_4_5_SONNET,
-  OpenRouterModels.GEMINI_2_5_PRO,
-];
+import { executeWithConcurrency } from "../utils/executor.js";
+import { EVALUATOR_MODELS } from "../config.js";
 
 const CONCURRENT_EVALUATIONS = 5;
 const TASK_START_DELAY_MS = 500;
@@ -100,7 +52,7 @@ async function discoverBenchmarkResults(): Promise<EvaluationTask[]> {
 async function runSingleEvaluatorPass(
   openRouter: OpenRouter,
   evaluatorModel: OpenRouterModel,
-  allTasks: EvaluationTask[]
+  allTasks: EvaluationTask[],
 ): Promise<void> {
   const progress = await loadEvaluationProgress();
 
@@ -111,7 +63,7 @@ async function runSingleEvaluatorPass(
     const completed = await isEvaluationCompleted(
       task.benchmarkId,
       task.model,
-      evaluatorModel
+      evaluatorModel,
     );
     if (completed) {
       skippedTasks.push(task);
@@ -128,7 +80,9 @@ async function runSingleEvaluatorPass(
   }
 
   if (pendingTasks.length === 0) {
-    console.log(`\n✅ All evaluations for ${evaluatorModel} already completed!`);
+    console.log(
+      `\n✅ All evaluations for ${evaluatorModel} already completed!`,
+    );
     return;
   }
 
@@ -137,11 +91,17 @@ async function runSingleEvaluatorPass(
   const estimatedCost = (totalTokens / 1_000_000) * 3.0;
 
   console.log(`\n=== Cost Estimation for ${evaluatorModel} ===`);
-  console.log(`Estimated total tokens: ${totalTokens.toLocaleString()} (~${estimatedTokensPerEval.toLocaleString()} per evaluation)`);
+  console.log(
+    `Estimated total tokens: ${totalTokens.toLocaleString()} (~${estimatedTokensPerEval.toLocaleString()} per evaluation)`,
+  );
   console.log(`Estimated cost: $${estimatedCost.toFixed(2)}`);
-  console.log(`Estimated cost per evaluation: $${(estimatedCost / pendingTasks.length).toFixed(4)}`);
+  console.log(
+    `Estimated cost per evaluation: $${(estimatedCost / pendingTasks.length).toFixed(4)}`,
+  );
 
-  console.log(`\n=== Starting Evaluation with ${evaluatorModel} (${CONCURRENT_EVALUATIONS} parallel) ===\n`);
+  console.log(
+    `\n=== Starting Evaluation with ${evaluatorModel} (${CONCURRENT_EVALUATIONS} parallel) ===\n`,
+  );
 
   let completed = 0;
   let failed = 0;
@@ -154,7 +114,7 @@ async function runSingleEvaluatorPass(
       const overallIndex = skippedTasks.length + index + 1;
 
       console.log(
-        `[${overallIndex}/${allTasks.length}] Evaluating: ${task.benchmarkId} - ${task.model} [Evaluator: ${evaluatorModel}]`
+        `[${overallIndex}/${allTasks.length}] Evaluating: ${task.benchmarkId} - ${task.model} [Evaluator: ${evaluatorModel}]`,
       );
 
       const result = await evaluateWithRetry(openRouter, evaluatorModel, task);
@@ -173,7 +133,7 @@ async function runSingleEvaluatorPass(
         });
 
         console.log(
-          `✓ Completed: ${task.benchmarkId} - ${task.model} (Score: ${result.result.totalScore}/25) [${evaluatorModel}]\n`
+          `✓ Completed: ${task.benchmarkId} - ${task.model} (Score: ${result.result.totalScore}/25) [${evaluatorModel}]\n`,
         );
       } else {
         failed++;
@@ -183,7 +143,9 @@ async function runSingleEvaluatorPass(
           evaluatedBy: evaluatorModel,
           error: result.error || "Unknown error",
         });
-        console.log(`✗ Failed: ${task.benchmarkId} - ${task.model} [${evaluatorModel}]\n`);
+        console.log(
+          `✗ Failed: ${task.benchmarkId} - ${task.model} [${evaluatorModel}]\n`,
+        );
       }
 
       if ((completed + failed) % 5 === 0) {
@@ -195,13 +157,15 @@ async function runSingleEvaluatorPass(
     {
       taskStartDelay: TASK_START_DELAY_MS,
       workerStartDelay: WORKER_START_DELAY_MS,
-    }
+    },
   );
 
   await saveEvaluationProgress(progress);
 
   console.log(`\n=== Evaluation Complete ===`);
-  console.log(`Total evaluated: ${skippedTasks.length + completed}/${allTasks.length}`);
+  console.log(
+    `Total evaluated: ${skippedTasks.length + completed}/${allTasks.length}`,
+  );
   console.log(`Successfully evaluated this run: ${completed}`);
   console.log(`Failed this run: ${failed}`);
 
@@ -218,7 +182,9 @@ async function runSingleEvaluatorPass(
     await saveEvaluationSummary(completedResults);
   }
 
-  console.log(`\n✅ Evaluation results saved to benchmark/artifacts/evaluation/`);
+  console.log(
+    `\n✅ Evaluation results saved to benchmark/artifacts/evaluation/`,
+  );
 }
 
 /**
@@ -234,7 +200,9 @@ export async function runEvaluation(): Promise<void> {
   console.log(`Found ${allTasks.length} benchmark results`);
 
   if (allTasks.length === 0) {
-    console.log(`\n⚠ No benchmark results found in benchmark/artifacts/result/`);
+    console.log(
+      `\n⚠ No benchmark results found in benchmark/artifacts/result/`,
+    );
     console.log(`Please run the benchmark first: plinius benchmark`);
     return;
   }
@@ -245,7 +213,9 @@ export async function runEvaluation(): Promise<void> {
     console.log(`  ${i + 1}. ${EVALUATOR_MODELS[i]}`);
   }
   console.log(`Total benchmark results: ${allTasks.length}`);
-  console.log(`Total evaluations to perform: ${allTasks.length * EVALUATOR_MODELS.length}`);
+  console.log(
+    `Total evaluations to perform: ${allTasks.length * EVALUATOR_MODELS.length}`,
+  );
 
   const openRouter = new OpenRouter({
     apiKey: env.OPENROUTER_API_KEY!,
@@ -255,7 +225,9 @@ export async function runEvaluation(): Promise<void> {
     const evaluatorModel = EVALUATOR_MODELS[evalIdx];
 
     console.log(`\n\n${"=".repeat(80)}`);
-    console.log(`EVALUATOR ${evalIdx + 1}/${EVALUATOR_MODELS.length}: ${evaluatorModel}`);
+    console.log(
+      `EVALUATOR ${evalIdx + 1}/${EVALUATOR_MODELS.length}: ${evaluatorModel}`,
+    );
     console.log(`${"=".repeat(80)}\n`);
 
     await runSingleEvaluatorPass(openRouter, evaluatorModel, allTasks);
@@ -264,6 +236,8 @@ export async function runEvaluation(): Promise<void> {
   console.log(`\n\n${"=".repeat(80)}`);
   console.log(`ALL EVALUATIONS COMPLETE`);
   console.log(`${"=".repeat(80)}\n`);
-  console.log(`✅ All ${EVALUATOR_MODELS.length} evaluators have completed their assessments`);
+  console.log(
+    `✅ All ${EVALUATOR_MODELS.length} evaluators have completed their assessments`,
+  );
   console.log(`Results saved to benchmark/artifacts/evaluation/`);
 }

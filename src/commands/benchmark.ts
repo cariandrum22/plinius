@@ -15,6 +15,7 @@ import {
   estimateCost,
   sanitizeModelName,
 } from "../config.js";
+import { executeWithConcurrency } from "../utils/executor.js";
 
 interface BenchmarkTask {
   model: OpenRouterModel;
@@ -27,6 +28,10 @@ interface ProgressState {
   lastUpdate: string;
 }
 
+const CONCURRENT_BENCHMARKS = 5;
+const TASK_START_DELAY_MS = 500;
+const WORKER_START_DELAY_MS = 1000;
+
 async function generateTasks(): Promise<BenchmarkTask[]> {
   const benchmarkIds = await discoverBenchmarkIds();
   const tasks: BenchmarkTask[] = [];
@@ -38,7 +43,10 @@ async function generateTasks(): Promise<BenchmarkTask[]> {
   return tasks;
 }
 
-async function isTaskCompleted(model: OpenRouterModel, promptId: BenchmarkId): Promise<boolean> {
+async function isTaskCompleted(
+  model: OpenRouterModel,
+  promptId: BenchmarkId,
+): Promise<boolean> {
   const outputDir = join(process.cwd(), "benchmark", "artifacts", "result");
   try {
     const files = await readdir(outputDir);
@@ -51,7 +59,13 @@ async function isTaskCompleted(model: OpenRouterModel, promptId: BenchmarkId): P
 }
 
 async function loadProgress(): Promise<ProgressState> {
-  const progressPath = join(process.cwd(), "benchmark", "artifacts", "result", "progress.json");
+  const progressPath = join(
+    process.cwd(),
+    "benchmark",
+    "artifacts",
+    "result",
+    "progress.json",
+  );
   try {
     const content = await readFile(progressPath, "utf-8");
     return JSON.parse(content);
@@ -61,24 +75,30 @@ async function loadProgress(): Promise<ProgressState> {
 }
 
 async function saveProgress(progress: ProgressState): Promise<void> {
-  const progressPath = join(process.cwd(), "benchmark", "artifacts", "result", "progress.json");
-  await mkdir(join(process.cwd(), "benchmark", "artifacts", "result"), { recursive: true });
+  const progressPath = join(
+    process.cwd(),
+    "benchmark",
+    "artifacts",
+    "result",
+    "progress.json",
+  );
+  await mkdir(join(process.cwd(), "benchmark", "artifacts", "result"), {
+    recursive: true,
+  });
   progress.lastUpdate = new Date().toISOString();
   await writeFile(progressPath, JSON.stringify(progress, null, 2), "utf-8");
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function executeTaskWithRetry(
   openRouter: OpenRouter,
   task: BenchmarkTask,
-  maxRetries = 3
+  maxRetries = 3,
 ): Promise<{ success: boolean; error?: string }> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`  Attempt ${attempt}/${maxRetries}${attempt > 1 ? " (retry)" : ""}`);
+      if (attempt > 1) {
+        console.log(`  Retry ${attempt}/${maxRetries}`);
+      }
 
       const benchmark = await loadBenchmark(task.promptId);
       const startTime = Date.now();
@@ -123,14 +143,13 @@ async function executeTaskWithRetry(
       const errorMsg = error instanceof Error ? error.message : String(error);
 
       if (attempt === maxRetries) {
-        console.error(`  ✗ Failed after ${maxRetries} attempts: ${errorMsg}`);
         return { success: false, error: errorMsg };
       }
 
       const backoffMs = Math.pow(2, attempt) * 1000;
       console.log(`  ⚠ Error: ${errorMsg}`);
       console.log(`  ⏳ Waiting ${backoffMs / 1000}s before retry...`);
-      await sleep(backoffMs);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
     }
   }
 
@@ -147,8 +166,8 @@ async function saveResult(
     completionTokens?: number;
     totalTokens?: number;
     latencyMs?: number;
-  }
-): Promise<void> {
+  },
+): Promise<string> {
   const outputDir = join(process.cwd(), "benchmark", "artifacts", "result");
   await mkdir(outputDir, { recursive: true });
 
@@ -181,11 +200,11 @@ ${response}
 `;
 
   await writeFile(filepath, content, "utf-8");
-  console.log(`Saved result to: ${filename}`);
+  return filename;
 }
 
 /**
- * Run all benchmarks with resume capability
+ * Run all benchmarks with resume capability and parallel execution
  */
 export async function runBenchmarks(): Promise<void> {
   console.log(`\n=== Plinius Benchmark Runner ===\n`);
@@ -196,8 +215,8 @@ export async function runBenchmarks(): Promise<void> {
   const progress = await loadProgress();
   const benchmarkIds = await discoverBenchmarkIds();
 
-  const pendingTasks = [];
-  const skippedTasks = [];
+  const pendingTasks: BenchmarkTask[] = [];
+  const skippedTasks: BenchmarkTask[] = [];
 
   for (const task of allTasks) {
     const completed = await isTaskCompleted(task.model, task.promptId);
@@ -221,8 +240,12 @@ export async function runBenchmarks(): Promise<void> {
 
   const estimate = estimateCost(pendingTasks.length);
   console.log(`\n=== Cost Estimation (Pending Tasks) ===`);
-  console.log(`Estimated total prompt tokens: ${estimate.totalPromptTokens.toLocaleString()}`);
-  console.log(`Estimated total completion tokens: ${estimate.totalCompletionTokens.toLocaleString()}`);
+  console.log(
+    `Estimated total prompt tokens: ${estimate.totalPromptTokens.toLocaleString()}`,
+  );
+  console.log(
+    `Estimated total completion tokens: ${estimate.totalCompletionTokens.toLocaleString()}`,
+  );
   console.log(`Estimated total cost: $${estimate.totalCost.toFixed(2)}`);
   console.log(`Estimated cost per task: $${estimate.costPerTask.toFixed(4)}`);
 
@@ -231,7 +254,9 @@ export async function runBenchmarks(): Promise<void> {
     return;
   }
 
-  console.log(`\n=== Starting Benchmark Execution ===\n`);
+  console.log(
+    `\n=== Starting Benchmark Execution (${CONCURRENT_BENCHMARKS} parallel) ===\n`,
+  );
 
   const openRouter = new OpenRouter({
     apiKey: env.OPENROUTER_API_KEY!,
@@ -240,33 +265,53 @@ export async function runBenchmarks(): Promise<void> {
   let completed = 0;
   let failed = 0;
 
-  for (let i = 0; i < pendingTasks.length; i++) {
-    const task = pendingTasks[i];
-    const overallIndex = skippedTasks.length + i + 1;
+  await executeWithConcurrency(
+    pendingTasks,
+    CONCURRENT_BENCHMARKS,
+    async (task, index) => {
+      const overallIndex = skippedTasks.length + index + 1;
 
-    console.log(`[${overallIndex}/${allTasks.length}] Running: ${task.promptId} with ${task.model}`);
+      console.log(
+        `[${overallIndex}/${allTasks.length}] Running: ${task.promptId} with ${task.model}`,
+      );
 
-    const result = await executeTaskWithRetry(openRouter, task);
+      const result = await executeTaskWithRetry(openRouter, task);
 
-    if (result.success) {
-      completed++;
-      progress.completed.push({ model: task.model, promptId: task.promptId });
-      console.log(`✓ Completed: ${task.promptId} with ${task.model}\n`);
-    } else {
-      failed++;
-      progress.failed.push({
-        model: task.model,
-        promptId: task.promptId,
-        error: result.error || "Unknown error",
-      });
-      console.log(`✗ Failed: ${task.promptId} with ${task.model}\n`);
-    }
+      if (result.success) {
+        completed++;
+        progress.completed.push({ model: task.model, promptId: task.promptId });
+        console.log(`✓ Completed: ${task.promptId} with ${task.model}\n`);
+      } else {
+        failed++;
+        progress.failed.push({
+          model: task.model,
+          promptId: task.promptId,
+          error: result.error || "Unknown error",
+        });
+        console.log(
+          `✗ Failed: ${task.promptId} with ${task.model}: ${result.error}\n`,
+        );
+      }
 
-    await saveProgress(progress);
-  }
+      // Save progress periodically
+      if ((completed + failed) % 5 === 0) {
+        await saveProgress(progress);
+      }
+
+      return result;
+    },
+    {
+      taskStartDelay: TASK_START_DELAY_MS,
+      workerStartDelay: WORKER_START_DELAY_MS,
+    },
+  );
+
+  await saveProgress(progress);
 
   console.log(`\n=== Benchmark Execution Complete ===`);
-  console.log(`Total completed: ${skippedTasks.length + completed}/${allTasks.length} tasks`);
+  console.log(
+    `Total completed: ${skippedTasks.length + completed}/${allTasks.length} tasks`,
+  );
   console.log(`Successfully completed this run: ${completed} tasks`);
   console.log(`Failed this run: ${failed} tasks`);
 
