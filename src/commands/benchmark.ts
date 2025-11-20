@@ -12,10 +12,13 @@ import {
   BENCHMARK_MODELS,
   discoverBenchmarkIds,
   defaultBenchmarkConfig,
-  estimateCost,
   sanitizeModelName,
 } from "../config.js";
 import { executeWithConcurrency } from "../utils/executor.js";
+import {
+  fetchOpenRouterPricing,
+  calculateCostBreakdown,
+} from "../utils/pricing-fetcher.js";
 
 interface BenchmarkTask {
   model: OpenRouterModel;
@@ -238,16 +241,88 @@ export async function runBenchmarks(): Promise<void> {
     console.log(`\n⏭ Skipping ${skippedTasks.length} completed tasks`);
   }
 
-  const estimate = estimateCost(pendingTasks.length);
+  // Fetch dynamic pricing from OpenRouter
+  const pricingData = await fetchOpenRouterPricing();
+
+  // Calculate actual prompt tokens by loading benchmarks
   console.log(`\n=== Cost Estimation (Pending Tasks) ===`);
+  console.log(`Calculating costs with actual prompt sizes...`);
+
+  const SYSTEM_PROMPT_TOKENS = 100; // Approximate system prompt
+  const ESTIMATED_COMPLETION_TOKENS = 12000; // Output is estimated
+
+  let totalPromptCost = 0;
+  let totalCompletionCost = 0;
+  const costByModel = new Map<
+    string,
+    { count: number; promptCost: number; completionCost: number }
+  >();
+
+  // Group tasks by promptId to avoid loading same prompt multiple times
+  const promptTokensCache = new Map<string, number>();
+
+  for (const task of pendingTasks) {
+    // Get prompt tokens (cached)
+    let promptTokens = promptTokensCache.get(task.promptId);
+    if (promptTokens === undefined) {
+      const benchmark = await loadBenchmark(task.promptId);
+      // Rough token estimate: ~4 chars per token
+      promptTokens =
+        Math.ceil(benchmark.content.length / 4) + SYSTEM_PROMPT_TOKENS;
+      promptTokensCache.set(task.promptId, promptTokens);
+    }
+
+    // Get model pricing
+    const pricing = pricingData.get(task.model) || {
+      promptPricePerMillion: 2.0,
+      completionPricePerMillion: 6.0,
+    };
+
+    const breakdown = calculateCostBreakdown(
+      pricing.promptPricePerMillion,
+      pricing.completionPricePerMillion,
+      promptTokens,
+      ESTIMATED_COMPLETION_TOKENS,
+    );
+
+    totalPromptCost += breakdown.promptCost;
+    totalCompletionCost += breakdown.completionCost;
+
+    // Accumulate by model
+    const existing = costByModel.get(task.model) || {
+      count: 0,
+      promptCost: 0,
+      completionCost: 0,
+    };
+    costByModel.set(task.model, {
+      count: existing.count + 1,
+      promptCost: existing.promptCost + breakdown.promptCost,
+      completionCost: existing.completionCost + breakdown.completionCost,
+    });
+  }
+
+  const totalCost = totalPromptCost + totalCompletionCost;
+
   console.log(
-    `Estimated total prompt tokens: ${estimate.totalPromptTokens.toLocaleString()}`,
+    `\nInput cost:  $${totalPromptCost.toFixed(4)} (actual prompt sizes)`,
   );
   console.log(
-    `Estimated total completion tokens: ${estimate.totalCompletionTokens.toLocaleString()}`,
+    `Output cost: ~$${totalCompletionCost.toFixed(4)} (estimated ~${ESTIMATED_COMPLETION_TOKENS.toLocaleString()} tokens/task)`,
   );
-  console.log(`Estimated total cost: $${estimate.totalCost.toFixed(2)}`);
-  console.log(`Estimated cost per task: $${estimate.costPerTask.toFixed(4)}`);
+  console.log(`Total:       $${totalCost.toFixed(2)} (output is estimated)`);
+
+  console.log(`\nCost by model:`);
+  for (const [model, data] of costByModel) {
+    const pricing = pricingData.get(model);
+    const modelTotal = data.promptCost + data.completionCost;
+    if (pricing) {
+      console.log(
+        `  ${model}: ${data.count} tasks, $${modelTotal.toFixed(4)} ($${pricing.promptPricePerMillion}/$${pricing.completionPricePerMillion} per M)`,
+      );
+    } else {
+      console.log(`  ${model}: ${data.count} tasks, $${modelTotal.toFixed(4)}`);
+    }
+  }
 
   if (pendingTasks.length === 0) {
     console.log(`\n✅ All tasks already completed!`);

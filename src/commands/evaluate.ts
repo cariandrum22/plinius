@@ -18,6 +18,10 @@ import {
 } from "../evaluation/progress.js";
 import { executeWithConcurrency } from "../utils/executor.js";
 import { EVALUATOR_MODELS } from "../config.js";
+import {
+  fetchOpenRouterPricing,
+  calculateCostBreakdown,
+} from "../utils/pricing-fetcher.js";
 
 const CONCURRENT_EVALUATIONS = 5;
 const TASK_START_DELAY_MS = 500;
@@ -86,18 +90,35 @@ async function runSingleEvaluatorPass(
     return;
   }
 
-  const estimatedTokensPerEval = 3000;
-  const totalTokens = pendingTasks.length * estimatedTokensPerEval;
-  const estimatedCost = (totalTokens / 1_000_000) * 3.0;
+  // Get dynamic pricing
+  const pricingData = await fetchOpenRouterPricing();
+  const pricing = pricingData.get(evaluatorModel) || {
+    promptPricePerMillion: 3.0,
+    completionPricePerMillion: 15.0,
+  };
+
+  // Evaluation: prompt is rubric + benchmark result, output is structured evaluation
+  const ESTIMATED_PROMPT_TOKENS = 4000; // Rubric + result content
+  const ESTIMATED_COMPLETION_TOKENS = 800; // Evaluation response
+
+  const breakdown = calculateCostBreakdown(
+    pricing.promptPricePerMillion,
+    pricing.completionPricePerMillion,
+    ESTIMATED_PROMPT_TOKENS * pendingTasks.length,
+    ESTIMATED_COMPLETION_TOKENS * pendingTasks.length,
+  );
 
   console.log(`\n=== Cost Estimation for ${evaluatorModel} ===`);
   console.log(
-    `Estimated total tokens: ${totalTokens.toLocaleString()} (~${estimatedTokensPerEval.toLocaleString()} per evaluation)`,
+    `Model pricing: $${pricing.promptPricePerMillion}/$${pricing.completionPricePerMillion} per M tokens`,
   );
-  console.log(`Estimated cost: $${estimatedCost.toFixed(2)}`);
   console.log(
-    `Estimated cost per evaluation: $${(estimatedCost / pendingTasks.length).toFixed(4)}`,
+    `Input cost:  ~$${breakdown.promptCost.toFixed(4)} (~${ESTIMATED_PROMPT_TOKENS.toLocaleString()} tokens/eval)`,
   );
+  console.log(
+    `Output cost: ~$${breakdown.completionCost.toFixed(4)} (~${ESTIMATED_COMPLETION_TOKENS.toLocaleString()} tokens/eval, estimated)`,
+  );
+  console.log(`Total: ~$${breakdown.totalCost.toFixed(4)} (estimated)`);
 
   console.log(
     `\n=== Starting Evaluation with ${evaluatorModel} (${CONCURRENT_EVALUATIONS} parallel) ===\n`,
