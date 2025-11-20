@@ -1,7 +1,44 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
-*.log
+build/
+*.tsbuildinfo
+
+# Environment variables
 .env
+.env.local
+.env.*.local
+
+# Nix/direnv
 .direnv/
-result
+
+# Artifacts (benchmark results, evaluations)
 artifacts/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Test coverage
+coverage/
