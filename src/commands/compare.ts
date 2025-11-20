@@ -27,7 +27,7 @@ interface ModelScores {
 }
 
 async function loadAllEvaluations(): Promise<EvaluationResultData[]> {
-  const evaluationDir = join(process.cwd(), "artifacts", "evaluation");
+  const evaluationDir = join(process.cwd(), "benchmark", "artifacts", "evaluation");
   const files = await readdir(evaluationDir);
   const results: EvaluationResultData[] = [];
 
@@ -371,7 +371,7 @@ export async function runComparison(): Promise<void> {
 
   const report = await generateDetailedReport(results, modelAverages, evaluators, shortNames);
 
-  const reportDir = join(process.cwd(), "artifacts", "evaluation");
+  const reportDir = join(process.cwd(), "benchmark", "artifacts", "reports");
   await mkdir(reportDir, { recursive: true });
   const reportPath = join(reportDir, "MULTI_EVALUATOR_COMPARISON.md");
   await writeFile(reportPath, report, "utf-8");

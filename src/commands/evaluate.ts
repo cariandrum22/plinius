@@ -72,7 +72,7 @@ const TASK_START_DELAY_MS = 500;
 const WORKER_START_DELAY_MS = 1000;
 
 async function discoverBenchmarkResults(): Promise<EvaluationTask[]> {
-  const resultDir = join(process.cwd(), "artifacts", "result");
+  const resultDir = join(process.cwd(), "benchmark", "artifacts", "result");
   const files = await readdir(resultDir);
   const tasks: EvaluationTask[] = [];
 
@@ -218,7 +218,7 @@ async function runSingleEvaluatorPass(
     await saveEvaluationSummary(completedResults);
   }
 
-  console.log(`\n✅ Evaluation results saved to artifacts/evaluation/`);
+  console.log(`\n✅ Evaluation results saved to benchmark/artifacts/evaluation/`);
 }
 
 /**
@@ -234,7 +234,7 @@ export async function runEvaluation(): Promise<void> {
   console.log(`Found ${allTasks.length} benchmark results`);
 
   if (allTasks.length === 0) {
-    console.log(`\n⚠ No benchmark results found in artifacts/result/`);
+    console.log(`\n⚠ No benchmark results found in benchmark/artifacts/result/`);
     console.log(`Please run the benchmark first: plinius benchmark`);
     return;
   }
@@ -265,5 +265,5 @@ export async function runEvaluation(): Promise<void> {
   console.log(`ALL EVALUATIONS COMPLETE`);
   console.log(`${"=".repeat(80)}\n`);
   console.log(`✅ All ${EVALUATOR_MODELS.length} evaluators have completed their assessments`);
-  console.log(`Results saved to artifacts/evaluation/`);
+  console.log(`Results saved to benchmark/artifacts/evaluation/`);
 }

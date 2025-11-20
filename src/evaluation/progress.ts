@@ -7,7 +7,14 @@ import { BenchmarkId } from "../types/benchmark.js";
  * Get evaluation output directory
  */
 export function getEvaluationDir(): string {
-  return join(process.cwd(), "artifacts", "evaluation");
+  return join(process.cwd(), "benchmark", "artifacts", "evaluation");
+}
+
+/**
+ * Get reports output directory
+ */
+export function getReportsDir(): string {
+  return join(process.cwd(), "benchmark", "artifacts", "reports");
 }
 
 /**
@@ -118,9 +125,10 @@ export async function saveEvaluationResult(
 export async function saveEvaluationSummary(
   results: EvaluationResult[]
 ): Promise<void> {
-  const evaluationDir = getEvaluationDir();
+  const reportsDir = getReportsDir();
+  await mkdir(reportsDir, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const filepath = join(evaluationDir, `summary_${timestamp}.md`);
+  const filepath = join(reportsDir, `summary_${timestamp}.md`);
 
   // Group by model
   const byModel = new Map<string, EvaluationResult[]>();

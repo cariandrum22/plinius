@@ -139,7 +139,7 @@ async function isTaskCompleted(
   model: OpenRouterModel,
   promptId: BenchmarkId
 ): Promise<boolean> {
-  const outputDir = join(process.cwd(), "artifacts", "result");
+  const outputDir = join(process.cwd(), "benchmark", "artifacts", "result");
   try {
     const files = await readdir(outputDir);
     const modelName = sanitizeModelName(model);
@@ -178,7 +178,7 @@ async function saveProgress(progress: ProgressState): Promise<void> {
     "result",
     "progress.json"
   );
-  await mkdir(join(process.cwd(), "artifacts", "result"), { recursive: true });
+  await mkdir(join(process.cwd(), "benchmark", "artifacts", "result"), { recursive: true });
   progress.lastUpdate = new Date().toISOString();
   await writeFile(progressPath, JSON.stringify(progress, null, 2), "utf-8");
 }
@@ -281,7 +281,7 @@ async function saveResult(
     latencyMs?: number;
   }
 ): Promise<void> {
-  const outputDir = join(process.cwd(), "artifacts", "result");
+  const outputDir = join(process.cwd(), "benchmark", "artifacts", "result");
   await mkdir(outputDir, { recursive: true });
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

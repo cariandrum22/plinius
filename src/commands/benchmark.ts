@@ -100,7 +100,7 @@ function sanitizeModelName(model: string): string {
 }
 
 async function isTaskCompleted(model: OpenRouterModel, promptId: BenchmarkId): Promise<boolean> {
-  const outputDir = join(process.cwd(), "artifacts", "result");
+  const outputDir = join(process.cwd(), "benchmark", "artifacts", "result");
   try {
     const files = await readdir(outputDir);
     const modelName = sanitizeModelName(model);
@@ -112,7 +112,7 @@ async function isTaskCompleted(model: OpenRouterModel, promptId: BenchmarkId): P
 }
 
 async function loadProgress(): Promise<ProgressState> {
-  const progressPath = join(process.cwd(), "artifacts", "result", "progress.json");
+  const progressPath = join(process.cwd(), "benchmark", "artifacts", "result", "progress.json");
   try {
     const content = await readFile(progressPath, "utf-8");
     return JSON.parse(content);
@@ -122,8 +122,8 @@ async function loadProgress(): Promise<ProgressState> {
 }
 
 async function saveProgress(progress: ProgressState): Promise<void> {
-  const progressPath = join(process.cwd(), "artifacts", "result", "progress.json");
-  await mkdir(join(process.cwd(), "artifacts", "result"), { recursive: true });
+  const progressPath = join(process.cwd(), "benchmark", "artifacts", "result", "progress.json");
+  await mkdir(join(process.cwd(), "benchmark", "artifacts", "result"), { recursive: true });
   progress.lastUpdate = new Date().toISOString();
   await writeFile(progressPath, JSON.stringify(progress, null, 2), "utf-8");
 }
@@ -210,7 +210,7 @@ async function saveResult(
     latencyMs?: number;
   }
 ): Promise<void> {
-  const outputDir = join(process.cwd(), "artifacts", "result");
+  const outputDir = join(process.cwd(), "benchmark", "artifacts", "result");
   await mkdir(outputDir, { recursive: true });
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -338,5 +338,5 @@ export async function runBenchmarks(): Promise<void> {
     }
   }
 
-  console.log(`\n✅ Results saved to artifacts/result/`);
+  console.log(`\n✅ Results saved to benchmark/artifacts/result/`);
 }

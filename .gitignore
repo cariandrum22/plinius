@@ -15,7 +15,7 @@ build/
 .direnv/
 
 # Artifacts (benchmark results, evaluations)
-artifacts/
+benchmark/artifacts/
 
 # Benchmark prompts (user-customizable, not tracked)
 benchmark/prompt/
