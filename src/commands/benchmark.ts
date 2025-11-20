@@ -5,59 +5,16 @@ import { OpenRouter } from "@openrouter/sdk";
 import { mkdir, writeFile, readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { env, validateEnv } from "../env.js";
-import { OpenRouterModels, OpenRouterModel } from "../types/openrouter.js";
+import { OpenRouterModel } from "../types/openrouter.js";
 import { BenchmarkId } from "../types/benchmark.js";
 import { loadBenchmark } from "../benchmark/loader.js";
-
-/**
- * Models to evaluate
- */
-const EvaluateModels: OpenRouterModel[] = [
-  OpenRouterModels.GPT_5_1,
-  OpenRouterModels.CLAUDE_4_5_HAIKU,
-  OpenRouterModels.GEMINI_2_5_PRO,
-  OpenRouterModels.LLAMA_4_MAVERIC,
-  OpenRouterModels.MISTRAL_MEDIUM_3_1,
-  OpenRouterModels.DEEPSEEK_R1_0528,
-  OpenRouterModels.GROK_4,
-  OpenRouterModels.KIMI_K2_THINKING,
-  OpenRouterModels.QWEN_3_MAX,
-  OpenRouterModels.MINIMAX_M2,
-  OpenRouterModels.PHI_4_REASONING_PLUS,
-  OpenRouterModels.MAI_DS_R1,
-];
-
-/**
- * Benchmark prompts to evaluate
- */
-const BenchmarkPrompts: BenchmarkId[] = [
-  "A1", "A2", "A3",
-  "B1", "B2", "B3",
-  "C1", "C2", "C3",
-];
-
-/**
- * Configuration for benchmark execution
- */
-interface BenchmarkConfig {
-  maxTokens: number;
-  temperature: number;
-  topP: number;
-  estimatedPromptTokens: number;
-  estimatedCompletionTokens: number;
-  costPerMillionPromptTokens: number;
-  costPerMillionCompletionTokens: number;
-}
-
-const config: BenchmarkConfig = {
-  maxTokens: 16000,
-  temperature: 0.1,
-  topP: 0.95,
-  estimatedPromptTokens: 2000,
-  estimatedCompletionTokens: 12000,
-  costPerMillionPromptTokens: 2.0,
-  costPerMillionCompletionTokens: 6.0,
-};
+import {
+  BENCHMARK_MODELS,
+  discoverBenchmarkIds,
+  defaultBenchmarkConfig,
+  estimateCost,
+  sanitizeModelName,
+} from "../config.js";
 
 interface BenchmarkTask {
   model: OpenRouterModel;
@@ -70,33 +27,15 @@ interface ProgressState {
   lastUpdate: string;
 }
 
-function generateTasks(): BenchmarkTask[] {
+async function generateTasks(): Promise<BenchmarkTask[]> {
+  const benchmarkIds = await discoverBenchmarkIds();
   const tasks: BenchmarkTask[] = [];
-  for (const model of EvaluateModels) {
-    for (const promptId of BenchmarkPrompts) {
+  for (const model of BENCHMARK_MODELS) {
+    for (const promptId of benchmarkIds) {
       tasks.push({ model, promptId });
     }
   }
   return tasks;
-}
-
-function estimateCost(totalTasks: number) {
-  const totalPromptTokens = totalTasks * config.estimatedPromptTokens;
-  const totalCompletionTokens = totalTasks * config.estimatedCompletionTokens;
-  const promptCost = (totalPromptTokens / 1_000_000) * config.costPerMillionPromptTokens;
-  const completionCost = (totalCompletionTokens / 1_000_000) * config.costPerMillionCompletionTokens;
-  const totalCost = promptCost + completionCost;
-
-  return {
-    totalPromptTokens,
-    totalCompletionTokens,
-    totalCost,
-    costPerTask: totalCost / totalTasks,
-  };
-}
-
-function sanitizeModelName(model: string): string {
-  return model.replace(/\//g, "_").replace(/:/g, "-");
 }
 
 async function isTaskCompleted(model: OpenRouterModel, promptId: BenchmarkId): Promise<boolean> {
@@ -161,9 +100,9 @@ async function executeTaskWithRetry(
             content: benchmark.content,
           },
         ],
-        maxTokens: config.maxTokens,
-        temperature: config.temperature,
-        topP: config.topP,
+        maxTokens: defaultBenchmarkConfig.maxTokens,
+        temperature: defaultBenchmarkConfig.temperature,
+        topP: defaultBenchmarkConfig.topP,
       });
 
       const endTime = Date.now();
@@ -253,8 +192,9 @@ export async function runBenchmarks(): Promise<void> {
 
   validateEnv(["OPENROUTER_API_KEY"]);
 
-  const allTasks = generateTasks();
+  const allTasks = await generateTasks();
   const progress = await loadProgress();
+  const benchmarkIds = await discoverBenchmarkIds();
 
   const pendingTasks = [];
   const skippedTasks = [];
@@ -269,8 +209,8 @@ export async function runBenchmarks(): Promise<void> {
   }
 
   console.log(`=== Benchmark Execution Plan ===`);
-  console.log(`Total models: ${EvaluateModels.length}`);
-  console.log(`Total prompts: ${BenchmarkPrompts.length}`);
+  console.log(`Total models: ${BENCHMARK_MODELS.length}`);
+  console.log(`Total prompts: ${benchmarkIds.length}`);
   console.log(`Total tasks: ${allTasks.length}`);
   console.log(`Already completed: ${skippedTasks.length}`);
   console.log(`Pending tasks: ${pendingTasks.length}`);

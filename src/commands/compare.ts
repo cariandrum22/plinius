@@ -3,6 +3,7 @@
  */
 import { readdir, readFile, writeFile, mkdir } from "fs/promises";
 import { join } from "path";
+import { getShortModelName, getModelProvider } from "../config.js";
 
 interface EvaluationResultData {
   benchmarkId: string;
@@ -109,18 +110,19 @@ async function generateDetailedReport(
     consensus: number;
     variance: number;
   }>,
-  evaluators: string[],
-  shortNames: Record<string, string>
+  evaluators: string[]
 ): Promise<string> {
+  const getShortName = (modelId: string) => getShortModelName(modelId);
+
   let report = "# Multi-Evaluator Comparison Report\n\n";
   report += `**Generated:** ${new Date().toISOString()}\n`;
   report += `**Total Evaluations:** ${results.length}\n`;
-  report += `**Evaluators:** ${evaluators.map(e => shortNames[e] || e).join(", ")}\n\n`;
+  report += `**Evaluators:** ${evaluators.map(e => getShortName(e)).join(", ")}\n\n`;
 
   report += "---\n\n";
 
   report += "## Overall Rankings (Consensus Scores)\n\n";
-  report += "| Rank | Model | " + evaluators.map(e => shortNames[e] || e.split("/")[1]).join(" | ") + " | **Consensus** | Variance |\n";
+  report += "| Rank | Model | " + evaluators.map(e => getShortName(e)).join(" | ") + " | **Consensus** | Variance |\n";
   report += "|------|-------|" + evaluators.map(() => "-------").join("|") + "|---------------|----------|\n";
 
   let rank = 1;
@@ -146,7 +148,7 @@ async function generateDetailedReport(
     const shortModel = model.split("/")[1] || model;
     const scores = evaluators.map(e => {
       const score = byEvaluator.get(e);
-      return `${shortNames[e] || e.split("/")[1]}: ${score?.toFixed(2) || "N/A"}`;
+      return `${getShortName(e)}: ${score?.toFixed(2) || "N/A"}`;
     });
     report += `${i + 1}. **${shortModel}** (Variance: ${variance.toFixed(2)})\n`;
     report += `   - ${scores.join(", ")}\n\n`;
@@ -166,7 +168,7 @@ async function generateDetailedReport(
   report += "## Per-Evaluator Analysis\n\n";
 
   for (const evaluator of evaluators) {
-    const evalName = shortNames[evaluator] || evaluator;
+    const evalName = getShortName(evaluator);
     report += `### ${evalName}\n\n`;
 
     const evalResults = results.filter(r => r.evaluatedBy === evaluator);
@@ -266,13 +268,10 @@ export async function runComparison(): Promise<void> {
 
   modelAverages.sort((a, b) => b.consensus - a.consensus);
 
-  const shortNames: Record<string, string> = {
-    "openai/gpt-5.1": "GPT-5.1",
-    "anthropic/claude-sonnet-4.5": "Claude",
-    "google/gemini-2.5-pro": "Gemini",
-  };
+  // Generate short names dynamically
+  const getShortName = (modelId: string) => getShortModelName(modelId);
 
-  console.log("| Rank | Model | " + evaluators.map(e => shortNames[e] || e.split("/")[1]).join(" | ") + " | Consensus | Variance |");
+  console.log("| Rank | Model | " + evaluators.map(e => getShortName(e)).join(" | ") + " | Consensus | Variance |");
   console.log("|------|-------|" + evaluators.map(() => "-------").join("|") + "|-----------|----------|");
 
   let rank = 1;
@@ -310,7 +309,7 @@ export async function runComparison(): Promise<void> {
       const correlation = pearsonCorrelation(scores1, scores2);
       const mad = meanAbsoluteDifference(scores1, scores2);
 
-      console.log(`${shortNames[eval1] || eval1} vs ${shortNames[eval2] || eval2}:`);
+      console.log(`${getShortName(eval1)} vs ${getShortName(eval2)}:`);
       console.log(`  Pearson Correlation: ${correlation.toFixed(3)}`);
       console.log(`  Mean Absolute Difference: ${mad.toFixed(2)} points`);
       console.log(`  Paired observations: ${scores1.length}\n`);
@@ -333,13 +332,11 @@ export async function runComparison(): Promise<void> {
     for (const result of results) {
       if (result.evaluatedBy !== evaluator) continue;
 
-      const evalCompany = evaluator.split("/")[0];
-      const modelCompany = result.model.split("/")[0];
+      const evalCompany = getModelProvider(evaluator);
+      const modelCompany = getModelProvider(result.model);
 
-      if (evalCompany === modelCompany ||
-          (evalCompany === "openai" && result.model.includes("gpt")) ||
-          (evalCompany === "anthropic" && result.model.includes("claude")) ||
-          (evalCompany === "google" && result.model.includes("gemini"))) {
+      // Check if evaluator and model are from same company
+      if (evalCompany === modelCompany) {
         ownScores.push(result.totalScore);
       } else {
         otherScores.push(result.totalScore);
@@ -351,7 +348,7 @@ export async function runComparison(): Promise<void> {
       const otherAvg = otherScores.reduce((a, b) => a + b, 0) / otherScores.length;
 
       biasResults.push({
-        evaluator: shortNames[evaluator] || evaluator,
+        evaluator: getShortName(evaluator),
         ownModelScore: ownAvg,
         otherAverage: otherAvg,
         difference: ownAvg - otherAvg,
@@ -369,7 +366,7 @@ export async function runComparison(): Promise<void> {
 
   console.log("\n\n=== Generating Detailed Report ===\n");
 
-  const report = await generateDetailedReport(results, modelAverages, evaluators, shortNames);
+  const report = await generateDetailedReport(results, modelAverages, evaluators);
 
   const reportDir = join(process.cwd(), "benchmark", "artifacts", "reports");
   await mkdir(reportDir, { recursive: true });

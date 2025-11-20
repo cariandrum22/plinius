@@ -83,44 +83,43 @@ Here is the data:
 
 ## Adding New Prompts
 
-### Step 1: Create Prompt File
-
-Create a new `.md` file in `benchmark/prompt/` with the appropriate ID:
+Simply create a new `.md` file in `benchmark/prompt/` with the appropriate ID:
 
 ```bash
 # Example: Adding a new Quantitative prompt
 touch benchmark/prompt/A4.md
 ```
 
-### Step 2: Update Type Definitions
+**That's it!** The system automatically discovers all `.md` files in the prompt directory.
 
-Add the new ID to `src/types/benchmark.ts`:
+### Naming Convention
 
-```typescript
-// Update BenchmarkId type
-export type BenchmarkId = "A1" | "A2" | "A3" | "A4" | "B1" | ...;
+- **A prefix**: Quantitative Finance (e.g., A1, A2, A4)
+- **B prefix**: Formal Verification (e.g., B1, B2, B4)
+- **C prefix**: Business Strategy (e.g., C1, C2, C4)
+- Custom prefixes default to Quantitative category
 
-// Add metadata
-export const BENCHMARKS_METADATA: Record<BenchmarkId, BenchmarkMetadata> = {
-  // ... existing entries
-  A4: {
-    id: "A4",
-    category: BenchmarkCategory.Quantitative,
-    title: "Your New Prompt Title",
-    description: "Brief description of the task",
-  },
-};
-```
+### Title Extraction
 
-### Step 3: Update Benchmark Runner
+The benchmark title is automatically extracted from the first `# Heading` in your prompt file. If no heading is found, the filename is used as the title.
 
-Add the new ID to the benchmark prompts list in `src/commands/benchmark.ts`:
+### Configuration (Optional)
+
+To modify which models are benchmarked or used as evaluators, edit `src/config.ts`:
 
 ```typescript
-const BenchmarkPrompts: BenchmarkId[] = [
-  "A1", "A2", "A3", "A4",  // Added A4
-  "B1", "B2", "B3",
-  "C1", "C2", "C3",
+// Models to benchmark
+export const BENCHMARK_MODELS: OpenRouterModel[] = [
+  OpenRouterModels.GPT_5_1,
+  OpenRouterModels.CLAUDE_4_5_HAIKU,
+  // Add or remove models here
+];
+
+// Models to use as evaluators
+export const EVALUATOR_MODELS: OpenRouterModel[] = [
+  OpenRouterModels.GPT_5_1,
+  OpenRouterModels.CLAUDE_4_5_SONNET,
+  OpenRouterModels.GEMINI_2_5_PRO,
 ];
 ```
 

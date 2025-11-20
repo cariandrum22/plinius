@@ -9,8 +9,9 @@ export enum BenchmarkCategory {
 
 /**
  * Benchmark identifier
+ * Dynamic string type - benchmarks are discovered from prompt directory
  */
-export type BenchmarkId = "A1" | "A2" | "A3" | "B1" | "B2" | "B3" | "C1" | "C2" | "C3";
+export type BenchmarkId = string;
 
 /**
  * Benchmark metadata
@@ -64,68 +65,33 @@ export interface BenchmarkScore {
 }
 
 /**
- * All benchmark metadata
+ * Infer category from benchmark ID prefix
+ * Convention: A=Quantitative, B=FormalVerification, C=BusinessStrategy
+ * Can be extended for custom categories
  */
-export const BENCHMARKS_METADATA: Record<BenchmarkId, BenchmarkMetadata> = {
-  A1: {
-    id: "A1",
-    category: BenchmarkCategory.Quantitative,
-    title: "Abstract Market Generation Model Estimation",
-    description:
-      "Infer stochastic processes from synthetic market data with regime changes",
-  },
-  A2: {
-    id: "A2",
-    category: BenchmarkCategory.Quantitative,
-    title: "Constrained Alpha Construction",
-    description:
-      "Design market-neutral alpha signals with turnover and drawdown constraints",
-  },
-  A3: {
-    id: "A3",
-    category: BenchmarkCategory.Quantitative,
-    title: "Portfolio Risk Decomposition with Dummy Covariance",
-    description:
-      "Decompose multi-asset portfolio risk into factor and idiosyncratic components",
-  },
-  B1: {
-    id: "B1",
-    category: BenchmarkCategory.FormalVerification,
-    title: "Monad Laws Proof Structure Design",
-    description: "Design Coq typeclass and proof structure for monad laws",
-  },
-  B2: {
-    id: "B2",
-    category: BenchmarkCategory.FormalVerification,
-    title: "F* Dijkstra Monad for Non-Interference",
-    description:
-      "Model and prove non-interference property using F* Dijkstra monads",
-  },
-  B3: {
-    id: "B3",
-    category: BenchmarkCategory.FormalVerification,
-    title: "Type-Level Secret Key Logging Prevention",
-    description:
-      "Design type system to prevent secret keys from appearing in log messages",
-  },
-  C1: {
-    id: "C1",
-    category: BenchmarkCategory.BusinessStrategy,
-    title: "Decision Tree Under Uncertainty",
-    description:
-      "Build decision tree for product launch with market and regulatory uncertainties",
-  },
-  C2: {
-    id: "C2",
-    category: BenchmarkCategory.BusinessStrategy,
-    title: "Causal Modeling of Business Metrics",
-    description: "Model SaaS metrics causally and evaluate strategic levers",
-  },
-  C3: {
-    id: "C3",
-    category: BenchmarkCategory.BusinessStrategy,
-    title: "Strategic Analysis Through Abstraction and Reduction",
-    description:
-      'Transform vague complaint "engineering is slow" into structured analysis',
-  },
-};
+export function inferCategory(benchmarkId: string): BenchmarkCategory {
+  const prefix = benchmarkId.charAt(0).toUpperCase();
+  switch (prefix) {
+    case "A":
+      return BenchmarkCategory.Quantitative;
+    case "B":
+      return BenchmarkCategory.FormalVerification;
+    case "C":
+      return BenchmarkCategory.BusinessStrategy;
+    default:
+      // Default to Quantitative for unknown prefixes
+      return BenchmarkCategory.Quantitative;
+  }
+}
+
+/**
+ * Create metadata for a discovered benchmark
+ */
+export function createBenchmarkMetadata(benchmarkId: string): BenchmarkMetadata {
+  return {
+    id: benchmarkId,
+    category: inferCategory(benchmarkId),
+    title: benchmarkId, // Can be extracted from prompt file if needed
+    description: `Benchmark ${benchmarkId}`,
+  };
+}

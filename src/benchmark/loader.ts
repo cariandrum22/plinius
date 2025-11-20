@@ -3,25 +3,33 @@ import { join } from "path";
 import {
   Benchmark,
   BenchmarkId,
-  BENCHMARKS_METADATA,
+  createBenchmarkMetadata,
+  inferCategory,
 } from "../types/benchmark.js";
+import { discoverBenchmarkIds, getPromptDir } from "../config.js";
 
 /**
  * Get the path to the benchmark prompt directory
  */
 export function getBenchmarkPromptDir(): string {
-  return join(process.cwd(), "benchmark", "prompt");
+  return getPromptDir();
 }
 
 /**
  * Load a single benchmark by ID
  */
 export async function loadBenchmark(id: BenchmarkId): Promise<Benchmark> {
-  const metadata = BENCHMARKS_METADATA[id];
+  const metadata = createBenchmarkMetadata(id);
   const promptPath = join(getBenchmarkPromptDir(), `${id}.md`);
 
   try {
     const content = await readFile(promptPath, "utf-8");
+
+    // Try to extract title from content
+    const titleMatch = content.match(/^#\s+(.+)$/m);
+    if (titleMatch) {
+      metadata.title = titleMatch[1].trim();
+    }
 
     return {
       ...metadata,
@@ -38,7 +46,7 @@ export async function loadBenchmark(id: BenchmarkId): Promise<Benchmark> {
  * Load all benchmarks
  */
 export async function loadAllBenchmarks(): Promise<Benchmark[]> {
-  const ids = Object.keys(BENCHMARKS_METADATA) as BenchmarkId[];
+  const ids = await discoverBenchmarkIds();
   return Promise.all(ids.map((id) => loadBenchmark(id)));
 }
 
@@ -48,10 +56,11 @@ export async function loadAllBenchmarks(): Promise<Benchmark[]> {
 export async function loadBenchmarksByCategory(
   category: string
 ): Promise<Benchmark[]> {
-  const ids = (Object.keys(BENCHMARKS_METADATA) as BenchmarkId[]).filter(
-    (id) => BENCHMARKS_METADATA[id].category === category
+  const ids = await discoverBenchmarkIds();
+  const filteredIds = ids.filter(
+    (id) => inferCategory(id) === category
   );
-  return Promise.all(ids.map((id) => loadBenchmark(id)));
+  return Promise.all(filteredIds.map((id) => loadBenchmark(id)));
 }
 
 /**
