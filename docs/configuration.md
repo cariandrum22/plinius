@@ -1,12 +1,112 @@
 # Configuration Guide
 
-Plinius uses a central configuration file at `src/config.ts` to manage models, benchmark parameters, and cost estimation.
+Plinius separates two concerns:
+
+- **Deployment-aware targets & backends** — `src/experiment/config.ts`
+  (which model, on which backend deployment). This is what `plinius benchmark`
+  and `plinius targets` read.
+- **Execution defaults & evaluator models** — `src/config.ts`
+  (max tokens / temperature / top-p, and the evaluator model list).
+
+## Backends & Targets (`src/experiment/config.ts`)
+
+A **backend** is a deployment; a **target** binds a logical model to a backend.
+Plinius intentionally keeps five identities distinct:
+
+| Identity            | Field                       | Example                        |
+| ------------------- | --------------------------- | ------------------------------ |
+| Benchmark target ID | `TargetConfig.id`           | `qwen-smoke-vllm`              |
+| Logical model       | `TargetConfig.model`        | `Qwen/Qwen2.5-0.5B-Instruct`  |
+| Served model name   | `TargetConfig.servedModelName` | `Qwen/Qwen2.5-0.5B-Instruct` |
+| Backend identity    | `TargetConfig.backend`      | `local-vllm`                  |
+| Runtime identity    | captured provenance         | image digest, revision, ...    |
+
+```typescript
+export const defaultExperimentConfig: ExperimentConfig = {
+  backends: {
+    openrouter: { type: "openrouter", apiKeyEnv: "OPENROUTER_API_KEY" },
+    "local-vllm": {
+      type: "openai-compatible",
+      baseUrl: "http://vllm:8000/v1",
+      apiKeyEnv: "VLLM_API_KEY",              // optional; omit for open servers
+      provenanceUrl: "http://vllm:8000/runtime-provenance", // optional
+      // timeoutMs, extraParams are also supported
+    },
+  },
+  targets: [
+    {
+      id: "qwen-smoke-vllm",
+      backend: "local-vllm",
+      model: "Qwen/Qwen2.5-0.5B-Instruct",
+      servedModelName: "Qwen/Qwen2.5-0.5B-Instruct",
+      seed: 0,
+      // sampling: { temperature: 0 }, promptProfile: "neutral"
+    },
+  ],
+};
+```
+
+### Backend types
+
+- `openrouter` — the hosted OpenRouter router. Requires an API key
+  (`apiKeyEnv`, default `OPENROUTER_API_KEY`).
+- `openai-compatible` — any service speaking the OpenAI `/chat/completions`
+  contract: **vLLM**, Ollama, LM Studio, etc. `baseUrl` must include the API
+  version segment (e.g. `/v1`). API key is optional. `provenanceUrl` points at
+  a machine-readable runtime-provenance JSON endpoint if the server exposes one.
+
+Credentials are resolved from the environment at runtime via `apiKeyEnv`; they
+are never stored in configuration or written to result artifacts.
+
+### Prompt profiles (`src/prompts/profiles.ts`)
+
+System prompts are external experiment inputs. Built-in profiles:
+
+- `none` — no system prompt (only the user message)
+- `neutral` — a minimal neutral baseline (`"You are a helpful assistant."`)
+
+Add named profiles to `PROMPT_PROFILES`. Chain-of-thought instructions are never
+added automatically. Select a profile with `--prompt-profile <id>` or per-target
+via `TargetConfig.promptProfile`. The exact rendered messages are persisted in
+every result record.
+
+### Runtime provenance
+
+For `openai-compatible` backends with a `provenanceUrl`, Plinius fetches the
+runtime-provenance JSON once per target and attaches it to each result. Expected
+(all fields optional; unavailable ones are marked in `missingFields`):
+
+```json
+{
+  "runtime": { "name": "vllm", "version": "0.6.3" },
+  "container": { "image": "vllm/vllm-openai:v0.6.3", "digest": "sha256:..." },
+  "model": { "repo": "Qwen/Qwen2.5-0.5B-Instruct", "revision": "main", "servedName": "..." },
+  "engine": { "dtype": "bfloat16", "quantization": null, "tensorParallelSize": 1, "maxModelLen": 32768 },
+  "gpu": { "count": 1, "model": "NVIDIA A10G" },
+  "vllmArgs": { "--gpu-memory-utilization": 0.9 }
+}
+```
+
+The parser tolerates common `snake_case`/flat key spellings. A missing
+provenance endpoint never fails an otherwise valid benchmark. The vLLM
+container/GPU lifecycle is owned by AI-Playground, not Plinius.
+
+---
+
+## Execution defaults (`src/config.ts`)
+
+`src/config.ts` holds shared benchmark parameters, evaluator models, and cost
+estimation helpers.
 
 ## Model Configuration
 
-### Benchmark Models
+### Benchmark Models (deprecated)
 
-Models that will be tested during benchmark runs:
+> **Deprecated.** Benchmark selection is now target-driven — see
+> [Backends & Targets](#backends--targets-srcexperimentconfigts). `BENCHMARK_MODELS`
+> is no longer read by the runner and is kept only for reference.
+
+Historically, models tested during benchmark runs were listed as:
 
 ```typescript
 export const BENCHMARK_MODELS: OpenRouterModel[] = [

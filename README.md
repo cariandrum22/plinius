@@ -1,14 +1,24 @@
 # Plinius
 
-AI Model Benchmark & Evaluation System with multi-evaluator cross-validation.
+Backend-independent AI model benchmark & evaluation system with multi-evaluator
+cross-validation. Benchmark targets are decoupled from any single provider: the
+same runner evaluates OpenRouter-hosted models, a local **vLLM** deployment, or
+any other OpenAI-compatible service (Ollama, LM Studio, ...).
 
 ## Features
 
-- **Unified CLI** - Single entry point for all operations
-- **Multi-Model Benchmarking** - Test 13+ models across multiple providers
-- **Cross-Validation** - Evaluate with multiple evaluators (GPT-5.1, Claude Sonnet 4.5, Gemini 3.0)
-- **Dynamic Configuration** - Auto-discovery of prompts and configurable model lists
-- **Detailed Reports** - Markdown reports with rankings, analysis, and insights
+- **Backend-independent runner** - One inference abstraction, many backends
+  (OpenRouter, generic OpenAI-compatible / vLLM)
+- **Deployment-aware targets** - A target binds a logical model to a concrete
+  backend deployment; target id, logical model, served model name, backend id,
+  and runtime identity are all kept distinct
+- **External prompt profiles** - System prompts are experiment inputs
+  (`none`, `neutral`, or custom); the exact rendered messages are persisted
+- **Runtime provenance capture** - vLLM runtime/model/GPU provenance is attached
+  to each result, with credentials stripped and missing fields marked
+- **Canonical JSON artifacts** - Reproducible per-run records; Markdown is a
+  derived view
+- **Cross-Validation** - Evaluate with multiple evaluators
 
 ## Quick Start
 
@@ -18,12 +28,74 @@ pnpm install
 
 # Configure environment
 cp .env.example .env
-# Edit .env and add your OPENROUTER_API_KEY
+# Edit .env: add OPENROUTER_API_KEY (and VLLM_API_KEY if your vLLM needs auth)
 
-# Run the full pipeline
-plinius benchmark    # Run benchmarks
-plinius evaluate     # Evaluate results
-plinius compare      # Generate reports
+# List configured targets
+plinius targets
+
+# Benchmark a local vLLM smoke-test model
+plinius benchmark --target qwen-smoke-vllm
+
+# Benchmark all configured targets, then evaluate and compare
+plinius benchmark
+plinius evaluate
+plinius compare
+```
+
+## Backends & Targets
+
+A **backend** describes a deployment; a **target** binds a logical model to a
+backend. Both are configured in [`src/experiment/config.ts`](src/experiment/config.ts):
+
+```typescript
+export const defaultExperimentConfig: ExperimentConfig = {
+  backends: {
+    openrouter: { type: "openrouter", apiKeyEnv: "OPENROUTER_API_KEY" },
+    "local-vllm": {
+      type: "openai-compatible",
+      baseUrl: "http://vllm:8000/v1",
+      apiKeyEnv: "VLLM_API_KEY",              // optional
+      provenanceUrl: "http://vllm:8000/runtime-provenance",
+    },
+  },
+  targets: [
+    {
+      id: "qwen-smoke-vllm",                  // benchmark target id (--target)
+      backend: "local-vllm",                  // backend identity
+      model: "Qwen/Qwen2.5-0.5B-Instruct",    // logical model identity
+      servedModelName: "Qwen/Qwen2.5-0.5B-Instruct", // what the API expects
+      seed: 0,                                // optional deterministic seed
+    },
+    // ...OpenRouter targets
+  ],
+};
+```
+
+The vLLM container / GPU lifecycle is **not** managed by Plinius — that is the
+responsibility of the [AI-Playground](https://github.com/cariandrum22) repo.
+Plinius only consumes the OpenAI-compatible API and the optional
+`runtime-provenance` JSON endpoint it exposes.
+
+### Prompt profiles
+
+System prompts are external inputs, selected per run:
+
+```bash
+plinius benchmark --target qwen-smoke-vllm --prompt-profile none     # no system prompt
+plinius benchmark --target qwen-smoke-vllm --prompt-profile neutral  # neutral baseline
+```
+
+Profiles are defined in [`src/prompts/profiles.ts`](src/prompts/profiles.ts).
+Chain-of-thought instructions are never added automatically. The exact rendered
+messages are stored in every result record.
+
+### Live vLLM integration test
+
+Unit tests never touch the network. An opt-in test exercises a running vLLM:
+
+```bash
+PLINIUS_LIVE_VLLM=1 VLLM_BASE_URL=http://localhost:8000/v1 \
+  VLLM_MODEL=Qwen/Qwen2.5-0.5B-Instruct pnpm test:integration
 ```
 
 ## CLI Usage
@@ -32,23 +104,27 @@ plinius compare      # Generate reports
 plinius <command> [options]
 
 Commands:
-  benchmark    Run benchmark prompts against models
+  benchmark    Run benchmark prompts against configured targets
+  targets      List configured benchmark targets
   evaluate     Evaluate benchmark results with multiple evaluators
   compare      Compare evaluations across evaluators
   clean        Remove benchmark artifacts
 
-Options:
+Benchmark options:
+  --target <id>            Run a single target (default: all targets)
+  --prompt-profile <id>    none | neutral | <custom>
+
+Global options:
   -h, --help     Show help message
   -v, --version  Show version number
 
 Examples:
-  plinius benchmark              # Run all benchmarks
-  plinius evaluate               # Evaluate results with all evaluators
-  plinius compare                # Generate comparison report
-  plinius clean                  # Remove all artifacts
-  plinius clean benchmark        # Remove only benchmark results
-  plinius clean evaluate         # Remove only evaluation data
-  plinius clean reports          # Remove only reports
+  plinius targets                              # List configured targets
+  plinius benchmark                            # Run all targets
+  plinius benchmark --target qwen-smoke-vllm   # Run one target (vLLM)
+  plinius benchmark --prompt-profile neutral   # Neutral baseline prompt
+  plinius evaluate                             # Evaluate results
+  plinius clean benchmark                      # Remove benchmark results
 ```
 
 ## Benchmark Categories
@@ -110,30 +186,24 @@ plinius compare
 
 ### Output Files
 
-- **Benchmark results**: `benchmark/artifacts/result/{prompt}_{model}_{timestamp}.md`
+- **Benchmark results (canonical JSON)**: `benchmark/artifacts/result/{prompt}_{targetId}_{timestamp}.json`
+- **Benchmark results (derived Markdown)**: `benchmark/artifacts/result/{prompt}_{targetId}_{timestamp}.md`
 - **Evaluations**: `benchmark/artifacts/evaluation/{prompt}_{model}_{evaluator}_evaluation_{timestamp}.json`
 - **Reports**: `benchmark/artifacts/reports/`
 
+Each JSON record captures enough to reproduce the run: benchmark id + content
+hash, target/backend/model identities, the exact messages, sampling parameters
+and seed, response + token usage + latency + finish reason, runtime provenance,
+the Plinius commit SHA, and error information for failed runs. Backend
+credentials are never written to artifacts.
+
 ## Configuration
 
-Edit `src/config.ts` to customize:
-
-```typescript
-// Models to benchmark
-export const BENCHMARK_MODELS: OpenRouterModel[] = [
-  OpenRouterModels.GPT_5_1,
-  OpenRouterModels.CLAUDE_4_5_HAIKU,
-  OpenRouterModels.GEMINI_3_0_PREVIEW,
-  // ... add or remove models
-];
-
-// Models to use as evaluators
-export const EVALUATOR_MODELS: OpenRouterModel[] = [
-  OpenRouterModels.GPT_5_1,
-  OpenRouterModels.CLAUDE_4_5_SONNET,
-  OpenRouterModels.GEMINI_3_0_PREVIEW,
-];
-```
+Benchmark targets and backends live in
+[`src/experiment/config.ts`](src/experiment/config.ts) (see
+[Backends & Targets](#backends--targets) above). Shared execution defaults
+(max tokens, temperature, top-p) remain in `src/config.ts`, and evaluator
+models are configured there too.
 
 See [docs/configuration.md](docs/configuration.md) for detailed configuration options.
 
@@ -152,23 +222,29 @@ See [docs/configuration.md](docs/configuration.md) for detailed configuration op
 │   ├── cli.md               # CLI reference
 │   └── configuration.md     # Configuration guide
 ├── src/
+│   ├── backends/            # Inference backend adapters
+│   │   ├── openai-compatible.ts  # Generic OpenAI-compatible (vLLM, Ollama, ...)
+│   │   ├── openrouter.ts    # OpenRouter adapter
+│   │   └── factory.ts       # Build backends from config
 │   ├── benchmark/           # Benchmark system
 │   │   ├── loader.ts        # Load and discover prompts
-│   │   └── runner.ts        # Run benchmarks
+│   │   └── runner.ts        # Backend-independent runner
 │   ├── commands/            # CLI commands
-│   │   ├── benchmark.ts     # Benchmark command
+│   │   ├── benchmark.ts     # Benchmark command (target-driven)
+│   │   ├── targets.ts       # List targets
 │   │   ├── evaluate.ts      # Evaluate command
 │   │   ├── compare.ts       # Compare command
 │   │   └── clean.ts         # Clean command
+│   ├── experiment/
+│   │   └── config.ts        # Targets & backends configuration
+│   ├── prompts/
+│   │   └── profiles.ts      # System prompt profiles
 │   ├── evaluation/          # Evaluation system
-│   │   ├── evaluator.ts     # Evaluation logic
-│   │   ├── parser.ts        # Parse result files
-│   │   ├── progress.ts      # Progress tracking
-│   │   └── rubric.ts        # Evaluation rubric
-│   ├── types/               # TypeScript definitions
+│   ├── types/               # Domain types (inference, provenance, ...)
 │   ├── cli.ts               # CLI entry point
-│   ├── config.ts            # Central configuration
+│   ├── config.ts            # Execution defaults & evaluator models
 │   └── env.ts               # Environment setup
+├── test/                    # vitest unit + opt-in integration tests
 ├── flake.nix                # Nix development environment
 └── package.json
 ```
@@ -194,9 +270,12 @@ The project supports 13+ models via OpenRouter:
 ## Scripts
 
 ```bash
-pnpm run build      # Build TypeScript
-pnpm run typecheck  # Type check only
-pnpm run start      # Run compiled CLI
+pnpm run build            # Build TypeScript
+pnpm run typecheck        # Type check only
+pnpm run test             # Run unit tests (no network access required)
+pnpm run test:integration # Opt-in live vLLM test (requires PLINIUS_LIVE_VLLM=1)
+pnpm run targets          # List configured targets
+pnpm run start            # Run compiled CLI
 ```
 
 ## Development Environment
