@@ -47,8 +47,11 @@ export const defaultCostConfig: CostConfig = {
 };
 
 /**
- * Models to benchmark
- * Add or remove models as needed
+ * Models to benchmark.
+ *
+ * @deprecated Benchmark selection is now target-driven. Configure targets and
+ * backends in `src/experiment/config.ts` and use `plinius benchmark --target`.
+ * This list is retained only for reference and is no longer read by the runner.
  */
 export const BENCHMARK_MODELS: OpenRouterModel[] = [
   OpenRouterModels.GPT_5_1,

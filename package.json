@@ -1,6 +1,6 @@
 {
 	"name": "plinius",
-	"version": "0.1.0",
+	"version": "0.3.0",
 	"description": "Plinius - Exploratory AI Project",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -9,11 +9,15 @@
 		"build": "tsc",
 		"cli": "tsx src/cli.ts",
 		"benchmark": "tsx src/cli.ts benchmark",
+		"targets": "tsx src/cli.ts targets",
 		"evaluate": "tsx src/cli.ts evaluate",
 		"compare": "tsx src/cli.ts compare",
-		"dev": "tsx src/index.ts",
+		"dev": "tsx src/cli.ts",
 		"start": "node dist/index.js",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:integration": "PLINIUS_LIVE_VLLM=1 vitest run test/integration"
 	},
 	"bin": {
 		"plinius": "./dist/cli.js"
@@ -25,6 +29,7 @@
 	"devDependencies": {
 		"@types/node": "^24.10.1",
 		"tsx": "^4.20.6",
-		"typescript": "^5.9.3"
+		"typescript": "^5.9.3",
+		"vitest": "^4.1.10"
 	}
 }

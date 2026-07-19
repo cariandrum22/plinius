@@ -48,6 +48,71 @@ export interface BenchmarkResult {
 }
 
 /**
+ * Canonical, backend-independent benchmark run record.
+ *
+ * This is the reproducible JSON artifact: it captures the exact messages,
+ * sampling parameters, seed, response, usage, runtime provenance, and enough
+ * identity fields to reproduce and audit a run. Markdown reports are derived
+ * from this record — never the other way around.
+ */
+export const BENCHMARK_RECORD_SCHEMA_VERSION = 1;
+
+export interface BenchmarkRunRecord {
+  schemaVersion: number;
+
+  benchmark: {
+    id: BenchmarkId;
+    /** Content hash of the exact prompt file used. */
+    contentHash: string;
+    version?: string;
+  };
+
+  /** Benchmark target ID (deployment + logical model binding). */
+  targetId: string;
+  /** Backend identity. */
+  backendId: string;
+  /** Backend type discriminator, e.g. "openrouter" | "openai-compatible". */
+  backendType: string;
+  /** Logical model identity (what is being studied). */
+  model: string;
+  /** Concrete served model name requested from the backend. */
+  servedModelName: string;
+
+  /** Prompt profile id used to render the messages. */
+  promptProfile: string;
+  /** Exact rendered messages that were sent to the backend. */
+  messages: import("./inference.js").ChatMessage[];
+  /** Sampling parameters actually used. */
+  sampling: import("./inference.js").SamplingConfig;
+  /** Deterministic seed, when set. */
+  seed?: number;
+
+  timestamp: string;
+  /** Plinius commit SHA, when discoverable. */
+  pliniusCommit?: string;
+
+  /** Present on success. */
+  response?: {
+    text: string;
+    finishReason?: string;
+    usage?: import("./inference.js").TokenUsage;
+    latencyMs: number;
+    providerRequestId?: string;
+    rawMetadata?: Record<string, unknown>;
+  };
+
+  /** Runtime provenance for the deployment (credentials excluded). */
+  provenance?: import("./provenance.js").BackendProvenance;
+
+  /** Present on failure instead of `response`. */
+  error?: {
+    kind?: string;
+    message: string;
+    status?: number;
+  };
+}
+
+/**
  * Benchmark evaluation scores
  */
 export interface BenchmarkScore {
