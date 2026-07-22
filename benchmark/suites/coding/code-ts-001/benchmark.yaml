@@ -1,0 +1,77 @@
+schemaVersion: 1
+id: code-ts-001
+version: 1.0.0
+domain: coding
+difficulty: medium
+title: Fixed-Capacity LRU Cache (Node.js ESM)
+taskFile: task.md
+expectedOutputFormat: >
+  Emit the generated source file(s) so the harness can import them. You MUST
+  produce a file named exactly "solution.mjs" at the workspace root. Deliver it
+  in one of these two ways (pick ONE):
+
+  (1) A single JSON envelope, as the only content, of the form
+  {"files":[{"path":"solution.mjs","content":"<full file source as a string>"}]}
+  — OR —
+  (2) A fenced code block whose info line reads exactly `File: solution.mjs`
+  containing the full file source.
+
+  solution.mjs MUST be pure Node.js ESM (no build step, no npm install, no
+  external dependencies beyond Node built-ins) and MUST export a named class
+  `LRUCache` with the exact API described in task.md. Do not emit the harness.
+requiredConstraints:
+  - "Output a file named exactly 'solution.mjs' at the workspace root."
+  - "solution.mjs must be valid Node.js ESM and use only Node built-in modules (no third-party dependencies, no build/transpile step)."
+  - "Export a named class `LRUCache` (export class LRUCache) — not a default export and not a factory function."
+  - "Implement the exact API: constructor(capacity), get(key), set(key, value), has(key), delete(key), clear(), keys(), and the getters `size` and `capacity`."
+  - "constructor must throw a TypeError when capacity is not a positive integer (>= 1)."
+  - "set() must evict the least-recently-used entry when inserting a new key would exceed capacity; get() and set() (including updates) mark an entry most-recently-used; has() must not affect recency."
+referenceFiles:
+  - reference/solution.mjs
+fixtures:
+  - harness.mjs
+deterministicChecks:
+  - kind: file_exists
+    id: has-solution
+    blocking: true
+    paths: ["solution.mjs"]
+  - kind: command
+    id: acceptance
+    blocking: true
+    tool: node
+    args: ["harness.mjs"]
+    expectExitCode: 0
+    timeoutMs: 30000
+    expectOutputMatches: "ALL TESTS PASSED"
+rubric:
+  scaleMin: 0
+  scaleMax: 5
+  guidance: >
+    Score the submitted solution.mjs as production code implementing the LRU
+    cache contract. The acceptance harness is the source of truth for
+    correctness; a solution that fails it cannot score above 2 on correctness.
+    Reward clear, idiomatic use of language features (e.g. Map insertion order)
+    over hand-rolled linked-list bookkeeping when the simpler form is correct.
+    Penalize dead code, spurious configuration, and defensive branches that the
+    contract never exercises.
+  dimensions:
+    - { id: correctness, weight: 3, description: "Meets the full behavioral contract: get/set semantics, eviction of the true LRU entry, recency updates on get and set, has() leaving recency untouched, delete/clear, size/capacity getters, and constructor validation." }
+    - { id: edge_case_handling, weight: 2, description: "Handles capacity 1, updating an existing key without eviction, falsy/special keys (0, false, '', NaN), storing undefined as a real value, delete of a missing key, and clear() preserving capacity." }
+    - { id: type_safety, weight: 1, description: "Robust argument validation (TypeError on invalid capacity), no reliance on coercion, and stable behavior for unusual key/value types." }
+    - { id: api_ergonomics, weight: 1, description: "Clean, predictable public surface: correct return values (e.g. delete returns boolean, keys() returns an array in the specified order), no accidental leakage of internal state." }
+    - { id: unnecessary_complexity, weight: 1, description: "Solution is as simple as the contract allows; penalize over-engineering, redundant data structures, or unused options." }
+qualification:
+  deterministicPassRate: 1.0
+  minimumDomainScore: 4.0
+  maximumCatastrophicFailureRate: 0.0
+  maximumEvaluatorDisagreement: 0.25
+timeoutMs: 120000
+maxOutputTokens: 4096
+tags: ["coding", "javascript", "nodejs", "esm", "data-structures", "lru-cache"]
+knownFailureModes:
+  - "Wrong export name or export shape (e.g. default export, factory function, or class named `Cache`) so the harness import fails."
+  - "Off-by-one on eviction: evicting when size equals capacity, or failing to evict when size exceeds it."
+  - "Evicting the wrong entry because get()/set()-update does not refresh recency, or because has() incorrectly touches recency."
+  - "Ignoring edge cases: capacity 1, storing undefined as a value, falsy/NaN keys, or delete/clear side effects."
+  - "Skipping constructor validation so invalid capacities silently pass instead of throwing TypeError."
+prototype: true

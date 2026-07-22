@@ -1,0 +1,90 @@
+schemaVersion: 1
+id: sec-001
+version: 1.0.0
+domain: security
+difficulty: expert
+title: OAuth 2.0 + OIDC Authorization-Code + PKCE Token/Session Lifecycle Threat Model
+taskFile: task.md
+expectedOutputFormat: >
+  A single self-contained Markdown security design document. It MUST contain, as
+  headings, these five sections in this order: "Threat Model", "Token Lifecycle",
+  "Attack Surface", "Secure Defaults", and "Fail-Closed". The document must use
+  RFC-correct terminology and cite the governing specifications inline using the
+  form "RFC 6749", "RFC 6750", "RFC 7636", and the OpenID Connect Core
+  specification. PKCE must be described by name. Secure defaults must explicitly
+  reject browser localStorage for token storage. Prose only (no tool invocation);
+  code/config snippets are allowed inside fenced blocks.
+requiredConstraints:
+  - "Target the OAuth 2.0 authorization-code flow with PKCE (RFC 7636) for a PUBLIC client (no client secret); do not assume a confidential client or the implicit flow."
+  - "Use RFC-correct terminology and cite the governing specs inline: RFC 6749 (OAuth 2.0), RFC 6750 (Bearer tokens), RFC 7636 (PKCE), and OpenID Connect Core for id_token semantics."
+  - "The PKCE treatment must name code_verifier, code_challenge, and the S256 code_challenge_method, and explain why plain is a weaker default."
+  - "The Token Lifecycle section must cover issuance, presentation/use, refresh (rotation), revocation, and expiry for access_token, refresh_token, and id_token distinctly."
+  - "Secure Defaults must forbid persisting tokens in browser localStorage and instead specify a fail-closed storage/transport posture (e.g. HttpOnly + Secure + SameSite cookies or in-memory + backend-for-frontend)."
+  - "Protocol-misuse detection must be addressed: authorization-code injection/replay, PKCE downgrade, state/nonce omission (CSRF and id_token replay), redirect_uri manipulation, mix-up attacks, and token substitution."
+  - "Fail-Closed must define explicit behavior when validation is ambiguous or fails (reject, do not fall back to an insecure path) covering signature/issuer/audience/nonce validation and clock-skew handling."
+referenceFiles:
+  - reference/answer.md
+fixtures: []
+deterministicChecks:
+  - kind: required_sections
+    id: sections
+    blocking: true
+    sections: ["Threat Model", "Token Lifecycle", "Attack Surface", "Secure Defaults", "Fail-Closed"]
+  - kind: regex
+    id: mentions-pkce
+    blocking: true
+    pattern: "PKCE"
+    flags: ""
+    mustMatch: true
+  - kind: regex
+    id: cites-rfc
+    blocking: true
+    pattern: "RFC\\s?\\d{4}"
+    flags: ""
+    mustMatch: true
+  # A polarity-inverted "must not mention localStorage" check is unsound: a
+  # correct answer names localStorage precisely to prohibit it. Instead assert
+  # the presence of a concrete secure token-storage posture.
+  - kind: regex
+    id: secure-token-storage
+    blocking: true
+    pattern: "HttpOnly|in-memory|backend-for-frontend|\\bBFF\\b"
+    flags: "i"
+    mustMatch: true
+rubric:
+  scaleMin: 0
+  scaleMax: 5
+  guidance: >
+    Score a professional security design document written for engineers who will
+    implement an OAuth 2.0 + OIDC authorization-code-with-PKCE flow for a public
+    client. Reward RFC-correct precision, concrete and exploitable-then-mitigated
+    threat reasoning, and secure defaults that fail closed. Penalize hand-waving,
+    spec-inaccurate claims (e.g. treating access and refresh tokens
+    interchangeably, recommending the implicit flow, or claiming PKCE replaces
+    state/nonce), and any advice that stores tokens in browser localStorage or
+    otherwise degrades to an insecure fallback. A document can satisfy every
+    deterministic check and still score low if its threat coverage is shallow or
+    its protocol claims are wrong.
+  dimensions:
+    - { id: threat_completeness, weight: 2, description: "Breadth and realism of the threat model: covers code injection/replay, PKCE downgrade, CSRF via missing state, id_token replay via missing nonce, redirect_uri manipulation, mix-up, token leakage/substitution, and refresh-token theft, each with a concrete attack path." }
+    - { id: oauth_oidc_correctness, weight: 2, description: "RFC and OIDC accuracy: correct roles and grant, correct use of code_verifier/code_challenge/S256, correct id_token vs access_token vs refresh_token semantics, and accurate citations of RFC 6749/6750/7636 and OIDC Core." }
+    - { id: token_lifecycle_soundness, weight: 2, description: "Soundness of issuance, use, refresh rotation with reuse detection, revocation, and expiry handling across all three token types, including binding and short-lived access tokens." }
+    - { id: secure_defaults, weight: 1, description: "Defaults are secure out of the box: no localStorage token storage, HttpOnly/Secure/SameSite or BFF/in-memory posture, TLS-only bearer transport, least-privilege scopes, and explicit rejection of weaker options like PKCE plain or the implicit flow." }
+    - { id: fail_closed, weight: 1, description: "Ambiguous or failed validation results in rejection, never an insecure fallback: signature/issuer/audience/nonce checks, clock-skew bounds, and misuse-detection responses all deny by default." }
+qualification:
+  deterministicPassRate: 1.0
+  minimumDomainScore: 4.0
+  maximumCatastrophicFailureRate: 0.0
+  maximumEvaluatorDisagreement: 0.25
+timeoutMs: 180000
+maxOutputTokens: 6144
+tags: ["security", "oauth2", "oidc", "pkce", "threat-modeling", "session-management", "rfc6749", "rfc7636"]
+knownFailureModes:
+  - "Recommends storing access or refresh tokens in browser localStorage or sessionStorage, defeating XSS containment."
+  - "Claims PKCE removes the need for the state parameter or the OIDC nonce, conflating CSRF and id_token-replay defenses."
+  - "Treats access_token and refresh_token as interchangeable, or omits refresh-token rotation and reuse detection."
+  - "Suggests the implicit flow or response_type=token as acceptable for a public client."
+  - "Uses PKCE method plain as a default, or omits the S256 code_challenge_method entirely."
+  - "Validation failures degrade to an insecure fallback (e.g. accepting an unverified id_token) instead of failing closed."
+  - "Cites specs vaguely (no RFC numbers) or misattributes bearer-token rules (RFC 6750) to the core framework (RFC 6749)."
+prototype: true

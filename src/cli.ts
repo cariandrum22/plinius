@@ -8,8 +8,11 @@ import { runEvaluation } from "./commands/evaluate.js";
 import { runComparison } from "./commands/compare.js";
 import { runClean } from "./commands/clean.js";
 import { runTargets } from "./commands/targets.js";
+import { runSuites } from "./commands/suites.js";
+import { runExperimentCommand } from "./commands/experiment.js";
+import { runMatrixCommand } from "./commands/matrix.js";
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 const HELP = `
 Plinius - Backend-independent AI Model Benchmark & Evaluation System
@@ -18,8 +21,11 @@ Usage:
   plinius <command> [options]
 
 Commands:
-  benchmark    Run benchmark prompts against configured targets
+  benchmark    Run legacy benchmark prompts against configured targets
   targets      List configured benchmark targets
+  suites       List versioned benchmark suites (benchmark/suites/)
+  experiment   Run a versioned experiment (repeated suite runs)
+  matrix       Build a capability matrix from experiment records
   evaluate     Evaluate benchmark results with multiple evaluators
   compare      Compare evaluations across evaluators
   clean        Remove benchmark artifacts
@@ -28,6 +34,9 @@ Benchmark options:
   --target <id>            Run a single target (default: all configured targets)
   --prompt-profile <id>    System prompt profile: none | neutral | <custom>
                            (default: per-target, falling back to "none")
+
+Experiment / matrix options:
+  --experiment <id|path>   Experiment id (benchmark/experiments/<id>.yaml) or path
 
 Global options:
   -h, --help     Show this help message
@@ -79,6 +88,30 @@ async function main(): Promise<void> {
       case "targets":
         await runTargets();
         break;
+
+      case "suites":
+        await runSuites();
+        break;
+
+      case "experiment": {
+        const experiment = getOption(args, "--experiment");
+        if (!experiment) {
+          console.error("experiment requires --experiment <id|path>");
+          process.exit(1);
+        }
+        await runExperimentCommand({ experiment });
+        break;
+      }
+
+      case "matrix": {
+        const experiment = getOption(args, "--experiment");
+        if (!experiment) {
+          console.error("matrix requires --experiment <id>");
+          process.exit(1);
+        }
+        await runMatrixCommand({ experiment });
+        break;
+      }
 
       case "evaluate":
         await runEvaluation();

@@ -1,0 +1,137 @@
+schemaVersion: 1
+id: formal-tla-001
+version: 1.0.0
+domain: formal
+difficulty: expert
+title: Bounded-Buffer Safety Specification in TLA+
+taskFile: task.md
+expectedOutputFormat: >
+  Return TWO things.
+
+  (1) The complete TLA+ module as a single fenced code block using the ```tla
+  language tag. The module MUST define, at minimum, the operators Init, Next,
+  and a named safety invariant, plus a temporal Spec formula.
+
+  (2) A prose section titled "Explanation" (a Markdown "## Explanation"
+  heading) that walks through the state variables, Init, Next, and — crucially —
+  argues WHY the stated invariant is a genuine, non-vacuous safety property of
+  the described protocol (not something trivially true of every state).
+
+  Additionally, emit the specification as a file named exactly "spec.tla". Use
+  either a JSON envelope of the form {"files": [{"path": "spec.tla",
+  "content": "..."}]} OR a plain-text marker line "File: spec.tla" immediately
+  followed by the fenced module. The file contents MUST be identical to the
+  fenced ```tla block.
+requiredConstraints:
+  - The module MUST define Init, Next, and at least one named safety invariant.
+  - The invariant MUST be a genuine safety property of the protocol, not a
+    tautology such as TRUE or x = x.
+  - Init and Next MUST together model the SPECIFIC protocol described in the
+    task (a bounded producer/consumer buffer), including the capacity bound.
+  - The spec.tla file content MUST match the fenced ```tla block exactly.
+  - Every Next-action disjunct MUST be a well-formed TLA+ action that assigns a
+    primed value (or UNCHANGED) to every declared variable.
+referenceFiles:
+  - reference/spec.tla
+  - reference/answer.md
+fixtures: []
+deterministicChecks:
+  - kind: command
+    id: tlc-check
+    description: >
+      Model-check the submitted spec.tla with TLC. A pass requires exit code 0
+      AND output that does not indicate an empty state space (a vacuity guard on
+      the model-checking side). If tlc is not installed the run is reported
+      not_available and the result is inconclusive rather than a false pass.
+    blocking: true
+    tool: tlc
+    args: ["spec.tla"]
+    expectExitCode: 0
+    timeoutMs: 60000
+    forbidOutputMatches: "0 states generated|No states"
+  - kind: regex
+    id: nonvacuous-invariant
+    description: >
+      Vacuity guard: forbid a trivially-true invariant such as
+      "Invariant == TRUE".
+    blocking: true
+    pattern: "Invariant\\s*==\\s*TRUE"
+    flags: "i"
+    mustMatch: false
+  - kind: required_sections
+    id: fidelity
+    description: >
+      Specification fidelity and explanation quality: the answer must name and
+      discuss Init, Next, the Invariant, and provide an Explanation.
+    blocking: true
+    sections: ["Init", "Next", "Invariant", "Explanation"]
+  - kind: regex
+    id: has-init-next
+    description: An Init operator definition must be present.
+    blocking: true
+    pattern: "Init\\s*=="
+    flags: ""
+    mustMatch: true
+  - kind: file_exists
+    id: has-spec
+    description: The specification should be emitted as the file spec.tla.
+    blocking: false
+    paths: ["spec.tla"]
+rubric:
+  scaleMin: 0
+  scaleMax: 5
+  guidance: >
+    Judge the TLA+ specification and its explanation as a formal-methods
+    reviewer would. Reward specifications that faithfully model the bounded
+    producer/consumer buffer, that state a substantive safety invariant (one
+    that genuinely constrains reachable states and would be violated by a
+    plausible bug), and that explain the non-vacuity of that invariant
+    convincingly. Penalize heavily any spec whose invariant is trivially true
+    (TRUE, TypeOK-only with no real constraint, or a predicate implied by every
+    Init/Next), any spec missing Next or with malformed actions, and any spec
+    that does not actually model the capacity-bounded buffer described. A
+    passing TLC run alone is NOT sufficient — a vacuous spec can also pass TLC.
+  dimensions:
+    - id: syntactic_validity
+      weight: 1
+      description: >
+        The module is well-formed TLA+ that TLC could parse and check:
+        correct EXTENDS, variable declarations, primed assignments to all
+        variables in every action, and a valid Spec formula.
+    - id: invariant_correctness
+      weight: 2
+      description: >
+        The named invariant is actually inductive/true for the protocol and
+        expresses a real safety property (e.g. buffer length is bounded by
+        capacity and equals produced minus consumed).
+    - id: non_vacuity
+      weight: 2
+      description: >
+        The invariant meaningfully constrains reachable states; it would be
+        falsified by a realistic bug (e.g. allowing overflow past capacity). It
+        is not TRUE, not a pure type-OK restatement, and not implied trivially.
+    - id: specification_fidelity
+      weight: 2
+      description: >
+        Init and Next model the exact protocol described: a FIFO buffer of
+        bounded capacity with guarded Produce (only when not full) and Consume
+        (only when not empty) actions, tracking produced/consumed counts.
+    - id: explanation_quality
+      weight: 1
+      description: >
+        The prose explanation clearly maps the math to the protocol and gives a
+        correct, specific argument for why the invariant is non-vacuous.
+qualification:
+  deterministicPassRate: 1.0
+  minimumDomainScore: 4.0
+  maximumCatastrophicFailureRate: 0.0
+  maximumEvaluatorDisagreement: 0.25
+timeoutMs: 120000
+maxOutputTokens: 4096
+tags: ["tla-plus", "formal-methods", "model-checking", "safety-invariant", "bounded-buffer", "concurrency"]
+knownFailureModes:
+  - "Vacuous invariant: states TRUE, x = x, or only a TypeOK-style restatement that constrains nothing meaningful."
+  - "Missing or malformed Next: no Next operator, or an action that fails to assign a primed value to every variable."
+  - "Infidelity: the spec models a different protocol (unbounded buffer, plain mutex, counter) and ignores the capacity bound."
+  - "Divergent artifact: the emitted spec.tla file does not match the fenced tla block."
+prototype: true

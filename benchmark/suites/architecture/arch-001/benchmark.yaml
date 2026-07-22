@@ -1,0 +1,106 @@
+schemaVersion: 1
+id: arch-001
+version: 1.0.0
+domain: architecture
+difficulty: advanced
+title: "ADR + RFC: Consistency Model for a Multi-Region Inventory Reservation Service"
+taskFile: task.md
+expectedOutputFormat: >
+  A single self-contained Markdown document formatted as an Architecture
+  Decision Record (ADR) with an embedded lightweight RFC. It MUST use ATX
+  Markdown headings (##) and contain, in order, the sections: "Context",
+  "Requirements", "Decision", "API Contract", "Failure Matrix", "Invariants",
+  "Trade-offs", and "Consequences". The "Decision" section MUST name exactly
+  one consistency model and justify it. The document MUST contain at least one
+  Mermaid component diagram inside a ```mermaid code fence. Normative statements
+  MUST use RFC 2119 keywords (MUST / SHOULD / MAY, and their negations). The
+  Failure Matrix MUST be a Markdown table. Do not emit any prose outside the
+  Markdown document.
+requiredConstraints:
+  - "Choose exactly ONE primary consistency model (e.g. strong/linearizable, sequential, causal, read-your-writes, or eventual) for the reservation write path and justify it against the stated requirements."
+  - "The design MUST prevent overselling of limited inventory (no confirmed reservation may exceed available stock) while remaining explicit about availability trade-offs under partition."
+  - "Include at least one Mermaid component diagram (```mermaid fence) showing services, datastore(s), and cross-region/replication boundaries."
+  - "Define an API contract for at least the reserve, confirm, and release/cancel operations, including idempotency semantics and error responses."
+  - "Provide a Failure Matrix as a Markdown table covering at minimum: network partition between regions, primary/leader loss, duplicate client retry, and reservation-expiry timeout."
+  - "State at least three machine-checkable invariants using RFC 2119 normative language."
+  - "Provide an explicit trade-off analysis that names what is sacrificed by the chosen consistency model (e.g. latency, availability, or staleness)."
+referenceFiles:
+  - reference/answer.md
+fixtures: []
+deterministicChecks:
+  - kind: required_sections
+    id: adr-sections
+    blocking: true
+    description: "ADR/RFC must contain the mandated structural sections."
+    sections:
+      - "Context"
+      - "Requirements"
+      - "Decision"
+      - "API Contract"
+      - "Failure Matrix"
+      - "Invariants"
+      - "Trade-offs"
+      - "Consequences"
+  - kind: regex
+    id: mermaid-diagram
+    blocking: true
+    description: "Must include at least one Mermaid component diagram fence."
+    pattern: "```mermaid"
+    flags: ""
+    mustMatch: true
+  - kind: regex
+    id: rfc2119-normative
+    blocking: true
+    description: "Must use at least one RFC 2119 normative keyword."
+    pattern: "\\b(?:MUST NOT|SHALL NOT|SHOULD NOT|MUST|SHALL|SHOULD|REQUIRED|RECOMMENDED)\\b"
+    flags: ""
+    mustMatch: true
+  - kind: regex
+    id: failure-matrix-table
+    blocking: true
+    description: "Failure Matrix must be rendered as a Markdown table (header separator row)."
+    pattern: "\\|\\s*-{3,}\\s*\\|"
+    flags: ""
+    mustMatch: true
+rubric:
+  scaleMin: 0
+  scaleMax: 5
+  guidance: >
+    Score the ADR/RFC as a senior distributed-systems reviewer would. Reward
+    designs where the consistency-model choice is causally derived from the
+    stated requirements rather than asserted, where the failure matrix maps each
+    failure to a concrete, consistent handling strategy, and where invariants
+    are precise enough to be mechanically checkable. Penalize hand-waving
+    ("we use eventual consistency" with no reconciliation story), invariants that
+    silently contradict the availability claims, API contracts that omit
+    idempotency under retry, and trade-off sections that list only benefits.
+    A top answer makes the oversell-prevention invariant and the partition
+    behavior mutually consistent and explains the reservation-expiry reclaim path.
+  dimensions:
+    - { id: boundary_design, weight: 1, description: "Requirements are decomposed into clear service/data boundaries; the component diagram and scope match the decision being made." }
+    - { id: consistency_reasoning, weight: 2, description: "Exactly one consistency model is chosen and rigorously justified against the requirements; implications for the write/read paths are correct." }
+    - { id: failure_analysis, weight: 2, description: "Failure matrix is complete and each row's handling is internally consistent with the chosen model and invariants (esp. partition and duplicate retry)." }
+    - { id: api_design, weight: 1, description: "reserve/confirm/release contract is precise, with idempotency keys, TTL/expiry, and well-defined error responses." }
+    - { id: tradeoff_explicitness, weight: 1, description: "Trade-offs name concrete sacrifices (latency/availability/staleness) and acknowledge rejected alternatives." }
+qualification:
+  deterministicPassRate: 1.0
+  minimumDomainScore: 4.0
+  maximumCatastrophicFailureRate: 0.0
+  maximumEvaluatorDisagreement: 0.25
+timeoutMs: 180000
+maxOutputTokens: 6144
+tags:
+  - architecture
+  - adr
+  - rfc
+  - distributed-systems
+  - consistency-models
+  - failure-analysis
+knownFailureModes:
+  - "Asserts a consistency model by name without connecting it to the oversell-prevention requirement."
+  - "Claims high availability under partition while also claiming linearizable reservations, without acknowledging the contradiction."
+  - "Omits idempotency semantics, so duplicate client retries can double-reserve stock."
+  - "Failure matrix is prose paragraphs instead of a table, or omits the partition / expiry rows."
+  - "Invariants are vague English sentences that cannot be mechanically checked."
+  - "Trade-off section lists only advantages of the chosen model."
+prototype: true
