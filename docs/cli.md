@@ -17,25 +17,40 @@ pnpm run build
 Run benchmark prompts against configured models.
 
 ```bash
-plinius benchmark
+plinius benchmark [--target <id>] [--prompt-profile <id>]
 ```
 
 **What it does:**
 - Discovers all `.md` files in `benchmark/prompt/`
-- Runs each prompt against all models in `BENCHMARK_MODELS`
-- Saves results to `benchmark/artifacts/result/`
-- Shows progress with estimated completion time
+- Runs each prompt against the selected target(s) via their backend
+- Captures runtime provenance for each target (when available)
+- Saves a canonical JSON record and a derived Markdown view to
+  `benchmark/artifacts/result/`
+- Skips runs whose JSON record already exists (resume)
 
-**Output format:** `{prompt}_{provider}_{model}_{timestamp}.md`
+**Options:**
+- `--target <id>` — run a single configured target (default: all targets).
+  List targets with `plinius targets`.
+- `--prompt-profile <id>` — `none` | `neutral` | a custom profile id.
+
+**Output format:** `{prompt}_{targetId}_{timestamp}.json` (+ `.md`)
 
 **Example:**
 ```bash
-plinius benchmark
-# === Plinius Benchmark ===
-# Models: 13
+plinius benchmark --target qwen-smoke-vllm
+# === Plinius Benchmark Runner ===
+# Targets: qwen-smoke-vllm
 # Prompts: 9
-# Total tasks: 117
 # ...
+# ✓ A1 → qwen-smoke-vllm (812ms, 1324 tokens) → A1_qwen-smoke-vllm_....json
+```
+
+### targets
+
+List configured benchmark targets and their backends.
+
+```bash
+plinius targets
 ```
 
 ### evaluate

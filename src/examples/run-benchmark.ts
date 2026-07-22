@@ -1,54 +1,60 @@
 /**
- * Example: Run benchmarks with OpenRouter
+ * Example: run a single benchmark against a configured target.
  *
  * Usage:
- *   pnpm run dev src/examples/run-benchmark.ts
+ *   pnpm tsx src/examples/run-benchmark.ts qwen-smoke-vllm A1
  */
-
-import { env, validateEnv } from "../env.js";
-import { OpenRouterModels } from "../types/openrouter.js";
+import { resolveEnv } from "../env.js";
+import { loadBenchmark } from "../benchmark/loader.js";
 import {
   BenchmarkRunner,
-  formatResultAsMarkdown,
-  saveBenchmarkResults,
+  formatRecordAsMarkdown,
 } from "../benchmark/runner.js";
+import {
+  defaultExperimentConfig,
+  getTarget,
+} from "../experiment/config.js";
+import { buildBackendForTarget } from "../backends/factory.js";
+import { defaultBenchmarkConfig } from "../config.js";
+import { DEFAULT_PROMPT_PROFILE } from "../prompts/profiles.js";
 
 async function main() {
-  // Validate environment variables
-  validateEnv(["OPENROUTER_API_KEY"]);
+  const targetId = process.argv[2] ?? "qwen-smoke-vllm";
+  const benchmarkId = process.argv[3] ?? "A1";
 
-  // Create benchmark runner
-  const runner = new BenchmarkRunner({
-    apiKey: env.OPENROUTER_API_KEY!,
-    model: OpenRouterModels.DEEPSEEK_R1, // or any other model
-    maxTokens: 4000,
-    temperature: 0.7,
+  const config = defaultExperimentConfig;
+  const target = getTarget(config, targetId);
+  const backend = buildBackendForTarget(config, target.backend, {
+    env: resolveEnv,
   });
 
-  // Example 1: Run a single benchmark
-  console.log("=== Running single benchmark ===");
-  const singleResult = await runner.runBenchmarkById("A1");
-  console.log(formatResultAsMarkdown(singleResult));
+  const provenance = backend.inspect ? await backend.inspect() : undefined;
 
-  // Example 2: Run all quantitative benchmarks
-  console.log("\n=== Running quantitative benchmarks ===");
-  const quantResults = await runner.runBenchmarksByIds(["A1", "A2", "A3"]);
+  const runner = new BenchmarkRunner({
+    backend,
+    target,
+    promptProfile: target.promptProfile ?? DEFAULT_PROMPT_PROFILE,
+    sampling: {
+      maxTokens: defaultBenchmarkConfig.maxTokens,
+      temperature: defaultBenchmarkConfig.temperature,
+      topP: defaultBenchmarkConfig.topP,
+    },
+    provenance,
+  });
 
-  // Save results
-  await saveBenchmarkResults(
-    quantResults,
-    `benchmark-results-${Date.now()}.json`
-  );
+  const benchmark = await loadBenchmark(benchmarkId);
+  const record = await runner.runBenchmark(benchmark);
 
-  console.log("\n=== Summary ===");
-  for (const result of quantResults) {
-    console.log(`${result.benchmarkId}: ${result.metadata.latencyMs}ms`);
-  }
+  console.log(formatRecordAsMarkdown(record));
+  console.log("\n--- Canonical JSON ---\n");
+  console.log(JSON.stringify(record, null, 2));
 }
 
-// Run if executed directly
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch(console.error);
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
 }
 
 export { main };

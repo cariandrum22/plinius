@@ -1,327 +1,221 @@
 /**
- * Benchmark command - Run benchmark prompts against models
+ * `plinius benchmark` — run benchmark prompts against configured targets.
+ *
+ * Targets are backend-independent: an OpenRouter-hosted model and a local
+ * vLLM model are selected the same way. The canonical artifact is JSON; a
+ * Markdown report is derived from it.
  */
-import { OpenRouter } from "@openrouter/sdk";
-import { mkdir, writeFile, readFile, readdir } from "fs/promises";
+import { mkdir, writeFile, readdir } from "fs/promises";
 import { join } from "path";
-import { env, validateEnv } from "../env.js";
-import { OpenRouterModel } from "../types/openrouter.js";
-import { BenchmarkId } from "../types/benchmark.js";
+import { resolveEnv, validateEnv } from "../env.js";
+import { BenchmarkId, BenchmarkRunRecord } from "../types/benchmark.js";
+import { BackendProvenance } from "../types/provenance.js";
+import { SamplingConfig } from "../types/inference.js";
 import { loadBenchmark } from "../benchmark/loader.js";
 import {
-  BENCHMARK_MODELS,
-  discoverBenchmarkIds,
-  defaultBenchmarkConfig,
-  sanitizeModelName,
-} from "../config.js";
-import { executeWithConcurrency } from "../utils/executor.js";
+  BenchmarkRunner,
+  formatRecordAsMarkdown,
+} from "../benchmark/runner.js";
 import {
-  fetchOpenRouterPricing,
-  calculateCostBreakdown,
-} from "../utils/pricing-fetcher.js";
+  ExperimentConfig,
+  TargetConfig,
+  defaultExperimentConfig,
+  getTarget,
+} from "../experiment/config.js";
+import { buildBackendForTarget } from "../backends/factory.js";
+import {
+  DEFAULT_PROMPT_PROFILE,
+  PromptProfileId,
+  getPromptProfile,
+} from "../prompts/profiles.js";
+import { discoverBenchmarkIds, defaultBenchmarkConfig } from "../config.js";
+import { executeWithConcurrency } from "../utils/executor.js";
+import { getPliniusCommit } from "../utils/git.js";
 
-interface BenchmarkTask {
-  model: OpenRouterModel;
-  promptId: BenchmarkId;
-}
-
-interface ProgressState {
-  completed: Array<{ model: string; promptId: string }>;
-  failed: Array<{ model: string; promptId: string; error: string }>;
-  lastUpdate: string;
+export interface BenchmarkOptions {
+  /** Restrict to a single target id. When omitted, all targets run. */
+  targetId?: string;
+  /** Override the prompt profile for every target. */
+  promptProfile?: PromptProfileId;
+  /** Restrict to specific benchmark ids. When omitted, all are discovered. */
+  benchmarkIds?: BenchmarkId[];
+  /** Experiment configuration (defaults to the built-in config). */
+  config?: ExperimentConfig;
 }
 
 const CONCURRENT_BENCHMARKS = 5;
 const TASK_START_DELAY_MS = 500;
 const WORKER_START_DELAY_MS = 1000;
 
-async function generateTasks(): Promise<BenchmarkTask[]> {
-  const benchmarkIds = await discoverBenchmarkIds();
-  const tasks: BenchmarkTask[] = [];
-  for (const model of BENCHMARK_MODELS) {
-    for (const promptId of benchmarkIds) {
-      tasks.push({ model, promptId });
-    }
-  }
-  return tasks;
+interface BenchmarkTask {
+  target: TargetConfig;
+  promptId: BenchmarkId;
 }
 
+function outputDir(): string {
+  return join(process.cwd(), "benchmark", "artifacts", "result");
+}
+
+/** A run is complete when its canonical JSON record already exists. */
 async function isTaskCompleted(
-  model: OpenRouterModel,
+  target: TargetConfig,
   promptId: BenchmarkId,
 ): Promise<boolean> {
-  const outputDir = join(process.cwd(), "benchmark", "artifacts", "result");
   try {
-    const files = await readdir(outputDir);
-    const modelName = sanitizeModelName(model);
-    const prefix = `${promptId}_${modelName}_`;
-    return files.some((file) => file.startsWith(prefix));
+    const files = await readdir(outputDir());
+    const prefix = `${promptId}_${target.id}_`;
+    return files.some(
+      (file) => file.startsWith(prefix) && file.endsWith(".json"),
+    );
   } catch {
     return false;
   }
 }
 
-async function loadProgress(): Promise<ProgressState> {
-  const progressPath = join(
-    process.cwd(),
-    "benchmark",
-    "artifacts",
-    "result",
-    "progress.json",
+async function saveRecord(record: BenchmarkRunRecord): Promise<string> {
+  const dir = outputDir();
+  await mkdir(dir, { recursive: true });
+
+  const timestamp = record.timestamp.replace(/[:.]/g, "-");
+  const base = `${record.benchmark.id}_${record.targetId}_${timestamp}`;
+
+  // Canonical JSON artifact.
+  await writeFile(
+    join(dir, `${base}.json`),
+    JSON.stringify(record, null, 2),
+    "utf-8",
   );
-  try {
-    const content = await readFile(progressPath, "utf-8");
-    return JSON.parse(content);
-  } catch {
-    return { completed: [], failed: [], lastUpdate: new Date().toISOString() };
+
+  // Derived Markdown view.
+  await writeFile(join(dir, `${base}.md`), formatRecordAsMarkdown(record), "utf-8");
+
+  return `${base}.json`;
+}
+
+/** Resolve the effective sampling config for a target. */
+function resolveSampling(target: TargetConfig): SamplingConfig {
+  return {
+    maxTokens: defaultBenchmarkConfig.maxTokens,
+    temperature: defaultBenchmarkConfig.temperature,
+    topP: defaultBenchmarkConfig.topP,
+    ...target.sampling,
+  };
+}
+
+/** Validate that credentials required by the selected targets are present. */
+function validateBackendCredentials(
+  config: ExperimentConfig,
+  targets: TargetConfig[],
+): void {
+  const requiredEnv = new Set<string>();
+  for (const target of targets) {
+    const def = config.backends[target.backend];
+    if (!def) {
+      throw new Error(
+        `Target "${target.id}" references unknown backend "${target.backend}"`,
+      );
+    }
+    // OpenRouter requires an API key; OpenAI-compatible servers may be open.
+    if (def.type === "openrouter") {
+      requiredEnv.add(def.apiKeyEnv ?? "OPENROUTER_API_KEY");
+    }
+  }
+  if (requiredEnv.size > 0) {
+    validateEnv([...requiredEnv]);
   }
 }
 
-async function saveProgress(progress: ProgressState): Promise<void> {
-  const progressPath = join(
-    process.cwd(),
-    "benchmark",
-    "artifacts",
-    "result",
-    "progress.json",
-  );
-  await mkdir(join(process.cwd(), "benchmark", "artifacts", "result"), {
-    recursive: true,
-  });
-  progress.lastUpdate = new Date().toISOString();
-  await writeFile(progressPath, JSON.stringify(progress, null, 2), "utf-8");
-}
+export async function runBenchmarks(
+  options: BenchmarkOptions = {},
+): Promise<void> {
+  const config = options.config ?? defaultExperimentConfig;
 
-async function executeTaskWithRetry(
-  openRouter: OpenRouter,
-  task: BenchmarkTask,
-  maxRetries = 3,
-): Promise<{ success: boolean; error?: string }> {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      if (attempt > 1) {
-        console.log(`  Retry ${attempt}/${maxRetries}`);
+  console.log(`\n=== Plinius Benchmark Runner ===\n`);
+
+  const targets = options.targetId
+    ? [getTarget(config, options.targetId)]
+    : config.targets;
+
+  validateBackendCredentials(config, targets);
+
+  const benchmarkIds =
+    options.benchmarkIds ?? (await discoverBenchmarkIds());
+  if (benchmarkIds.length === 0) {
+    console.log("No benchmark prompts found in benchmark/prompt/.");
+    return;
+  }
+
+  const pliniusCommit = await getPliniusCommit();
+
+  // Build backends and capture provenance once per target.
+  const runners = new Map<string, BenchmarkRunner>();
+  for (const target of targets) {
+    const backend = buildBackendForTarget(config, target.backend, {
+      env: resolveEnv,
+    });
+
+    let provenance: BackendProvenance | undefined;
+    if (backend.inspect) {
+      try {
+        provenance = await backend.inspect();
+        if (provenance.missingFields.length > 0) {
+          console.log(
+            `⚠ Provenance for ${target.id}: missing ${provenance.missingFields.length} field(s) — ${provenance.missingFields.join(", ")}`,
+          );
+        }
+      } catch (error) {
+        console.log(
+          `⚠ Could not capture provenance for ${target.id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
+    }
 
-      const benchmark = await loadBenchmark(task.promptId);
-      const startTime = Date.now();
+    const promptProfile: PromptProfileId =
+      options.promptProfile ??
+      target.promptProfile ??
+      DEFAULT_PROMPT_PROFILE;
+    // Fail fast on an unknown profile before running anything.
+    getPromptProfile(promptProfile);
 
-      const completion = await openRouter.chat.send({
-        model: task.model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are an expert reasoning system designed to demonstrate maximum analytical capability. " +
-              "Show all intermediate steps, underlying assumptions, and alternative approaches. " +
-              "Prioritize thoroughness, correctness, and depth of reasoning over brevity. " +
-              "Use structured thinking: break down complex problems, consider edge cases, " +
-              "and provide rigorous justification for your conclusions.",
-          },
-          {
-            role: "user",
-            content: benchmark.content,
-          },
-        ],
-        maxTokens: defaultBenchmarkConfig.maxTokens,
-        temperature: defaultBenchmarkConfig.temperature,
-        topP: defaultBenchmarkConfig.topP,
-      });
+    runners.set(
+      target.id,
+      new BenchmarkRunner({
+        backend,
+        target,
+        promptProfile,
+        sampling: resolveSampling(target),
+        provenance,
+        pliniusCommit,
+      }),
+    );
+  }
 
-      const endTime = Date.now();
-      const response =
-        typeof completion.choices[0].message.content === "string"
-          ? completion.choices[0].message.content
-          : "";
-
-      await saveResult(task.model, task.promptId, benchmark.content, response, {
-        promptTokens: completion.usage?.promptTokens,
-        completionTokens: completion.usage?.completionTokens,
-        totalTokens: completion.usage?.totalTokens,
-        latencyMs: endTime - startTime,
-      });
-
-      return { success: true };
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error);
-
-      if (attempt === maxRetries) {
-        return { success: false, error: errorMsg };
-      }
-
-      const backoffMs = Math.pow(2, attempt) * 1000;
-      console.log(`  ⚠ Error: ${errorMsg}`);
-      console.log(`  ⏳ Waiting ${backoffMs / 1000}s before retry...`);
-      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+  // Build the task matrix and skip already-completed runs (resume).
+  const allTasks: BenchmarkTask[] = [];
+  for (const target of targets) {
+    for (const promptId of benchmarkIds) {
+      allTasks.push({ target, promptId });
     }
   }
 
-  return { success: false, error: "Max retries exceeded" };
-}
-
-async function saveResult(
-  model: OpenRouterModel,
-  promptId: BenchmarkId,
-  prompt: string,
-  response: string,
-  metadata: {
-    promptTokens?: number;
-    completionTokens?: number;
-    totalTokens?: number;
-    latencyMs?: number;
-  },
-): Promise<string> {
-  const outputDir = join(process.cwd(), "benchmark", "artifacts", "result");
-  await mkdir(outputDir, { recursive: true });
-
-  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const modelName = sanitizeModelName(model);
-  const filename = `${promptId}_${modelName}_${timestamp}.md`;
-  const filepath = join(outputDir, filename);
-
-  const content = `# Benchmark Result: ${promptId} - ${model}
-
-**Timestamp:** ${new Date().toISOString()}
-**Model:** ${model}
-**Prompt ID:** ${promptId}
-**Latency:** ${metadata.latencyMs || "N/A"}ms
-**Tokens:** ${metadata.totalTokens || "N/A"} (prompt: ${metadata.promptTokens || "N/A"}, completion: ${metadata.completionTokens || "N/A"})
-
----
-
-## Prompt
-
-\`\`\`
-${prompt}
-\`\`\`
-
----
-
-## Response
-
-${response}
-`;
-
-  await writeFile(filepath, content, "utf-8");
-  return filename;
-}
-
-/**
- * Run all benchmarks with resume capability and parallel execution
- */
-export async function runBenchmarks(): Promise<void> {
-  console.log(`\n=== Plinius Benchmark Runner ===\n`);
-
-  validateEnv(["OPENROUTER_API_KEY"]);
-
-  const allTasks = await generateTasks();
-  const progress = await loadProgress();
-  const benchmarkIds = await discoverBenchmarkIds();
-
   const pendingTasks: BenchmarkTask[] = [];
-  const skippedTasks: BenchmarkTask[] = [];
-
+  let skipped = 0;
   for (const task of allTasks) {
-    const completed = await isTaskCompleted(task.model, task.promptId);
-    if (completed) {
-      skippedTasks.push(task);
+    if (await isTaskCompleted(task.target, task.promptId)) {
+      skipped++;
     } else {
       pendingTasks.push(task);
     }
   }
 
-  console.log(`=== Benchmark Execution Plan ===`);
-  console.log(`Total models: ${BENCHMARK_MODELS.length}`);
-  console.log(`Total prompts: ${benchmarkIds.length}`);
+  console.log(`=== Execution Plan ===`);
+  console.log(`Targets: ${targets.map((t) => t.id).join(", ")}`);
+  console.log(`Prompts: ${benchmarkIds.length}`);
   console.log(`Total tasks: ${allTasks.length}`);
-  console.log(`Already completed: ${skippedTasks.length}`);
-  console.log(`Pending tasks: ${pendingTasks.length}`);
-
-  if (skippedTasks.length > 0) {
-    console.log(`\n⏭ Skipping ${skippedTasks.length} completed tasks`);
-  }
-
-  // Fetch dynamic pricing from OpenRouter
-  const pricingData = await fetchOpenRouterPricing();
-
-  // Calculate actual prompt tokens by loading benchmarks
-  console.log(`\n=== Cost Estimation (Pending Tasks) ===`);
-  console.log(`Calculating costs with actual prompt sizes...`);
-
-  const SYSTEM_PROMPT_TOKENS = 100; // Approximate system prompt
-  const ESTIMATED_COMPLETION_TOKENS = 12000; // Output is estimated
-
-  let totalPromptCost = 0;
-  let totalCompletionCost = 0;
-  const costByModel = new Map<
-    string,
-    { count: number; promptCost: number; completionCost: number }
-  >();
-
-  // Group tasks by promptId to avoid loading same prompt multiple times
-  const promptTokensCache = new Map<string, number>();
-
-  for (const task of pendingTasks) {
-    // Get prompt tokens (cached)
-    let promptTokens = promptTokensCache.get(task.promptId);
-    if (promptTokens === undefined) {
-      const benchmark = await loadBenchmark(task.promptId);
-      // Rough token estimate: ~4 chars per token
-      promptTokens =
-        Math.ceil(benchmark.content.length / 4) + SYSTEM_PROMPT_TOKENS;
-      promptTokensCache.set(task.promptId, promptTokens);
-    }
-
-    // Get model pricing
-    const pricing = pricingData.get(task.model) || {
-      promptPricePerMillion: 2.0,
-      completionPricePerMillion: 6.0,
-    };
-
-    const breakdown = calculateCostBreakdown(
-      pricing.promptPricePerMillion,
-      pricing.completionPricePerMillion,
-      promptTokens,
-      ESTIMATED_COMPLETION_TOKENS,
-    );
-
-    totalPromptCost += breakdown.promptCost;
-    totalCompletionCost += breakdown.completionCost;
-
-    // Accumulate by model
-    const existing = costByModel.get(task.model) || {
-      count: 0,
-      promptCost: 0,
-      completionCost: 0,
-    };
-    costByModel.set(task.model, {
-      count: existing.count + 1,
-      promptCost: existing.promptCost + breakdown.promptCost,
-      completionCost: existing.completionCost + breakdown.completionCost,
-    });
-  }
-
-  const totalCost = totalPromptCost + totalCompletionCost;
-
-  console.log(
-    `\nInput cost:  $${totalPromptCost.toFixed(4)} (actual prompt sizes)`,
-  );
-  console.log(
-    `Output cost: ~$${totalCompletionCost.toFixed(4)} (estimated ~${ESTIMATED_COMPLETION_TOKENS.toLocaleString()} tokens/task)`,
-  );
-  console.log(`Total:       $${totalCost.toFixed(2)} (output is estimated)`);
-
-  console.log(`\nCost by model:`);
-  for (const [model, data] of costByModel) {
-    const pricing = pricingData.get(model);
-    const modelTotal = data.promptCost + data.completionCost;
-    if (pricing) {
-      console.log(
-        `  ${model}: ${data.count} tasks, $${modelTotal.toFixed(4)} ($${pricing.promptPricePerMillion}/$${pricing.completionPricePerMillion} per M)`,
-      );
-    } else {
-      console.log(`  ${model}: ${data.count} tasks, $${modelTotal.toFixed(4)}`);
-    }
+  console.log(`Already completed: ${skipped}`);
+  console.log(`Pending: ${pendingTasks.length}`);
+  if (pliniusCommit) {
+    console.log(`Plinius commit: ${pliniusCommit}`);
   }
 
   if (pendingTasks.length === 0) {
@@ -329,13 +223,7 @@ export async function runBenchmarks(): Promise<void> {
     return;
   }
 
-  console.log(
-    `\n=== Starting Benchmark Execution (${CONCURRENT_BENCHMARKS} parallel) ===\n`,
-  );
-
-  const openRouter = new OpenRouter({
-    apiKey: env.OPENROUTER_API_KEY!,
-  });
+  console.log(`\n=== Running ===\n`);
 
   let completed = 0;
   let failed = 0;
@@ -344,36 +232,27 @@ export async function runBenchmarks(): Promise<void> {
     pendingTasks,
     CONCURRENT_BENCHMARKS,
     async (task, index) => {
-      const overallIndex = skippedTasks.length + index + 1;
-
+      const runner = runners.get(task.target.id)!;
       console.log(
-        `[${overallIndex}/${allTasks.length}] Running: ${task.promptId} with ${task.model}`,
+        `[${index + 1}/${pendingTasks.length}] ${task.promptId} → ${task.target.id}`,
       );
 
-      const result = await executeTaskWithRetry(openRouter, task);
+      const benchmark = await loadBenchmark(task.promptId);
+      const record = await runner.runBenchmark(benchmark);
+      const filename = await saveRecord(record);
 
-      if (result.success) {
-        completed++;
-        progress.completed.push({ model: task.model, promptId: task.promptId });
-        console.log(`✓ Completed: ${task.promptId} with ${task.model}\n`);
-      } else {
+      if (record.error) {
         failed++;
-        progress.failed.push({
-          model: task.model,
-          promptId: task.promptId,
-          error: result.error || "Unknown error",
-        });
         console.log(
-          `✗ Failed: ${task.promptId} with ${task.model}: ${result.error}\n`,
+          `✗ ${task.promptId} → ${task.target.id}: [${record.error.kind}] ${record.error.message}`,
+        );
+      } else {
+        completed++;
+        const tokens = record.response?.usage?.totalTokens ?? "N/A";
+        console.log(
+          `✓ ${task.promptId} → ${task.target.id} (${record.response?.latencyMs}ms, ${tokens} tokens) → ${filename}`,
         );
       }
-
-      // Save progress periodically
-      if ((completed + failed) % 5 === 0) {
-        await saveProgress(progress);
-      }
-
-      return result;
     },
     {
       taskStartDelay: TASK_START_DELAY_MS,
@@ -381,22 +260,8 @@ export async function runBenchmarks(): Promise<void> {
     },
   );
 
-  await saveProgress(progress);
-
-  console.log(`\n=== Benchmark Execution Complete ===`);
-  console.log(
-    `Total completed: ${skippedTasks.length + completed}/${allTasks.length} tasks`,
-  );
-  console.log(`Successfully completed this run: ${completed} tasks`);
-  console.log(`Failed this run: ${failed} tasks`);
-
-  if (failed > 0) {
-    console.log(`\n⚠ Failed tasks can be retried by running again`);
-    console.log(`Failed tasks:`);
-    for (const f of progress.failed) {
-      console.log(`  - ${f.promptId} with ${f.model}: ${f.error}`);
-    }
-  }
-
-  console.log(`\n✅ Results saved to benchmark/artifacts/result/`);
+  console.log(`\n=== Complete ===`);
+  console.log(`Succeeded this run: ${completed}`);
+  console.log(`Failed this run: ${failed}`);
+  console.log(`\nResults saved to benchmark/artifacts/result/`);
 }
