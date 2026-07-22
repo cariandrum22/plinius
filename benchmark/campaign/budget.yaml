@@ -1,0 +1,7 @@
+# Campaign budget safeguards. Execution stops safely on exhaustion; exhaustion
+# is a control event, not a model failure. Explicit acknowledgement is required
+# when the upper-bound estimate exceeds maximum_total_usd.
+maximum_total_usd: 500
+maximum_per_target_usd: 100
+maximum_per_run_usd: 10
+stop_on_budget_exhaustion: true

@@ -1,0 +1,31 @@
+# Independent inference profiles. A model evaluated under two profiles is two
+# distinct targets sharing one logical model identity. Parameters are validated
+# against each target model's supported_parameters before sending.
+schema_version: 1
+profiles:
+  neutral-baseline:
+    temperature: 0.1
+    top_p: 0.95
+    reasoning:
+      enabled: true
+      effort: medium
+
+  high-reasoning:
+    temperature: 0.1
+    reasoning:
+      enabled: true
+      effort: high
+
+  maximum-reasoning:
+    temperature: 0.1
+    reasoning:
+      enabled: true
+      effort: xhigh
+
+  deterministic-where-supported:
+    temperature: 0
+    seed: 42
+
+  fiction-controlled:
+    temperature: 0.7
+    top_p: 0.95
