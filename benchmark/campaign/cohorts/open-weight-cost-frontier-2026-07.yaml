@@ -1,0 +1,26 @@
+# Cohort B — open-weight / cost-frontier. Identify models that approach frontier
+# quality at substantially lower cost. Human-reviewed and versioned.
+schema_version: 1
+id: open-weight-cost-frontier-2026-07
+version: 1.0.0
+description: Open-weight and cost-efficient frontier candidates for 2026-07.
+purpose: cost-frontier
+routing:
+  mode: reproducibility
+  allow_fallback: false
+require_zdr: false
+profiles:
+  - neutral-baseline
+targets:
+  - id: deepseek-v4-pro
+    model: deepseek/deepseek-v4-pro
+  - id: deepseek-v4-flash
+    model: deepseek/deepseek-v4-flash
+  - id: glm-5.2
+    model: z-ai/glm-5.2
+  - id: qwen3.7-max
+    model: qwen/qwen3.7-max
+  - id: qwen3.7-plus
+    model: qwen/qwen3.7-plus
+  - id: minimax-m3
+    model: minimax/minimax-m3
