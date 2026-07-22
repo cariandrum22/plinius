@@ -1,0 +1,30 @@
+# Cohort D — fiction specialists (exploratory). This is NOT a frontier
+# intelligence ranking. It evaluates prose quality, continuity, dark-fiction
+# handling, and unnecessary refusal / moralizing — measured EMPIRICALLY.
+#
+# Do not infer that any model is policy-free from its OpenRouter description.
+# Aion 3.0 / Aion 3.0 Mini are initial exploratory candidates when available;
+# `plinius models recommend` proposes further creative-writing candidates.
+schema_version: 1
+id: fiction-specialists-exploratory
+version: 1.0.0
+description: Exploratory creative-writing / storytelling models for 2026-07.
+purpose: fiction-exploratory
+routing:
+  mode: availability
+  allow_fallback: true
+require_zdr: false
+profiles:
+  - fiction-controlled
+targets:
+  - id: aion-3.0
+    require_human_confirmation: true
+    discovery_rule:
+      name_contains: Aion 3.0
+      choose: newest
+
+  - id: aion-3.0-mini
+    require_human_confirmation: true
+    discovery_rule:
+      name_contains: Aion 3.0 Mini
+      choose: newest
