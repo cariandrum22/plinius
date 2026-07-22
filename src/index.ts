@@ -69,3 +69,20 @@ export * from "./matrix/capability.js";
 export * from "./matrix/render.js";
 
 export * from "./models/registry.js";
+
+// --- Blind human-review system ---
+export * from "./blind/schema.js";
+export { makeRng, shuffle, sha256Hex } from "./blind/rng.js";
+export { assignBlindIds, pairwiseBlindId } from "./blind/blind-id.js";
+export * from "./blind/redact.js";
+export { filterRecords, selectRecords } from "./blind/select.js";
+export type { FilterConfig } from "./blind/select.js";
+export * from "./blind/generator.js";
+export * from "./blind/render.js";
+export { writeBlindReviewSet, reviewSetDir } from "./blind/writer.js";
+export { buildPublicArchive, listPublicArchiveFiles } from "./blind/archive.js";
+export * from "./blind/import.js";
+export * from "./blind/analysis.js";
+export { renderAnalysisReportJa } from "./blind/report.js";
+export { loadExperimentRecords, experimentRecordsDir } from "./experiment/records.js";
+export type { LoadedRunRecord } from "./experiment/records.js";
