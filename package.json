@@ -1,6 +1,6 @@
 {
 	"name": "plinius",
-	"version": "0.3.0",
+	"version": "0.4.0",
 	"description": "Plinius - Exploratory AI Project",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -10,6 +10,10 @@
 		"cli": "tsx src/cli.ts",
 		"benchmark": "tsx src/cli.ts benchmark",
 		"targets": "tsx src/cli.ts targets",
+		"suites": "tsx src/cli.ts suites",
+		"experiment": "tsx src/cli.ts experiment",
+		"matrix": "tsx src/cli.ts matrix",
+		"validate:suites": "tsx scripts/validate-suites.mts",
 		"evaluate": "tsx src/cli.ts evaluate",
 		"compare": "tsx src/cli.ts compare",
 		"dev": "tsx src/cli.ts",
@@ -24,7 +28,9 @@
 	},
 	"dependencies": {
 		"@openrouter/sdk": "^0.1.11",
-		"dotenv": "^17.2.3"
+		"dotenv": "^17.2.3",
+		"yaml": "^2.9.0",
+		"zod": "^4.4.3"
 	},
 	"devDependencies": {
 		"@types/node": "^24.10.1",

@@ -25,3 +25,47 @@ export {
 export type { BenchmarkRunnerConfig } from "./benchmark/runner.js";
 
 export { loadBenchmark, loadAllBenchmarks } from "./benchmark/loader.js";
+
+// --- Phase 1 evaluation system ---
+export * from "./suite/schema.js";
+export { canonicalHash, canonicalize, bytesHash } from "./suite/hash.js";
+export {
+  loadAllBenchmarks as loadAllSuiteBenchmarks,
+  loadBenchmarkById as loadSuiteBenchmarkById,
+  loadBenchmarkFromDir,
+  getSuitesDir,
+  suiteRelativePath,
+} from "./suite/loader.js";
+export type { LoadedBenchmark, BenchmarkFile } from "./suite/loader.js";
+
+export * from "./evaluators/sandbox.js";
+export * from "./evaluators/types.js";
+export * from "./evaluators/tools.js";
+export { runDeterministicChecks, summarizeDeterministic } from "./evaluators/registry.js";
+export type { DeterministicSummary } from "./evaluators/registry.js";
+
+export * from "./coding/extract.js";
+export * from "./coding/workspace.js";
+
+export * from "./experiment/spec.js";
+export * from "./experiment/stats.js";
+export * from "./experiment/verdict.js";
+export {
+  runExperiment,
+  runSingle,
+  composeUserPrompt,
+} from "./experiment/runner.js";
+export type {
+  RunSingleParams,
+  RunExperimentDeps,
+  ExperimentTargetContext,
+} from "./experiment/runner.js";
+
+export * from "./evaluation/judge.js";
+export * from "./evaluation/judge-apply.js";
+
+export * from "./matrix/cost.js";
+export * from "./matrix/capability.js";
+export * from "./matrix/render.js";
+
+export * from "./models/registry.js";

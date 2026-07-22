@@ -1,0 +1,25 @@
+# Baseline infrastructure-validation experiment.
+#
+# Purpose: exercise the full pipeline (generation -> extraction -> deterministic
+# evaluation -> persistence -> aggregation -> capability matrix) end to end
+# against the tiny vLLM smoke-test model. This validates plumbing ONLY and must
+# never appear in serious model rankings.
+schemaVersion: 1
+id: baseline-smoke
+description: >-
+  Pipeline validation run against the Qwen2.5-0.5B-Instruct vLLM smoke target.
+purpose: infrastructure-validation
+excludeFromRankings: true
+targets:
+  - qwen-smoke-vllm
+benchmarks: all
+promptProfile: neutral
+repetitions: 2
+seedStrategy: fixed
+baseSeed: 0
+sampling:
+  temperature: 0
+  topP: 1
+  maxTokens: 2048
+timeoutMs: 120000
+concurrency: 1

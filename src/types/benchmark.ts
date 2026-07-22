@@ -55,16 +55,53 @@ export interface BenchmarkResult {
  * identity fields to reproduce and audit a run. Markdown reports are derived
  * from this record — never the other way around.
  */
-export const BENCHMARK_RECORD_SCHEMA_VERSION = 1;
+/**
+ * Run-record schema version. Independent from the benchmark-definition,
+ * experiment, and matrix schema versions. v2 adds optional experiment,
+ * deterministic-evaluation, judge, and coding-artifact fields; all additions
+ * are backward-compatible (absent on legacy v1 records).
+ */
+export const BENCHMARK_RECORD_SCHEMA_VERSION = 2;
 
 export interface BenchmarkRunRecord {
   schemaVersion: number;
 
   benchmark: {
     id: BenchmarkId;
-    /** Content hash of the exact prompt file used. */
+    /**
+     * Canonical content hash of the reproducible input. For suite benchmarks
+     * this covers the validated definition, task text, fixtures, and reference
+     * files; for legacy prompts it is the prompt-file hash.
+     */
     contentHash: string;
     version?: string;
+    domain?: string;
+    difficulty?: string;
+    /** Prototype benchmarks are excluded from serious rankings/qualification. */
+    prototype?: boolean;
+  };
+
+  /** Experiment this run belongs to, when run under one. */
+  experimentId?: string;
+  /** 0-based repetition index; each repetition is persisted independently. */
+  repetitionIndex?: number;
+
+  /** Deterministic-evaluator results (executable + structural + rule). */
+  deterministicEvaluations?: import("../evaluators/types.js").DeterministicEvaluation[];
+  /**
+   * LLM-judge results. Stored separately from generation and deterministic
+   * evaluation so judges can be (re-)applied to already persisted runs.
+   */
+  judgeEvaluations?: import("../evaluation/judge.js").JudgeEvaluation[];
+
+  /** Extraction summary + sandbox identity for coding benchmarks. */
+  codingArtifacts?: {
+    sandboxId: string;
+    isSecuritySandbox: boolean;
+    written: string[];
+    rejected: { path: string; reason: string }[];
+    totalBytes: number;
+    truncated: boolean;
   };
 
   /** Benchmark target ID (deployment + logical model binding). */

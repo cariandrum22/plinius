@@ -19,6 +19,23 @@ any other OpenAI-compatible service (Ollama, LM Studio, ...).
 - **Canonical JSON artifacts** - Reproducible per-run records; Markdown is a
   derived view
 - **Cross-Validation** - Evaluate with multiple evaluators
+- **Phase 1 capability evaluation** - Versioned benchmark suites, an
+  authority-ordered evaluator hierarchy (executable > structural > rule >
+  judge), isolated file extraction + execution, repeated runs with aggregate
+  statistics, and a raw/derived capability matrix. See
+  [`docs/phase1-evaluation.md`](docs/phase1-evaluation.md).
+
+## Phase 1 evaluation (quick start)
+
+```bash
+# List versioned benchmark suites (benchmark/suites/)
+plinius suites
+
+# Run the infrastructure-validation baseline against the vLLM smoke target,
+# then build a capability matrix (excluded from rankings)
+plinius experiment --experiment baseline-smoke
+plinius matrix --experiment baseline-smoke
+```
 
 ## Quick Start
 

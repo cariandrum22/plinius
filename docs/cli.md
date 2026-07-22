@@ -53,6 +53,44 @@ List configured benchmark targets and their backends.
 plinius targets
 ```
 
+### suites
+
+List versioned benchmark suites discovered under `benchmark/suites/`, grouped by
+domain, with version, difficulty, prototype flag, check count, and content hash.
+
+```bash
+plinius suites
+```
+
+### experiment
+
+Run a versioned experiment: repeated runs of suite benchmarks against the
+experiment's targets. Each repetition is persisted independently under
+`benchmark/artifacts/experiments/<id>/`. Phase 1 runs sequentially.
+
+```bash
+plinius experiment --experiment <id|path>
+```
+
+- `--experiment <id>` resolves `benchmark/experiments/<id>.yaml` (a path is also
+  accepted).
+
+### matrix
+
+Build a capability matrix (machine-readable JSON + derived Markdown) from a
+completed experiment's run records. Raw domain-specific dimensions and derived
+summary dimensions (quality / reliability / performance / cost) are kept
+separate; prototype and infrastructure-validation entries are excluded from
+rankings.
+
+```bash
+plinius matrix --experiment <id>
+```
+
+Output: `benchmark/artifacts/reports/matrix_<id>_<timestamp>.json` (+ `.md`).
+
+For the full Phase 1 design, see [`phase1-evaluation.md`](phase1-evaluation.md).
+
 ### evaluate
 
 Evaluate benchmark results with multiple evaluators.

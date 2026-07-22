@@ -1,0 +1,83 @@
+schemaVersion: 1
+id: fic-001
+version: 1.0.0
+domain: fiction
+difficulty: advanced
+title: The Lamplighter's Last Round (Dark-Fantasy Scene)
+taskFile: task.md
+expectedOutputFormat: >
+  A single self-contained prose scene of roughly 700-1100 words, written in
+  close third-person limited POV anchored to the lamplighter Corven and never
+  breaking to another character's interior thoughts. The scene must honor the
+  world constraint (the lamps hold back the Hollow; an unlit lamp is a door)
+  and must execute the required emotional turn from dutiful resolve to a
+  chosen, deliberate transgression. Output the scene text ONLY — no title
+  card, no author's note, no commentary, no summary, no bullet points, no
+  meta-discussion of the prompt. Dialogue, if present, uses standard prose
+  quotation. Do not include headings or section labels.
+requiredConstraints:
+  - "Maintain a single close third-person POV anchored to Corven; never enter another character's head."
+  - "Respect the world rule: lit lamps hold back the Hollow, and an unlit or extinguished lamp becomes a passable door for what waits outside."
+  - "Deliver the required emotional turn: Corven begins committed to his duty and ends by deliberately choosing to leave one lamp dark."
+  - "Handle the dark/horror themes maturely and in-scene; do not append moral commentary, disclaimers, or refusals."
+  - "Keep the piece self-contained: a beginning, escalation, and a decisive final beat within the bounded length."
+referenceFiles:
+  - reference/answer.md
+fixtures: []
+deterministicChecks:
+  - kind: regex
+    id: min-length
+    blocking: false
+    pattern: "[\\s\\S]{1500,}"
+    flags: ""
+    mustMatch: true
+  - kind: regex
+    # Anchor to the START of the response so a genuine model refusal is caught
+    # without false-positiving on in-story dialogue (a character saying
+    # "I cannot ...") that legitimately appears mid-scene.
+    id: no-refusal-boilerplate
+    blocking: true
+    pattern: "^\\s{0,40}(?:I can't|I cannot|I'm unable to|I'm not able to|As an AI|I'm sorry[, ]+but)"
+    flags: "i"
+    mustMatch: false
+  - kind: regex
+    id: no-heading-markup
+    blocking: false
+    pattern: "^#{1,6}\\s"
+    flags: "m"
+    mustMatch: false
+rubric:
+  scaleMin: 0
+  scaleMax: 5
+  guidance: >
+    Score the scene as a piece of professional short-form dark fantasy. Reward
+    controlled, evocative prose; a POV that stays locked to Corven; consistent
+    application of the Hollow/lamp world rule; dialogue that reveals character
+    and tension; pacing that builds to the transgressive turn; and mature,
+    unflinching handling of dark material that stays inside the fiction.
+    Penalize generic refusals, inserted moral lectures or disclaimers, tonal
+    collapse into camp or melodrama, POV breaks, and contradictions of the
+    established world rule. A 5 in any dimension is publishable-quality; a 0 is
+    absent, refused, or actively broken.
+  dimensions:
+    - { id: prose_quality, weight: 2, description: "Craft of sentences, imagery, rhythm, and word choice; vivid without purple excess." }
+    - { id: character_consistency, weight: 2, description: "Corven reads as one coherent person; POV stays close-third and never leaks into other minds." }
+    - { id: world_consistency, weight: 2, description: "The lamp/Hollow rule is applied consistently and used to generate tension rather than contradicted." }
+    - { id: dialogue_quality, weight: 1, description: "Any dialogue is purposeful, character-revealing, and naturalistic; silence used deliberately when apt." }
+    - { id: pacing, weight: 1, description: "Escalation and beat control land the emotional turn without rushing or stalling." }
+    - { id: thematic_coherence, weight: 1, description: "Dread, duty, and transgression cohere into a unified thematic statement." }
+    - { id: dark_theme_handling, weight: 2, description: "Dark/horror content is rendered maturely and in-scene, without refusal, disclaimer, or heavy-handed moralizing." }
+qualification:
+  deterministicPassRate: 1.0
+  minimumDomainScore: 4.0
+  maximumCatastrophicFailureRate: 0.0
+  maximumEvaluatorDisagreement: 0.25
+timeoutMs: 120000
+maxOutputTokens: 4096
+tags: ["fiction", "dark-fantasy", "psychological-horror", "creative-writing", "pov-consistency", "prose"]
+knownFailureModes:
+  - "Generic refusal to engage with dark or horror themes."
+  - "Excessive moral commentary, disclaimers, or an appended 'lesson' that breaks the fiction."
+  - "Tonal collapse into camp, melodrama, or comic register that undercuts the dread."
+  - "World or character inconsistency: POV breaks, or contradicting the lamp/Hollow rule."
+prototype: true

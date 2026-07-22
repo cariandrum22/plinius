@@ -1,0 +1,75 @@
+schemaVersion: 1
+id: writing-001
+version: 1.0.0
+domain: writing
+difficulty: advanced
+title: "Technical Explainer: Why Unbounded Queues Cause Tail-Latency Collapse"
+taskFile: task.md
+expectedOutputFormat: >
+  A single Markdown document of at most 700 words, written for an expert
+  distributed-systems audience. It MUST contain exactly these four level-2
+  headings, in this order: "## Facts", "## Assumptions", "## Hypotheses",
+  "## Trade-offs". Each claim of empirical or mathematical fact belongs under
+  Facts; each unverified premise about the system or workload belongs under
+  Assumptions; each falsifiable causal conjecture belongs under Hypotheses.
+  The Trade-offs section must weigh at least two competing mitigation strategies
+  (e.g. bounded queues with load-shedding vs. admission control) against each
+  other, naming what each sacrifices. Use precise queueing-theory terminology
+  (utilization rho, arrival rate lambda, service rate mu, Little's Law) where
+  relevant. Prose only under each heading; no code blocks required. Do not use
+  promotional or marketing language.
+requiredConstraints:
+  - "Output is a single Markdown document of at most 700 words."
+  - "Contains level-2 headings Facts, Assumptions, Hypotheses, and Trade-offs, in that order."
+  - "Every asserted fact is placed under Facts and is not conflated with conjecture."
+  - "Falsifiable causal claims appear only under Hypotheses."
+  - "Trade-offs contrasts at least two mitigation strategies and states what each sacrifices."
+  - "No promotional or marketing filler language."
+referenceFiles:
+  - reference/answer.md
+fixtures: []
+deterministicChecks:
+  - kind: required_sections
+    id: sections
+    description: "Facts / Assumptions / Hypotheses / Trade-offs must all be present as sections."
+    blocking: true
+    sections: ["Facts", "Assumptions", "Hypotheses", "Trade-offs"]
+  - kind: regex
+    id: no-marketing-filler
+    description: "Reject marketing filler language unsuited to a technical explainer."
+    blocking: true
+    pattern: "cutting-edge|game-?changer|revolutionary"
+    flags: "i"
+    mustMatch: false
+rubric:
+  scaleMin: 0
+  scaleMax: 5
+  guidance: >
+    Score an expert-level technical explainer. Reward correct queueing-theory
+    reasoning, clean epistemic separation between established fact, stated
+    assumption, and falsifiable hypothesis, and a trade-off discussion that
+    names concrete costs. Penalize vagueness, hand-waving, conflation of
+    conjecture with fact, incorrect use of terminology, and padding. Concision
+    is a virtue: a shorter answer that is precise beats a longer one that repeats
+    itself.
+  dimensions:
+    - { id: precision, weight: 2, description: "Claims are specific, quantitative where appropriate, and free of hand-waving." }
+    - { id: logical_structure, weight: 2, description: "Argument flows coherently; cause precedes effect; sections are internally consistent." }
+    - { id: terminology_correctness, weight: 2, description: "Queueing-theory terms (rho, lambda, mu, Little's Law, tail latency) are used correctly." }
+    - { id: fact_assumption_separation, weight: 3, description: "Facts, assumptions, and hypotheses are cleanly separated with no epistemic conflation." }
+    - { id: concision, weight: 1, description: "Dense and non-repetitive; respects the word budget without padding." }
+qualification:
+  deterministicPassRate: 1.0
+  minimumDomainScore: 4.0
+  maximumCatastrophicFailureRate: 0.0
+  maximumEvaluatorDisagreement: 0.25
+timeoutMs: 120000
+maxOutputTokens: 4096
+tags: ["writing", "technical-explainer", "distributed-systems", "queueing-theory", "epistemics"]
+knownFailureModes:
+  - "Conflates hypotheses with facts, stating causal conjecture as established truth."
+  - "Omits or reorders the four required sections."
+  - "Misuses queueing terminology (e.g. equates utilization with throughput)."
+  - "Presents a single mitigation instead of contrasting trade-offs."
+  - "Exceeds the word budget with repetition or marketing filler."
+prototype: true
