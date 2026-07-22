@@ -11,8 +11,14 @@ import { runTargets } from "./commands/targets.js";
 import { runSuites } from "./commands/suites.js";
 import { runExperimentCommand } from "./commands/experiment.js";
 import { runMatrixCommand } from "./commands/matrix.js";
+import { runBlindCreate, runBlindInspect, runBlindValidate } from "./commands/blind.js";
+import {
+  runHumanReviewImport,
+  runHumanReviewReport,
+  runHumanReviewUnblind,
+} from "./commands/human-review.js";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 
 const HELP = `
 Plinius - Backend-independent AI Model Benchmark & Evaluation System
@@ -26,6 +32,8 @@ Commands:
   suites       List versioned benchmark suites (benchmark/suites/)
   experiment   Run a versioned experiment (repeated suite runs)
   matrix       Build a capability matrix from experiment records
+  blind        Blind human-review packets (create | inspect | validate)
+  human-review Human reviews (import | report | unblind)
   evaluate     Evaluate benchmark results with multiple evaluators
   compare      Compare evaluations across evaluators
   clean        Remove benchmark artifacts
@@ -37,6 +45,14 @@ Benchmark options:
 
 Experiment / matrix options:
   --experiment <id|path>   Experiment id (benchmark/experiments/<id>.yaml) or path
+
+Blind review:
+  blind create --experiment <id> --config <file>
+  blind inspect --review-set <id>
+  blind validate --review-set <id>
+  human-review import --review-set <id> --input <path> [--update]
+  human-review report --review-set <id> [--unblind]
+  human-review unblind --review-set <id>
 
 Global options:
   -h, --help     Show this help message
@@ -110,6 +126,54 @@ async function main(): Promise<void> {
           process.exit(1);
         }
         await runMatrixCommand({ experiment });
+        break;
+      }
+
+      case "blind": {
+        const sub = args[1];
+        if (sub === "create") {
+          const experiment = getOption(args, "--experiment");
+          const config = getOption(args, "--config");
+          if (!experiment || !config) {
+            console.error("blind create requires --experiment <id> --config <file>");
+            process.exit(1);
+          }
+          await runBlindCreate({ experiment, config });
+        } else if (sub === "inspect") {
+          const id = getOption(args, "--review-set");
+          if (!id) { console.error("blind inspect requires --review-set <id>"); process.exit(1); }
+          await runBlindInspect(id);
+        } else if (sub === "validate") {
+          const id = getOption(args, "--review-set");
+          if (!id) { console.error("blind validate requires --review-set <id>"); process.exit(1); }
+          await runBlindValidate(id);
+        } else {
+          console.error(`Unknown 'blind' subcommand: ${sub ?? "(none)"}. Use create | inspect | validate.`);
+          process.exit(1);
+        }
+        break;
+      }
+
+      case "human-review": {
+        const sub = args[1];
+        const reviewSet = getOption(args, "--review-set");
+        if (sub === "import") {
+          const input = getOption(args, "--input");
+          if (!reviewSet || !input) {
+            console.error("human-review import requires --review-set <id> --input <path>");
+            process.exit(1);
+          }
+          await runHumanReviewImport({ reviewSet, input, update: args.includes("--update") });
+        } else if (sub === "report") {
+          if (!reviewSet) { console.error("human-review report requires --review-set <id>"); process.exit(1); }
+          await runHumanReviewReport({ reviewSet, unblind: args.includes("--unblind") });
+        } else if (sub === "unblind") {
+          if (!reviewSet) { console.error("human-review unblind requires --review-set <id>"); process.exit(1); }
+          await runHumanReviewUnblind(reviewSet);
+        } else {
+          console.error(`Unknown 'human-review' subcommand: ${sub ?? "(none)"}. Use import | report | unblind.`);
+          process.exit(1);
+        }
         break;
       }
 
