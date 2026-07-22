@@ -24,8 +24,11 @@ import {
   runModelsDiff,
   runModelsRecommend,
 } from "./commands/models.js";
+import { runReproduce } from "./commands/reproduce.js";
+import { runAudit } from "./commands/audit.js";
+import { PLINIUS_VERSION } from "./version.js";
 
-const VERSION = "0.6.0";
+const VERSION = PLINIUS_VERSION;
 
 const HELP = `
 Plinius - Backend-independent AI Model Benchmark & Evaluation System
@@ -40,6 +43,8 @@ Commands:
   experiment   Run a versioned experiment (repeated suite runs)
   matrix       Build a capability matrix from experiment records
   models       OpenRouter catalog (sync | list | inspect | diff | recommend)
+  reproduce    Judge reproducibility of an evaluation manifest
+  audit        Audit an evaluation manifest for completeness
   blind        Blind human-review packets (create | inspect | validate)
   human-review Human reviews (import | report | unblind)
   evaluate     Evaluate benchmark results with multiple evaluators
@@ -175,6 +180,20 @@ async function main(): Promise<void> {
           console.error(`Unknown 'models' subcommand: ${sub ?? "(none)"}. Use sync | list | inspect | diff | recommend.`);
           process.exit(1);
         }
+        break;
+      }
+
+      case "reproduce": {
+        const manifest = getOption(args, "--manifest");
+        if (!manifest) { console.error("reproduce requires --manifest <path>"); process.exit(1); }
+        await runReproduce({ manifest, catalog: getOption(args, "--catalog"), prompt: getOption(args, "--prompt") });
+        break;
+      }
+
+      case "audit": {
+        const manifest = getOption(args, "--manifest");
+        if (!manifest) { console.error("audit requires --manifest <path>"); process.exit(1); }
+        await runAudit({ manifest, prompt: getOption(args, "--prompt") });
         break;
       }
 
