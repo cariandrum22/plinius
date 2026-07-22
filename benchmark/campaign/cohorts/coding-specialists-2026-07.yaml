@@ -1,0 +1,41 @@
+# Cohort C — coding specialists. Dynamic discovery rules produce a PROPOSED
+# cohort update (see `plinius models recommend`); they never silently replace a
+# pinned model. Discovery targets require explicit human confirmation.
+schema_version: 1
+id: coding-specialists-2026-07
+version: 1.0.0
+description: Coding-specialist models and discovery proposals for 2026-07.
+purpose: coding-specialists
+routing:
+  mode: reproducibility
+  allow_fallback: false
+require_zdr: false
+profiles:
+  - neutral-baseline
+  - high-reasoning
+targets:
+  - id: kimi-k3-coding
+    model: moonshotai/kimi-k3
+
+  - id: kimi-k2.7-code
+    model: moonshotai/kimi-k2.7-code
+
+  - id: gpt-codex-current
+    require_human_confirmation: true
+    discovery_rule:
+      author: openai
+      name_contains: Codex
+      choose: newest
+
+  - id: gemini-3.1-pro-custom-tools
+    require_human_confirmation: true
+    discovery_rule:
+      author: google
+      name_contains: Gemini 3.1 Pro Preview Custom Tools
+      choose: newest
+
+  - id: qwen3.7-max-coding
+    model: qwen/qwen3.7-max
+
+  - id: glm-5.2-coding
+    model: z-ai/glm-5.2

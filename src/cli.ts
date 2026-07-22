@@ -17,8 +17,15 @@ import {
   runHumanReviewReport,
   runHumanReviewUnblind,
 } from "./commands/human-review.js";
+import {
+  runModelsSync,
+  runModelsList,
+  runModelsInspect,
+  runModelsDiff,
+  runModelsRecommend,
+} from "./commands/models.js";
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 
 const HELP = `
 Plinius - Backend-independent AI Model Benchmark & Evaluation System
@@ -32,6 +39,7 @@ Commands:
   suites       List versioned benchmark suites (benchmark/suites/)
   experiment   Run a versioned experiment (repeated suite runs)
   matrix       Build a capability matrix from experiment records
+  models       OpenRouter catalog (sync | list | inspect | diff | recommend)
   blind        Blind human-review packets (create | inspect | validate)
   human-review Human reviews (import | report | unblind)
   evaluate     Evaluate benchmark results with multiple evaluators
@@ -76,6 +84,12 @@ function getOption(args: string[], name: string): string | undefined {
     return args[index + 1];
   }
   return undefined;
+}
+
+/** Extract a numeric `--flag value` option. */
+function numOpt(args: string[], name: string): number | undefined {
+  const v = getOption(args, name);
+  return v === undefined ? undefined : Number(v);
 }
 
 async function main(): Promise<void> {
@@ -126,6 +140,41 @@ async function main(): Promise<void> {
           process.exit(1);
         }
         await runMatrixCommand({ experiment });
+        break;
+      }
+
+      case "models": {
+        const sub = args[1];
+        if (sub === "sync") {
+          await runModelsSync({ fixture: getOption(args, "--fixture") });
+        } else if (sub === "list") {
+          const params = getOption(args, "--required-parameters");
+          await runModelsList({
+            sort: getOption(args, "--sort") as never,
+            author: getOption(args, "--author"),
+            minContextLength: numOpt(args, "--min-context"),
+            maxPromptPrice: numOpt(args, "--max-price"),
+            requiredParameters: params ? params.split(",") : undefined,
+            inputModality: getOption(args, "--input-modality"),
+            outputModality: getOption(args, "--output-modality"),
+            requireZdr: args.includes("--zdr"),
+            limit: numOpt(args, "--limit"),
+          });
+        } else if (sub === "inspect") {
+          const slug = args[2];
+          if (!slug) { console.error("models inspect requires <slug>"); process.exit(1); }
+          await runModelsInspect(slug);
+        } else if (sub === "diff") {
+          const a = args[2];
+          const b = args[3];
+          if (!a || !b) { console.error("models diff requires <snapshot-a> <snapshot-b>"); process.exit(1); }
+          await runModelsDiff(a, b);
+        } else if (sub === "recommend") {
+          await runModelsRecommend();
+        } else {
+          console.error(`Unknown 'models' subcommand: ${sub ?? "(none)"}. Use sync | list | inspect | diff | recommend.`);
+          process.exit(1);
+        }
         break;
       }
 

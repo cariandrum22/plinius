@@ -91,6 +91,24 @@ Output: `benchmark/artifacts/reports/matrix_<id>_<timestamp>.json` (+ `.md`).
 
 For the full Phase 1 design, see [`phase1-evaluation.md`](phase1-evaluation.md).
 
+### models
+
+OpenRouter catalog synchronization and discovery. Sync writes immutable,
+content-addressed snapshots and never modifies experiment or cohort definitions.
+
+```bash
+plinius models sync --backend openrouter        # OPENROUTER_API_KEY optional
+plinius models sync --fixture <path>            # offline snapshot from a raw file
+plinius models list --sort intelligence-high-to-low --min-context 131072 --zdr
+plinius models inspect moonshotai/kimi-k3
+plinius models diff <snapshot-a.json> <snapshot-b.json>
+plinius models recommend                        # human-reviewable proposal only
+```
+
+Snapshots and recommendations are written under `benchmark/artifacts/catalog/`.
+Cohorts, profiles, and budgets live in `benchmark/campaign/`. See the Japanese
+guide [`online-campaign.ja.md`](online-campaign.ja.md).
+
 ### blind / human-review
 
 Generate and manage blind human-review packets. Public commands never reveal

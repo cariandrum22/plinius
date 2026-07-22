@@ -37,6 +37,24 @@ plinius experiment --experiment baseline-smoke
 plinius matrix --experiment baseline-smoke
 ```
 
+## OpenRouter frontier catalog & online campaign
+
+Discover and evaluate current online frontier models through OpenRouter
+alongside local vLLM targets. Catalog snapshots are immutable and
+content-addressed; mutable aliases resolve to canonical slugs before execution;
+cohorts, inference profiles, provider-routing, cost, and budgets are explicit.
+See [`docs/online-campaign.ja.md`](docs/online-campaign.ja.md).
+
+```bash
+plinius models sync --fixture test/fixtures/openrouter-models.json   # or --backend openrouter
+plinius models list --sort intelligence-high-to-low
+plinius models recommend            # proposal only; cohorts are never auto-changed
+```
+
+Cohorts (`benchmark/campaign/cohorts/`): frontier-ceiling, open-weight-cost-frontier,
+coding-specialists, fiction-specialists. Profiles and budgets in
+`benchmark/campaign/`.
+
 ## Blind human review (Japanese)
 
 Generate reproducible, identity-blinded Japanese review packets from experiment

@@ -86,3 +86,22 @@ export * from "./blind/analysis.js";
 export { renderAnalysisReportJa } from "./blind/report.js";
 export { loadExperimentRecords, experimentRecordsDir } from "./experiment/records.js";
 export type { LoadedRunRecord } from "./experiment/records.js";
+
+// --- OpenRouter catalog + online campaign ---
+export * from "./catalog/schema.js";
+export { OpenRouterCatalogClient } from "./catalog/client.js";
+export * from "./catalog/snapshot.js";
+export * from "./catalog/filter.js";
+export * from "./catalog/diff.js";
+export * from "./catalog/resolve.js";
+export * from "./campaign/profiles.js";
+export * from "./campaign/cohort.js";
+export * from "./campaign/param-validation.js";
+export * from "./campaign/reasoning.js";
+export * from "./campaign/routing.js";
+export * from "./campaign/cost.js";
+export * from "./campaign/budget.js";
+export * from "./campaign/discovery.js";
+export * from "./campaign/plan.js";
+export * from "./campaign/data-retention.js";
+export * from "./campaign/lifecycle.js";
