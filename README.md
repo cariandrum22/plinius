@@ -37,6 +37,21 @@ plinius experiment --experiment baseline-smoke
 plinius matrix --experiment baseline-smoke
 ```
 
+## Execution backends
+
+Evaluations run through an **Execution Backend** abstraction, so the same
+campaign targets OpenRouter or a local vLLM server (and, in future, other
+services) without leaking backend-specific concepts into the CLI. Capabilities
+record facts only (`supported` / `unsupported` / `unknown` — never guessed);
+vendor specifics live in an opaque `backendMetadata` field. See
+[`docs/backend.md`](docs/backend.md).
+
+```bash
+plinius backend list
+plinius backend info vllm
+plinius backend health            # or: plinius backend health openrouter
+```
+
 ## OpenRouter frontier catalog & online campaign
 
 Discover and evaluate current online frontier models through OpenRouter

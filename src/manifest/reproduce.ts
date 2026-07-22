@@ -21,6 +21,8 @@ export interface CurrentState {
   environment?: EvaluationEnvironment;
   catalogSnapshotId?: string;
   promptSnapshotId?: string;
+  /** Current execution backend. */
+  backend?: string;
   /** Current lifecycle per targetId. */
   lifecycle?: Record<string, ModelLifecycle>;
   /** Current provider per targetId. */
@@ -33,6 +35,7 @@ export interface ReproducibilityResult {
   verdict: Reproducibility;
   catalogMatch: boolean | null;
   promptMatch: boolean | null;
+  backendMatch: boolean | null;
   environmentDiffs: EnvironmentDiff[];
   criticalEnvDiff: boolean;
   lifecycleDiffs: Array<{ targetId: string; from: ModelLifecycle; to: ModelLifecycle }>;
@@ -46,8 +49,11 @@ export function compareManifest(manifest: EvaluationManifest, current: CurrentSt
 
   const catalogMatch = current.catalogSnapshotId === undefined ? null : current.catalogSnapshotId === manifest.catalogSnapshotId;
   const promptMatch = current.promptSnapshotId === undefined ? null : current.promptSnapshotId === manifest.promptSnapshotId;
+  const backendMatch =
+    current.backend === undefined || !manifest.backend ? null : current.backend === manifest.backend;
   if (catalogMatch === false) reasons.push("catalog snapshot changed");
   if (promptMatch === false) reasons.push("prompt snapshot changed");
+  if (backendMatch === false) reasons.push(`execution backend changed (${manifest.backend} → ${current.backend})`);
 
   const environmentDiffs = current.environment
     ? diffEnvironment(manifest.environment, current.environment)
@@ -90,6 +96,7 @@ export function compareManifest(manifest: EvaluationManifest, current: CurrentSt
     const fullyVerified =
       catalogMatch === true &&
       promptMatch === true &&
+      backendMatch !== false &&
       environmentDiffs.length === 0 &&
       lifecycleDiffs.length === 0 &&
       aliasDiffs.length === 0 &&
@@ -102,6 +109,7 @@ export function compareManifest(manifest: EvaluationManifest, current: CurrentSt
     verdict,
     catalogMatch,
     promptMatch,
+    backendMatch,
     environmentDiffs,
     criticalEnvDiff,
     lifecycleDiffs,

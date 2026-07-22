@@ -26,6 +26,7 @@ import {
 } from "./commands/models.js";
 import { runReproduce } from "./commands/reproduce.js";
 import { runAudit } from "./commands/audit.js";
+import { runBackendList, runBackendInfo, runBackendHealth } from "./commands/backend.js";
 import { PLINIUS_VERSION } from "./version.js";
 
 const VERSION = PLINIUS_VERSION;
@@ -42,6 +43,7 @@ Commands:
   suites       List versioned benchmark suites (benchmark/suites/)
   experiment   Run a versioned experiment (repeated suite runs)
   matrix       Build a capability matrix from experiment records
+  backend      Execution backends (list | info | health)
   models       OpenRouter catalog (sync | list | inspect | diff | recommend)
   reproduce    Judge reproducibility of an evaluation manifest
   audit        Audit an evaluation manifest for completeness
@@ -183,10 +185,27 @@ async function main(): Promise<void> {
         break;
       }
 
+      case "backend": {
+        const sub = args[1];
+        const backendName = args[2] && !args[2].startsWith("--") ? args[2] : getOption(args, "--backend");
+        if (sub === "list") {
+          await runBackendList();
+        } else if (sub === "info") {
+          if (!backendName) { console.error("backend info requires a backend name (openrouter | vllm)"); process.exit(1); }
+          await runBackendInfo(backendName);
+        } else if (sub === "health") {
+          await runBackendHealth(backendName);
+        } else {
+          console.error(`Unknown 'backend' subcommand: ${sub ?? "(none)"}. Use list | info | health.`);
+          process.exit(1);
+        }
+        break;
+      }
+
       case "reproduce": {
         const manifest = getOption(args, "--manifest");
         if (!manifest) { console.error("reproduce requires --manifest <path>"); process.exit(1); }
-        await runReproduce({ manifest, catalog: getOption(args, "--catalog"), prompt: getOption(args, "--prompt") });
+        await runReproduce({ manifest, catalog: getOption(args, "--catalog"), prompt: getOption(args, "--prompt"), backend: getOption(args, "--backend") });
         break;
       }
 

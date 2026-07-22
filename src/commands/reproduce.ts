@@ -13,11 +13,13 @@ export interface ReproduceOptions {
   manifest: string;
   catalog?: string;
   prompt?: string;
+  backend?: string;
 }
 
 export async function runReproduce(options: ReproduceOptions): Promise<void> {
   const manifest = validateManifest(JSON.parse(await readFile(options.manifest, "utf-8")));
   const current: CurrentState = { environment: captureEnvironment() };
+  if (options.backend) current.backend = options.backend;
 
   if (options.catalog) {
     const snapshot = await loadSnapshot(options.catalog);
@@ -45,6 +47,7 @@ export async function runReproduce(options: ReproduceOptions): Promise<void> {
   console.log(`Verdict: ${result.verdict}`);
   console.log(`Catalog match:     ${result.catalogMatch === null ? "not checked" : result.catalogMatch}`);
   console.log(`Prompt match:      ${result.promptMatch === null ? "not checked" : result.promptMatch}`);
+  console.log(`Backend match:     ${result.backendMatch === null ? "not checked" : result.backendMatch}`);
   console.log(`Environment diffs: ${result.environmentDiffs.length}${result.criticalEnvDiff ? " (CRITICAL)" : ""}`);
   for (const d of result.environmentDiffs) console.log(`  ~ ${d.field}: ${d.from} → ${d.to}`);
   console.log(`Lifecycle diffs:   ${result.lifecycleDiffs.length}`);
