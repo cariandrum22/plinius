@@ -105,3 +105,14 @@ export * from "./campaign/discovery.js";
 export * from "./campaign/plan.js";
 export * from "./campaign/data-retention.js";
 export * from "./campaign/lifecycle.js";
+
+// --- Reproducibility & provenance hardening ---
+export * from "./version.js";
+export * from "./provenance/schema.js";
+export * from "./provenance/generation.js";
+export * from "./prompt/fingerprint.js";
+export * from "./prompt/snapshot.js";
+export * from "./environment/environment.js";
+export * from "./manifest/manifest.js";
+export * from "./manifest/reproduce.js";
+export * from "./manifest/audit.js";

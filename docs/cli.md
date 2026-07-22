@@ -109,6 +109,19 @@ Snapshots and recommendations are written under `benchmark/artifacts/catalog/`.
 Cohorts, profiles, and budgets live in `benchmark/campaign/`. See the Japanese
 guide [`online-campaign.ja.md`](online-campaign.ja.md).
 
+### reproduce / audit
+
+Reproducibility and provenance tooling over an evaluation manifest. See
+[`reproducibility.md`](reproducibility.md).
+
+```bash
+plinius reproduce --manifest <manifest.json> [--catalog <snapshot.json>] [--prompt <prompt.json>]
+plinius audit --manifest <manifest.json> [--prompt <prompt.json>]
+```
+
+`reproduce` verdicts: REPRODUCIBLE / PARTIALLY_REPRODUCIBLE / NOT_REPRODUCIBLE.
+`audit` classifies each check OK / WARNING / ERROR.
+
 ### blind / human-review
 
 Generate and manage blind human-review packets. Public commands never reveal
