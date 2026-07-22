@@ -1,0 +1,43 @@
+# Baseline blind-review configuration.
+#
+# Since the six current benchmarks are PROTOTYPES, the resulting review set is a
+# rubric/benchmark calibration set and must NOT be used for model qualification.
+# It generates Japanese reviewer materials, exposes no automated evaluator
+# scores and no model/runtime metadata, uses a fixed explicit seed, and includes
+# all repetitions.
+schemaVersion: 1
+locale: ja
+purpose: rubric-and-benchmark-calibration
+excludeFromModelQualification: true
+
+# Explicit, fixed blinding seed → reproducible packets.
+seed: "plinius-calibration-2026-v1"
+
+selection:
+  # All responses included initially (no score-based selection — that would leak
+  # evaluator bias into the human-calibration set).
+  mode: all
+
+randomization:
+  shuffleResponses: true
+  shuffleBenchmarkOrder: false
+  pairwise: false
+  storeFullSeedInPrivate: true
+
+filter:
+  includePrototypes: true          # the six benchmarks are prototypes
+  includeInfraValidation: true
+  # Intended candidate targets (records are used if present):
+  # targets: [deepseek-r1-distill-qwen-7b, qwen-coder, llama]
+
+rendering:
+  locale: ja
+  include_reference_translation: false   # no automatic translation
+
+redaction:
+  policy: flag                     # flag likely identity leakage; do not rewrite
+  extraDenylist: []
+
+pairwise:
+  enabled: false
+  avoidSameModel: true

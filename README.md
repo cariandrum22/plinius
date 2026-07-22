@@ -37,6 +37,21 @@ plinius experiment --experiment baseline-smoke
 plinius matrix --experiment baseline-smoke
 ```
 
+## Blind human review (Japanese)
+
+Generate reproducible, identity-blinded Japanese review packets from experiment
+run records, import human scores, and compare them with automated evaluation.
+Model identities are removed from the reviewer packet and kept in a separate
+private mapping; unblinding is an explicit operation. See
+[`docs/blind-review.ja.md`](docs/blind-review.ja.md).
+
+```bash
+plinius blind create --experiment <id> --config benchmark/blind-review/baseline-calibration.yaml
+plinius human-review import --review-set <id> --input reviews.json
+plinius human-review report --review-set <id>            # blind IDs only
+plinius human-review unblind --review-set <id>           # explicit
+```
+
 ## Quick Start
 
 ```bash

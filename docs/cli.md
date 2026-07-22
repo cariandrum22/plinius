@@ -91,6 +91,25 @@ Output: `benchmark/artifacts/reports/matrix_<id>_<timestamp>.json` (+ `.md`).
 
 For the full Phase 1 design, see [`phase1-evaluation.md`](phase1-evaluation.md).
 
+### blind / human-review
+
+Generate and manage blind human-review packets. Public commands never reveal
+model identities; joining reviews to identities requires an explicit `unblind`.
+
+```bash
+plinius blind create --experiment <id> --config benchmark/blind-review/baseline-calibration.yaml
+plinius blind inspect --review-set <id>
+plinius blind validate --review-set <id>            # scans public artifacts for leakage
+plinius human-review import --review-set <id> --input reviews.json [--update]
+plinius human-review report --review-set <id>       # blind (blind IDs only)
+plinius human-review report --review-set <id> --unblind
+plinius human-review unblind --review-set <id>      # explicit; output is PRIVATE
+```
+
+Output lives under `benchmark/artifacts/blind-review/<id>/` with separate
+`public/` (shareable) and `private/` (mapping + manifest) subtrees. See the
+Japanese guide [`blind-review.ja.md`](blind-review.ja.md).
+
 ### evaluate
 
 Evaluate benchmark results with multiple evaluators.
