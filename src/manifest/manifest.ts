@@ -12,6 +12,7 @@ import { EvaluationEnvironment } from "../environment/environment.js";
 import { GenerationProvenance, ProvenanceStatus } from "../provenance/schema.js";
 import { ModelLifecycle } from "../campaign/lifecycle.js";
 import { Budget } from "../campaign/budget.js";
+import { BackendCapabilities } from "../backend/capabilities.js";
 
 export const MANIFEST_SCHEMA_VERSION = 1;
 
@@ -35,6 +36,12 @@ export interface EvaluationManifest {
   budget: Budget | null;
   timestamp: string;
   generationProvenance: GenerationProvenance[];
+
+  /** Execution backend that produced the run (optional for backward compat). */
+  backend?: string | null;
+  backendVersion?: string | null;
+  backendCapabilities?: BackendCapabilities | null;
+  backendHealth?: { healthy: boolean; checkedAt: string } | null;
 }
 
 export interface BuildManifestInput {
@@ -48,6 +55,10 @@ export interface BuildManifestInput {
   budget?: Budget | null;
   timestamp: string;
   generationProvenance?: GenerationProvenance[];
+  backend?: string | null;
+  backendVersion?: string | null;
+  backendCapabilities?: BackendCapabilities | null;
+  backendHealth?: { healthy: boolean; checkedAt: string } | null;
 }
 
 export function buildManifest(input: BuildManifestInput): EvaluationManifest {
@@ -63,6 +74,10 @@ export function buildManifest(input: BuildManifestInput): EvaluationManifest {
     budget: input.budget ?? null,
     timestamp: input.timestamp,
     generationProvenance: input.generationProvenance ?? [],
+    backend: input.backend ?? null,
+    backendVersion: input.backendVersion ?? null,
+    backendCapabilities: input.backendCapabilities ?? null,
+    backendHealth: input.backendHealth ?? null,
   };
 }
 
@@ -95,6 +110,10 @@ export const ManifestSchema = z
     budget: z.unknown().nullable().default(null),
     timestamp: z.string(),
     generationProvenance: z.array(z.record(z.string(), z.unknown())).default([]),
+    backend: z.string().nullable().default(null),
+    backendVersion: z.string().nullable().default(null),
+    backendCapabilities: z.unknown().nullable().default(null),
+    backendHealth: z.unknown().nullable().default(null),
   })
   .loose();
 

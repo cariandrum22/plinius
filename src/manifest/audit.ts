@@ -76,6 +76,26 @@ export function auditManifest(manifest: EvaluationManifest, options: AuditOption
     items.push({ check: "Fingerprint Match", level: "WARNING", detail: "no prompt snapshot supplied to verify" });
   }
 
+  // Backend presence + health.
+  items.push(
+    manifest.backend
+      ? { check: "Backend Present", level: "OK", detail: `${manifest.backend}${manifest.backendVersion ? ` v${manifest.backendVersion}` : ""}` }
+      : { check: "Backend Present", level: "WARNING", detail: "no backend recorded (legacy manifest)" },
+  );
+  if (manifest.backend) {
+    const health = manifest.backendHealth;
+    items.push(
+      health
+        ? { check: "Backend Healthy", level: health.healthy ? "OK" : "WARNING", detail: health.healthy ? `checked ${health.checkedAt}` : "backend reported unhealthy" }
+        : { check: "Backend Healthy", level: "WARNING", detail: "no health record" },
+    );
+    items.push(
+      manifest.backendCapabilities
+        ? { check: "Capabilities Recorded", level: "OK", detail: "present" }
+        : { check: "Capabilities Recorded", level: "WARNING", detail: "no capabilities recorded" },
+    );
+  }
+
   // Runtime metrics: at least one provenance entry carries latency.
   const hasRuntime = manifest.generationProvenance.some((p) => p.latencyMs !== null);
   items.push(

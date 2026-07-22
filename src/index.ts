@@ -116,3 +116,13 @@ export * from "./environment/environment.js";
 export * from "./manifest/manifest.js";
 export * from "./manifest/reproduce.js";
 export * from "./manifest/audit.js";
+
+// --- Execution Backend abstraction ---
+export * from "./backend/capabilities.js";
+export * from "./backend/errors.js";
+export * from "./backend/types.js";
+export type { ExecutionBackend } from "./backend/interface.js";
+export * from "./backend/registry.js";
+export { createDefaultRegistry } from "./backend/default-registry.js";
+export { OpenRouterExecutionBackend } from "./backend/openrouter/index.js";
+export { VllmExecutionBackend } from "./backend/vllm/index.js";

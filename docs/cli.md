@@ -91,6 +91,22 @@ Output: `benchmark/artifacts/reports/matrix_<id>_<timestamp>.json` (+ `.md`).
 
 For the full Phase 1 design, see [`phase1-evaluation.md`](phase1-evaluation.md).
 
+### backend
+
+Inspect the execution backends evaluations run through. Capabilities record
+facts only: `supported`, `unsupported`, or `unknown` — absence of evidence is
+never reported as unsupported.
+
+```bash
+plinius backend list                # registered backends
+plinius backend info vllm           # metadata, capabilities, limits
+plinius backend health              # all backends
+plinius backend health openrouter   # one backend
+```
+
+`--backend <name>` selects the backend for commands that execute or verify a
+run. See [`backend.md`](backend.md).
+
 ### models
 
 OpenRouter catalog synchronization and discovery. Sync writes immutable,
