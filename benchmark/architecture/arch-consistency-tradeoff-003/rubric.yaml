@@ -1,0 +1,10 @@
+Correctness:
+  weight: 25
+Consistency-model reasoning:
+  weight: 25
+Availability and partition behavior:
+  weight: 20
+Holds, retries, reconciliation:
+  weight: 15
+Trade-off analysis:
+  weight: 15

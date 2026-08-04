@@ -1,0 +1,10 @@
+id: formal-proofreview-gcd-termination-001
+title: Review a Termination Proof Sketch for the Euclidean GCD
+version: 1.0.0
+category: formal-reasoning
+difficulty: medium
+estimated_tokens: 2400
+tags: [proof-review, termination, gcd, measure]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

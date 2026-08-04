@@ -1,0 +1,10 @@
+Correctness:
+  weight: 25
+Orchestration vs choreography choice:
+  weight: 20
+Compensation design:
+  weight: 20
+Idempotency and retries:
+  weight: 20
+Failure-recovery and trade-offs:
+  weight: 15

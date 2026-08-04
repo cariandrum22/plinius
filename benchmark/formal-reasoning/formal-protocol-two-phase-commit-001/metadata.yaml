@@ -1,0 +1,10 @@
+id: formal-protocol-two-phase-commit-001
+title: Reason About Two-Phase Commit Safety and Blocking
+version: 1.0.0
+category: formal-reasoning
+difficulty: hard
+estimated_tokens: 3400
+tags: [protocol, two-phase-commit, atomicity, distributed]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

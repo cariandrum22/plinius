@@ -1,0 +1,10 @@
+id: sec-secret-injection-k8s-001
+title: Design Secret Delivery and Workload Identity in Kubernetes
+version: 1.0.0
+category: security
+difficulty: expert
+estimated_tokens: 4200
+tags: [secret-management, kubernetes, workload-identity, least-privilege]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

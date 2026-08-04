@@ -1,0 +1,10 @@
+Correctness:
+  weight: 20
+Topology and traffic routing:
+  weight: 20
+Data replication trade-off:
+  weight: 25
+RPO/RTO and failover/failback:
+  weight: 20
+Trade-off analysis:
+  weight: 15

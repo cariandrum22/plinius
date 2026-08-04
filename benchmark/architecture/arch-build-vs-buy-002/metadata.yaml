@@ -1,0 +1,10 @@
+id: arch-build-vs-buy-002
+title: "Build vs Buy for a Product Search Subsystem"
+version: 1.0.0
+category: architecture
+difficulty: easy
+estimated_tokens: 2200
+tags: [trade-offs, build-vs-buy, search, decision-making]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

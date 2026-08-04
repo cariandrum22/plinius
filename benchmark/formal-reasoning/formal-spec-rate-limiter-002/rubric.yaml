@@ -1,0 +1,10 @@
+Correctness:
+  weight: 35
+Precision of Safety Bound:
+  weight: 25
+Handling Under-specification:
+  weight: 20
+Non-vacuity:
+  weight: 12
+Clarity:
+  weight: 8

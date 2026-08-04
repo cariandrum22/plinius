@@ -1,0 +1,10 @@
+"Workload identity and short-lived credentials":
+  weight: 30
+"Static-secret storage, injection, and scoping":
+  weight: 20
+"Keeping secrets out of Git/images":
+  weight: 10
+"Per-workload authorization and audit":
+  weight: 15
+"Blast-radius containment and residual trust":
+  weight: 25

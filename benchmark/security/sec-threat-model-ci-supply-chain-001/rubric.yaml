@@ -1,0 +1,10 @@
+"Assets and trust boundaries across the pipeline":
+  weight: 15
+"Dependency and build-integrity threats":
+  weight: 25
+"Signing-key and secret-exposure threats":
+  weight: 20
+"Provenance, verification, and framework use":
+  weight: 20
+"Prioritization and residual-trust honesty":
+  weight: 20

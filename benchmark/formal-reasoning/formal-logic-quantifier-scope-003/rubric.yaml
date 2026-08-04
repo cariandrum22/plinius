@@ -1,0 +1,8 @@
+Correctness:
+  weight: 40
+Quantifier Reasoning:
+  weight: 28
+Vacuity and Intent Analysis:
+  weight: 20
+Clarity:
+  weight: 12

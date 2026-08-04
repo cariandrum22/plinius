@@ -1,0 +1,8 @@
+Correctness:
+  weight: 30
+Safe-refactoring approach:
+  weight: 25
+Testing strategy:
+  weight: 25
+Structural target and sequencing:
+  weight: 20

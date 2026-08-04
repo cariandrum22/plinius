@@ -1,0 +1,10 @@
+id: se-docs-runtime-migration-022
+title: Major-Version Migration Guide for the octoq Background Job Library
+version: 1.0.0
+category: software-engineering
+difficulty: hard
+estimated_tokens: 5000
+tags: [migration-guide, breaking-changes, developer-experience, configuration, technical-writing]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

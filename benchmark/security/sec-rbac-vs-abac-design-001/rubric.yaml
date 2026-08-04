@@ -1,0 +1,10 @@
+"Model comparison and fit to requirements":
+  weight: 30
+"Multi-tenancy and cross-tenant sharing":
+  weight: 20
+"Enforcement architecture (PDP/PEP, policy representation)":
+  weight: 25
+"Auditability and explainability":
+  weight: 15
+"Failure modes and trade-offs":
+  weight: 10

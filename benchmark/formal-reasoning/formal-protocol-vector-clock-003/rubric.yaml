@@ -1,0 +1,10 @@
+Correctness:
+  weight: 35
+Forward-direction Rigor:
+  weight: 25
+Reverse and Concurrency Rigor:
+  weight: 25
+Non-vacuity:
+  weight: 8
+Clarity:
+  weight: 7

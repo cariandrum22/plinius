@@ -1,0 +1,10 @@
+Correctness:
+  weight: 20
+Root-cause diagnosis:
+  weight: 20
+Partition-key strategy:
+  weight: 25
+Large-tenant and migration handling:
+  weight: 20
+Trade-off analysis:
+  weight: 15

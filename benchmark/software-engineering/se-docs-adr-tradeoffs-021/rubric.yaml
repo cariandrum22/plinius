@@ -1,0 +1,10 @@
+Trade-off Analysis Grounded in Given Constraints:
+  weight: 30
+Decision Clarity and Justification:
+  weight: 25
+Consequences and Risk Accounting:
+  weight: 20
+ADR Structure and Completeness:
+  weight: 15
+Technical Accuracy of Storage and Consistency Claims:
+  weight: 10

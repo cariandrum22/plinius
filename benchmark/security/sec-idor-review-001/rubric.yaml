@@ -1,0 +1,10 @@
+"Correct identification of the authorization defect":
+  weight: 30
+"Per-endpoint impact reasoning":
+  weight: 15
+"Generalizable enforcement design":
+  weight: 30
+"Trust boundary and header assumptions":
+  weight: 15
+"Precision and standards grounding":
+  weight: 10

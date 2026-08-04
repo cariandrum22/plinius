@@ -1,0 +1,10 @@
+id: se-deps-semver-policy-018
+title: Classify and plan a breaking API change for a widely-depended library
+version: 1.0.0
+category: software-engineering
+difficulty: expert
+estimated_tokens: 4200
+tags: [typescript, semver, api-design, breaking-change, library-maintenance]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

@@ -1,0 +1,16 @@
+## Intent
+
+This benchmark probes judgement on library API evolution and semantic-versioning discipline in a realistic, constrained organizational setting: recognizing that "this fixes real production bugs" does not by itself determine semver classification or release strategy, and that multiple interacting behavior changes (a return-type/throw-vs-return-null change, and a default-value flip) can carry different classifications and different safe sequencing. It also probes whether the model can design a deprecation and migration strategy that genuinely accounts for the constraints given — a strict policy window, an automated contract-test gate, and consumers who bypass the intended public API — rather than a generic "bump the major version and write a changelog" answer.
+
+## Assumptions
+
+- The reviewer should treat both proposed changes as independently real and independently shippable in principle; nothing in the prompt requires that they ship in the same release.
+- The reviewer should assume the org's two-minor deprecation policy, the nightly consumer contract suite's behavior, and the existence of deep-import consumers are firm facts to design around, not incidental color.
+- The reviewer should assume they do not have, and should not assume, a complete inventory of every consumer, per the prompt — proposed strategies should be robust to unknown consumers, not just the ~30 covered by the contract suite.
+- The reviewer should not treat either change's semver classification as too obvious to justify; the classification itself, and its reasoning, is part of what is being evaluated.
+
+## Reviewer notes
+
+Strong answers reason about each proposed change on its own terms before deciding whether to bundle them: a function that changes from "returns `T | null`" to "returns `T` or throws" is an observable, breaking change to the call contract regardless of who benefits from it, and a default-value flip that changes accepted-input behavior for existing callers who never pass the option is likewise breaking, even though both changes are motivated by making the library safer. Strong answers explicitly address whether these two independent behavior changes should be coupled into a single major release or sequenced/staged, and justify that choice in terms of consumer churn and the deprecation policy, rather than assuming the changes must travel together by default.
+
+They should also produce a deprecation mechanism concrete enough to survive the nightly contract suite without either neutering the suite's usefulness or being blocked by it indefinitely — for example, by distinguishing an opt-in code path from a changed default, or by providing a way for the two behaviors to coexist during the deprecation window — and should grapple honestly with the deep-import consumers as a real constraint that limits what can be enforced purely through the public API surface. Weak answers pick a single semver label without engaging the sequencing question, propose a migration plan that silently assumes full visibility into all consumers, ignore the deep-import problem entirely, or treat the deprecation-policy and contract-suite constraints as flavor text rather than binding design constraints.

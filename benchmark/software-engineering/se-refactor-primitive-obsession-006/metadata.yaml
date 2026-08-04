@@ -1,0 +1,10 @@
+id: se-refactor-primitive-obsession-006
+title: Replace primitive-obsessed parameters in a billing service with value objects
+version: 1.0.0
+category: software-engineering
+difficulty: medium
+estimated_tokens: 3400
+tags: [java, refactoring, value-objects, type-safety, primitive-obsession]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

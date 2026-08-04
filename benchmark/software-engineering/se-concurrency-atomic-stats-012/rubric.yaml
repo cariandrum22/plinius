@@ -1,0 +1,10 @@
+Race Identification Completeness:
+  weight: 25
+Memory Model and Runtime Explanation:
+  weight: 20
+Fix Correctness:
+  weight: 25
+Approach Trade off Comparison:
+  weight: 20
+Clarity and Communication:
+  weight: 10

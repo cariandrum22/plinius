@@ -1,0 +1,10 @@
+id: arch-read-scaling-001
+title: "Scale a Read-Heavy Social Activity Feed"
+version: 1.0.0
+category: architecture
+difficulty: medium
+estimated_tokens: 3200
+tags: [scalability, caching, read-path, fan-out]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

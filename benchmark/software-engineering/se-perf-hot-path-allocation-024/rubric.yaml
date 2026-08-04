@@ -1,0 +1,12 @@
+Allocation Source Analysis:
+  weight: 30
+Correctness and Safety Soundness:
+  weight: 20
+Optimization Quality:
+  weight: 20
+Trade off and Caveat Reasoning:
+  weight: 15
+Measurement and Benchmarking Plan:
+  weight: 10
+Clarity and Communication:
+  weight: 5

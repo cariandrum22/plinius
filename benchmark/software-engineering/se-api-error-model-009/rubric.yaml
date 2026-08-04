@@ -1,0 +1,12 @@
+Error Envelope Design:
+  weight: 25
+Error Code Taxonomy and Status Mapping:
+  weight: 20
+Validation Error Structure:
+  weight: 20
+Client Guidance and Actionability:
+  weight: 15
+Evolvability Reasoning:
+  weight: 10
+Clarity and Justification:
+  weight: 10

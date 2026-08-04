@@ -1,0 +1,10 @@
+id: sec-crypto-jwt-alg-review-001
+title: Review JWT Signing and Verification Choices
+version: 1.0.0
+category: security
+difficulty: hard
+estimated_tokens: 3200
+tags: [cryptography, jwt, jose, signature-verification]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

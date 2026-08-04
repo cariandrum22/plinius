@@ -1,0 +1,10 @@
+Correctness:
+  weight: 20
+Failure-of-current-tooling analysis:
+  weight: 20
+Tail and outlier capture design:
+  weight: 25
+Sampling and retention strategy:
+  weight: 15
+Root-cause attribution and trade-offs:
+  weight: 20

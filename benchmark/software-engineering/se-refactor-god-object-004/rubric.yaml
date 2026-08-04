@@ -1,0 +1,12 @@
+Responsibility Identification:
+  weight: 20
+Decomposition Quality and Seams:
+  weight: 25
+Behavior Preservation:
+  weight: 25
+Trade off Justification:
+  weight: 15
+Refactored Code Concreteness:
+  weight: 10
+Clarity and Communication:
+  weight: 5

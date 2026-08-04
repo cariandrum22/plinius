@@ -1,0 +1,10 @@
+id: se-debug-pagination-drift-002
+title: Explain and fix record drift in offset-based pagination under concurrent writes
+version: 1.0.0
+category: software-engineering
+difficulty: medium
+estimated_tokens: 2600
+tags: [python, sql, pagination, data-consistency, debugging]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

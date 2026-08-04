@@ -1,0 +1,8 @@
+Correctness:
+  weight: 40
+Inductive Rigor:
+  weight: 25
+Assumption Awareness:
+  weight: 20
+Clarity:
+  weight: 15

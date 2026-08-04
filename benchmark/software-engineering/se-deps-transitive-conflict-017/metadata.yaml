@@ -1,0 +1,10 @@
+id: se-deps-transitive-conflict-017
+title: Diagnose a duplicated transitive dependency causing instanceof failures
+version: 1.0.0
+category: software-engineering
+difficulty: hard
+estimated_tokens: 3800
+tags: [nodejs, npm, dependency-conflict, semver, transitive-dependencies]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

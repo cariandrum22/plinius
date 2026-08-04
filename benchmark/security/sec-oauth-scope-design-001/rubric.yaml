@@ -1,0 +1,10 @@
+"Scope taxonomy and granularity":
+  weight: 30
+"Separation of read/write and sensitive actions":
+  weight: 20
+"Consent presentation and comprehension":
+  weight: 15
+"Lifecycle: long-lived access, refresh, revocation":
+  weight: 20
+"Least-privilege stance and justification":
+  weight: 15

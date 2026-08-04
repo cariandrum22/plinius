@@ -1,0 +1,16 @@
+## Intent
+
+This benchmark probes a model's ability to perform root-cause debugging of a concurrency defect in Go: a goroutine leak caused by a blocking, unbuffered channel send that outlives its only reader. It specifically tests whether the model can (1) trace goroutine lifecycle and blocking behavior precisely rather than pattern-matching "channels + goroutines = leak," (2) connect the leak's intermittent, load-and-latency-correlated symptom profile to its underlying mechanism, and (3) reason about a fix under a realistic constraint (an upstream client that does not honor context cancellation on its own I/O), which rules out any fix that assumes the leaked goroutine can be made to exit instantly.
+
+## Assumptions
+
+- The reviewer should assume standard Go semantics: an unbuffered channel send blocks until a receiver is ready, and a goroutine blocked on such a send is never garbage collected while blocked.
+- The reviewer should assume the described production symptoms (steady climb in goroutine count and memory, worse on high-latency/timeout days, reset only on restart) are accurate telemetry, not red herrings.
+- The reviewer should assume the third-party provider client genuinely ignores `ctx` for cancellation of its outbound call (only using it for logging/tracing), so any evaluation of a fix must account for that goroutine continuing to run until the slow call itself completes or errors.
+- Assume no additional code beyond what is shown is relevant to the defect (e.g., no other caller of `AggregateBestQuote` behaves differently).
+
+## Reviewer notes
+
+A strong answer will trace the exact control flow: once `ctx.Done()` fires inside the aggregator's `select` loop and the function returns, nothing is left reading from `results`, so any goroutine that later attempts `results <- Quote{...}` blocks forever, and that goroutine (plus its stack and captured closure state) is retained until process exit. It should explain why this only manifests when the `ctx.Done()` branch is taken before all providers reply — i.e., specifically under timeout/cancellation, which is why it correlates with upstream latency spikes and is invisible under normal fast responses, since in the fast case the loop naturally reads from every goroutine and none block.
+
+A strong answer should also correctly reason about the "un-cancelable" provider client: it should recognize that no fix inside `AggregateBestQuote` can force that specific in-flight goroutine to exit immediately, and should distinguish between "stop the goroutine leaking forever" (achievable, e.g., via a buffered channel sized to the number of providers or a non-blocking/`select`-guarded send) versus "stop the slow call from consuming resources at all" (not achievable without fixing or wrapping the provider client itself, e.g., enforcing cancellation at the transport layer). Reward answers that name and compare multiple credible fixes with honest trade-offs, rather than asserting a single fix eliminates the underlying slow call. Penalize answers that only suggest "add a timeout" without noticing the timeout already exists and is exactly what triggers the early return, or that claim the leak is caused by something other than the blocking send (e.g., misattributing it to the `for p := range providers` loop variable capture, which is already handled correctly with `p := p`).

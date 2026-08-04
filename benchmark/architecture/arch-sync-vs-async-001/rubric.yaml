@@ -1,0 +1,8 @@
+Correctness:
+  weight: 25
+Trade-off comparison:
+  weight: 30
+Recommendation justification:
+  weight: 20
+Consequence handling:
+  weight: 25

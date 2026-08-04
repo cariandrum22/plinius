@@ -1,0 +1,8 @@
+Correctness:
+  weight: 30
+Module cohesion:
+  weight: 25
+Boundary and dependency rules:
+  weight: 25
+Future-extraction reasoning:
+  weight: 20

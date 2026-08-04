@@ -1,0 +1,16 @@
+## Intent
+
+This benchmark probes a model's ability to design a coherent, machine-readable error contract that unifies inconsistent, organically-grown error handling across a REST API. It specifically tests whether the model can (1) separate a stable, programmatically-checkable error identifier from a human-readable message and from the HTTP status code, rather than conflating the three, (2) design a structure that can carry multiple simultaneous field-level validation failures rather than collapsing them into a single string, (3) recognize and eliminate information disclosure defects (such as leaking stack traces) as part of the redesign rather than preserving them, and (4) reason concretely about how the model tolerates new error conditions being introduced later without breaking clients already integrated against it.
+
+## Assumptions
+
+- The reviewer should assume the API has external, third-party clients who need to branch programmatically on error type (e.g., to decide whether to retry, prompt the user to fix a field, or show a generic failure), not only display a message to a human.
+- The reviewer should assume validation failures can occur on more than one field in a single request and that the response must be able to represent all of them, not just the first one encountered.
+- The reviewer should assume leaking internal implementation detail (stack traces, raw exception messages, file paths) in the `500` example is a defect introduced by inconsistent ad hoc handling, not an intentional debugging feature to be preserved in the redesign.
+- The reviewer should assume HTTP status codes remain part of the contract (i.e., the design is not expected to funnel all responses through a single status code such as `200`) unless the answer explicitly argues for and justifies an alternative.
+
+## Reviewer notes
+
+A strong answer cleanly separates three concerns that the current examples conflate: a stable, versioned, machine-readable identifier for the error condition; a human-readable message intended for display or logging, which may be reworded without being a breaking change; and the HTTP status code, with an explicit and consistent mapping between identifiers and statuses. It defines a validation-error shape that can report several field-level problems in one response, each addressable by a client without string parsing. It explicitly forbids leaking internal detail such as stack traces or raw exception text regardless of environment, and gives some thought to what a client should do when it encounters an error identifier it has never seen before (for example, falling back to generic handling keyed off the HTTP status rather than failing unpredictably), which is the crux of the evolvability requirement. It also explicitly reconciles its model against each of the provided examples rather than presenting an abstract schema with no connection to the concrete cases given.
+
+Weaker answers propose a schema but do not address how multiple validation errors are represented simultaneously, treat the error "code" as identical to the HTTP status number (losing the ability to distinguish two different failure conditions that share a status code), omit any treatment of what happens with an unrecognized error identifier, or fail to explicitly flag and remove the stack-trace leak from the `500` example.

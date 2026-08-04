@@ -1,0 +1,10 @@
+Correctness:
+  weight: 35
+Safety and Bounds:
+  weight: 25
+Concurrency Reasoning:
+  weight: 22
+Liveness and Oscillation:
+  weight: 10
+Clarity:
+  weight: 8

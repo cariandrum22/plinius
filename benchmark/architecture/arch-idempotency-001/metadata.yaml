@@ -1,0 +1,10 @@
+id: arch-idempotency-001
+title: "Idempotent Payment Processing Across Retries"
+version: 1.0.0
+category: architecture
+difficulty: medium
+estimated_tokens: 3000
+tags: [distributed-systems, idempotency, retries, correctness]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

@@ -1,0 +1,10 @@
+id: formal-proofreview-sort-stability-002
+title: Find the Gap in a Merge-Sort Stability Proof Sketch
+version: 1.0.0
+category: formal-reasoning
+difficulty: hard
+estimated_tokens: 3000
+tags: [proof-review, sorting, stability, invariants]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

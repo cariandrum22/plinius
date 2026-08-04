@@ -1,0 +1,10 @@
+Correctness:
+  weight: 25
+Framing of exactly-once:
+  weight: 20
+Read-process-write correctness:
+  weight: 25
+Idempotency, dedup, transaction design:
+  weight: 15
+Trade-off analysis:
+  weight: 15

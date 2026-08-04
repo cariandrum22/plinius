@@ -1,0 +1,10 @@
+"Key hierarchy and envelope design":
+  weight: 25
+"Algorithm, mode, and integrity choices":
+  weight: 20
+"Nonce/IV management at scale":
+  weight: 15
+"Rotation, crypto-shredding, blast radius":
+  weight: 25
+"Searchable-field handling and trade-offs":
+  weight: 15

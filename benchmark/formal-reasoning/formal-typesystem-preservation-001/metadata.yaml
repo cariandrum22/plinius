@@ -1,0 +1,10 @@
+id: formal-typesystem-preservation-001
+title: Review a Preservation Argument for a Small Expression Language
+version: 1.0.0
+category: formal-reasoning
+difficulty: hard
+estimated_tokens: 3400
+tags: [type-systems, preservation, soundness, semantics]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

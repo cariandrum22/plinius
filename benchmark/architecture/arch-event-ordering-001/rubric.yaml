@@ -1,0 +1,10 @@
+Correctness:
+  weight: 25
+Ordering-scope reasoning:
+  weight: 25
+Partitioning and scaling:
+  weight: 20
+Duplicate and out-of-order handling:
+  weight: 15
+Trade-off analysis:
+  weight: 15

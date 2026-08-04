@@ -1,0 +1,10 @@
+Technical Accuracy and Contract Completeness:
+  weight: 35
+Panic and Error Documentation:
+  weight: 20
+Concurrency and Blocking Semantics Clarity:
+  weight: 20
+Examples and Idiomatic Rust Doc Conventions:
+  weight: 15
+Clarity and Conciseness of Prose:
+  weight: 10

@@ -1,0 +1,8 @@
+Correctness:
+  weight: 40
+Inductive Rigor:
+  weight: 30
+Non-vacuity:
+  weight: 18
+Clarity:
+  weight: 12

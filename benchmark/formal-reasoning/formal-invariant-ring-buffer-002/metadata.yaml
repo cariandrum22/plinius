@@ -1,0 +1,10 @@
+id: formal-invariant-ring-buffer-002
+title: Prove a Ring-Buffer Index Invariant Is Inductive
+version: 1.0.0
+category: formal-reasoning
+difficulty: medium
+estimated_tokens: 2600
+tags: [invariants, ring-buffer, inductive, data-structures]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

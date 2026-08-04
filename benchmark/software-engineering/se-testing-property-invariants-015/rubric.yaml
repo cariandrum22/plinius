@@ -1,0 +1,12 @@
+Identifies Key Invariants:
+  weight: 25
+Property Test Design Quality:
+  weight: 25
+Generator and Shrinking Strategy:
+  weight: 15
+Oracle Strategy:
+  weight: 15
+Bug Class Analysis:
+  weight: 15
+Clarity and Communication:
+  weight: 5

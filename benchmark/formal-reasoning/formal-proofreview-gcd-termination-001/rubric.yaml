@@ -1,0 +1,8 @@
+Correctness:
+  weight: 40
+Measure Critique:
+  weight: 25
+Invariant Critique:
+  weight: 23
+Clarity:
+  weight: 12

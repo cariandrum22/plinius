@@ -1,0 +1,10 @@
+id: se-testing-seam-boundary-016
+title: Introduce a testing seam into a promotion eligibility service
+version: 1.0.0
+category: software-engineering
+difficulty: easy
+estimated_tokens: 2200
+tags: [java, testability, dependency-inversion, unit-testing, seams]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

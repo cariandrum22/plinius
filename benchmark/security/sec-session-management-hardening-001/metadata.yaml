@@ -1,0 +1,10 @@
+id: sec-session-management-hardening-001
+title: Harden Session Cookie and Lifecycle for a Web App
+version: 1.0.0
+category: security
+difficulty: medium
+estimated_tokens: 3000
+tags: [authentication, session-management, cookies, csrf]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

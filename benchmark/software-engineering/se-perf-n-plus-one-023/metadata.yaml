@@ -1,0 +1,10 @@
+id: se-perf-n-plus-one-023
+title: Diagnose and resolve an N+1 query pattern in an order-history endpoint
+version: 1.0.0
+category: software-engineering
+difficulty: medium
+estimated_tokens: 3000
+tags: [python, django-orm, n-plus-one, query-optimization, database-performance]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

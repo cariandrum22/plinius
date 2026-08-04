@@ -1,0 +1,12 @@
+N Plus One Diagnosis Accuracy:
+  weight: 30
+Explains Scaling and Staging Vs Production Gap:
+  weight: 15
+Remediation Soundness:
+  weight: 25
+Trade off Analysis:
+  weight: 15
+Measurement and Regression Strategy:
+  weight: 10
+Clarity and Communication:
+  weight: 5

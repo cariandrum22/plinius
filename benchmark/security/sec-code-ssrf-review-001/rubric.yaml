@@ -1,0 +1,10 @@
+"SSRF risk analysis in cloud context":
+  weight: 25
+"Why blocklist/parse-time checks fail (DNS, redirects, encodings)":
+  weight: 30
+"Robust validation approach and layering":
+  weight: 20
+"Network-level egress controls and defense in depth":
+  weight: 15
+"Trade-offs and metadata-endpoint handling":
+  weight: 10

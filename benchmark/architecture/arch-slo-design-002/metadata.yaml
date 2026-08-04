@@ -1,0 +1,10 @@
+id: arch-slo-design-002
+title: "Define SLOs, SLIs, and Error Budgets for a Platform"
+version: 1.0.0
+category: architecture
+difficulty: expert
+estimated_tokens: 4800
+tags: [observability, slo, reliability, error-budget]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

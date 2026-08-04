@@ -1,0 +1,10 @@
+Correctness:
+  weight: 35
+Precision and Non-vacuity:
+  weight: 25
+Atomicity Reasoning:
+  weight: 20
+Edge-case Coverage:
+  weight: 12
+Clarity:
+  weight: 8

@@ -1,0 +1,10 @@
+Correctness:
+  weight: 20
+Incremental strategy:
+  weight: 25
+Extraction sequencing:
+  weight: 20
+Coexistence and data consistency:
+  weight: 20
+Risk management and trade-offs:
+  weight: 15

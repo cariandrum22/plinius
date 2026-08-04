@@ -1,0 +1,10 @@
+Correctness:
+  weight: 25
+Compatibility taxonomy:
+  weight: 25
+Governance and enforcement:
+  weight: 20
+Breaking-change migration:
+  weight: 15
+Trade-offs:
+  weight: 15

@@ -1,0 +1,10 @@
+id: arch-modular-monolith-003
+title: "Define Module Boundaries for a SaaS Billing App"
+version: 1.0.0
+category: architecture
+difficulty: easy
+estimated_tokens: 2000
+tags: [system-decomposition, modular-monolith, boundaries, cohesion]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

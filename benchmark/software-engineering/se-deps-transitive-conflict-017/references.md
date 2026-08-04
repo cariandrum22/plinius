@@ -1,0 +1,16 @@
+## Intent
+
+This benchmark probes a model's ability to diagnose a supply-chain-shaped dependency conflict specific to Node.js/npm's non-flat resolution model: when two direct dependencies require semver-incompatible majors of a shared transitive package, npm installs duplicate copies, and any code that relies on nominal identity (`instanceof`, class registries, singletons) across those two copies can silently break. It tests whether the model can (1) reason precisely about npm's dependency resolution and why `dedupe`/hoisting cannot resolve a genuine major-version incompatibility, (2) connect that resolution mechanic to the specific runtime symptom (misclassified errors, not just "duplicate dependency" in the abstract), and (3) produce engineering-judgement-quality resolution options with honest trade-offs rather than reaching for a single reflexive fix.
+
+## Assumptions
+
+- The reviewer should take the described npm tree, lockfile excerpt, and code as accurate and complete for the affected path; no hidden code elsewhere changes the outcome.
+- The reviewer should assume standard npm semver-range resolution semantics (caret ranges, npm nesting separate copies under each parent's `node_modules` when ranges are incompatible, and that the `npm ls`/lockfile output shown is trustworthy).
+- The reviewer should assume the two `err-kit` majors are both otherwise reasonable, intentional choices for their respective consumers — this is a genuine version conflict, not a typo or accidental range.
+- The reviewer should treat the symptom narrative (dedupe attempted, isolated revert testing on each package) as reliable signal for narrowing the diagnosis, not as noise to second-guess.
+
+## Reviewer notes
+
+A strong answer identifies that the two `err-kit` installations are structurally distinct module instances despite sharing a package name, and reasons precisely about why a check that depends on shared class identity across a package boundary is fragile under duplicated installs — rather than vaguely asserting "there are two versions installed, that's the bug" without explaining the mechanism. It should explain clearly why `npm dedupe` cannot collapse the two copies (the declared ranges are genuinely incompatible, not merely under-deduped) and why the failure is coupled specifically to the recent `@acme/http-client` bump rather than being a pre-existing latent issue.
+
+On the resolution side, reward answers that lay out genuinely distinct options — forcing a single shared `err-kit` version via `overrides`/`resolutions` and verifying both consumers still behave correctly against it, upgrading or coordinating with the lagging consumer, or removing the cross-package identity dependency by classifying errors on a more robust signal (e.g., an error code or discriminant field rather than class identity) — and that reason about the relative risk and blast radius of each rather than picking one without justification. Penalize answers that recommend a fix without acknowledging what should be verified afterward (e.g., that a forced shared version still satisfies both consumers' actual runtime usage, not just their declared semver range), or that misattribute the bug to something unrelated to duplicate module identity (e.g., blaming async timing, retry counts, or unrelated parts of the request path not implicated by the given code).

@@ -1,0 +1,10 @@
+id: formal-statemachine-tcp-handshake-001
+title: Analyze a Simplified TCP Connection State Machine
+version: 1.0.0
+category: formal-reasoning
+difficulty: medium
+estimated_tokens: 2600
+tags: [state-machine, tcp, handshake, reachability]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

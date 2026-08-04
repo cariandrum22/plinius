@@ -1,0 +1,10 @@
+id: arch-sync-vs-async-001
+title: "Synchronous vs Asynchronous Integration for Checkout and Fulfillment"
+version: 1.0.0
+category: architecture
+difficulty: medium
+estimated_tokens: 3000
+tags: [trade-offs, integration, coupling, resilience]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

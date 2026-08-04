@@ -1,0 +1,10 @@
+"PKCE necessity and correctness":
+  weight: 25
+"Public-client secret and grant handling":
+  weight: 20
+"Redirect URI and platform binding":
+  weight: 15
+"Scope and least privilege":
+  weight: 15
+"Attack reasoning and spec citations":
+  weight: 25

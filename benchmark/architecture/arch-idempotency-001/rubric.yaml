@@ -1,0 +1,10 @@
+Correctness:
+  weight: 30
+Retry-recognition mechanism:
+  weight: 20
+Concurrency and edge cases:
+  weight: 25
+Record and charge atomicity:
+  weight: 15
+Retention and trade-offs:
+  weight: 10

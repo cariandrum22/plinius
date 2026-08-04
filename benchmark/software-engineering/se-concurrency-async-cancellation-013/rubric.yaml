@@ -1,0 +1,12 @@
+Task Leak Root Cause Diagnosis:
+  weight: 25
+Swallowed Exception Diagnosis:
+  weight: 15
+Cancellation Semantics Understanding:
+  weight: 15
+Redesign Correctness Across Exit Paths:
+  weight: 25
+Trade off Analysis:
+  weight: 15
+Clarity and Communication:
+  weight: 5

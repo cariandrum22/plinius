@@ -1,0 +1,12 @@
+Error Semantics Preservation:
+  weight: 25
+Parallelism Preservation:
+  weight: 20
+Behavior Preservation Overall:
+  weight: 20
+Identifies Subtle Conversion Pitfalls:
+  weight: 20
+Code Quality and Readability:
+  weight: 10
+Clarity and Communication:
+  weight: 5

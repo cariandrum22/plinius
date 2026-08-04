@@ -1,0 +1,10 @@
+id: formal-typesystem-linear-resource-003
+title: Analyze a Linear Resource-Handling Type Rule
+version: 1.0.0
+category: formal-reasoning
+difficulty: expert
+estimated_tokens: 3800
+tags: [type-systems, linear-types, resource-safety, aliasing]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

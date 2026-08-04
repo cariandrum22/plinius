@@ -1,0 +1,10 @@
+id: se-docs-public-api-020
+title: API Doc Comments for a Bounded Concurrent Queue
+version: 1.0.0
+category: software-engineering
+difficulty: easy
+estimated_tokens: 2200
+tags: [rust, api-docs, concurrency, technical-writing]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

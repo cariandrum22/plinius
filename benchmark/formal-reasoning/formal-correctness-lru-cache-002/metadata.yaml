@@ -1,0 +1,10 @@
+id: formal-correctness-lru-cache-002
+title: Argue Correctness of LRU Cache Eviction
+version: 1.0.0
+category: formal-reasoning
+difficulty: hard
+estimated_tokens: 3200
+tags: [correctness, lru-cache, invariants, data-structures]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

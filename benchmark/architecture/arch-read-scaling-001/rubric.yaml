@@ -1,0 +1,10 @@
+Correctness:
+  weight: 25
+Read-path design:
+  weight: 25
+Fan-out strategy:
+  weight: 20
+Caching and freshness:
+  weight: 15
+Trade-off analysis:
+  weight: 15

@@ -1,0 +1,12 @@
+Root Cause Accuracy:
+  weight: 30
+Goroutine Lifecycle Explanation:
+  weight: 20
+Explains Intermittency Correlation:
+  weight: 15
+Fix Quality and Correctness:
+  weight: 20
+Trade off Analysis:
+  weight: 10
+Clarity and Communication:
+  weight: 5

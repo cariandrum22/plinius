@@ -1,0 +1,10 @@
+id: arch-multi-region-001
+title: "Active-Active Multi-Region Deployment"
+version: 1.0.0
+category: architecture
+difficulty: hard
+estimated_tokens: 4600
+tags: [cloud-architecture, multi-region, availability, data-replication]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

@@ -1,0 +1,10 @@
+id: se-refactor-god-object-004
+title: Decompose a tangled OrderService god class into cohesive units
+version: 1.0.0
+category: software-engineering
+difficulty: hard
+estimated_tokens: 4200
+tags: [typescript, refactoring, god-object, dependency-boundaries, testability]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

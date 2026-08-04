@@ -1,0 +1,10 @@
+id: sec-oauth-pkce-review-001
+title: Review an OAuth 2.0 Public-Client Authorization-Code Flow
+version: 1.0.0
+category: security
+difficulty: medium
+estimated_tokens: 3000
+tags: [oauth, pkce, public-client, authorization-code]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

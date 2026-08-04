@@ -1,0 +1,10 @@
+id: arch-exactly-once-003
+title: "Exactly-Once Effects in a Stream-Processing Pipeline"
+version: 1.0.0
+category: architecture
+difficulty: hard
+estimated_tokens: 4600
+tags: [distributed-systems, stream-processing, exactly-once, idempotency]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

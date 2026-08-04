@@ -1,0 +1,8 @@
+Correctness:
+  weight: 30
+Decision framing:
+  weight: 25
+Option evaluation:
+  weight: 25
+Recommendation and risk:
+  weight: 20

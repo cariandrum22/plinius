@@ -1,0 +1,10 @@
+id: sec-policy-engine-design-001
+title: Design a Centralized Authorization Policy Engine
+version: 1.0.0
+category: security
+difficulty: expert
+estimated_tokens: 4200
+tags: [authorization, policy-engine, zero-trust, architecture]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

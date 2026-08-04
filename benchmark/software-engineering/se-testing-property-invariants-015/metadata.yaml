@@ -1,0 +1,10 @@
+id: se-testing-property-invariants-015
+title: Design property-based tests for a proportional money allocation function
+version: 1.0.0
+category: software-engineering
+difficulty: hard
+estimated_tokens: 4200
+tags: [typescript, property-based-testing, invariants, money-allocation, testing]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

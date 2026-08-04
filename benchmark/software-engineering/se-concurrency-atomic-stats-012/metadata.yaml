@@ -1,0 +1,10 @@
+id: se-concurrency-atomic-stats-012
+title: Diagnose and fix a data race in a concurrent request metrics collector
+version: 1.0.0
+category: software-engineering
+difficulty: medium
+estimated_tokens: 2400
+tags: [go, concurrency, data-race, atomics, metrics]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

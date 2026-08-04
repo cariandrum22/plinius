@@ -1,0 +1,10 @@
+Correctness:
+  weight: 35
+Linearizability Precision:
+  weight: 28
+Justification Critique:
+  weight: 22
+Verdict Quality:
+  weight: 8
+Clarity:
+  weight: 7

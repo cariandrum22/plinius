@@ -1,0 +1,10 @@
+Correctness:
+  weight: 20
+Algorithm and counter placement:
+  weight: 20
+Consistency-latency-accuracy trade-off:
+  weight: 25
+Failure behavior:
+  weight: 20
+Hot-key and edge-case handling:
+  weight: 15
