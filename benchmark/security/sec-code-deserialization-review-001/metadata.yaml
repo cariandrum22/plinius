@@ -1,0 +1,10 @@
+id: sec-code-deserialization-review-001
+title: Review Untrusted Deserialization and Data Parsing
+version: 1.0.0
+category: security
+difficulty: hard
+estimated_tokens: 3200
+tags: [secure-coding, deserialization, insecure-parsing, rce]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

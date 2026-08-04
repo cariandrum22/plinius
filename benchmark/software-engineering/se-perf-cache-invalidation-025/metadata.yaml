@@ -1,0 +1,10 @@
+id: se-perf-cache-invalidation-025
+title: Design a caching and invalidation strategy to eliminate stampedes and stale reads
+version: 1.0.0
+category: software-engineering
+difficulty: expert
+estimated_tokens: 4000
+tags: [caching, cache-invalidation, distributed-systems, typescript, latency]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

@@ -1,0 +1,10 @@
+id: formal-typesystem-variance-002
+title: Diagnose Variance Soundness for a Mutable Container
+version: 1.0.0
+category: formal-reasoning
+difficulty: expert
+estimated_tokens: 3600
+tags: [type-systems, variance, subtyping, soundness]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

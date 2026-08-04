@@ -1,0 +1,10 @@
+id: se-docs-adr-tradeoffs-021
+title: ADR for an Idempotency-Key Storage Strategy in a Payments Service
+version: 1.0.0
+category: software-engineering
+difficulty: medium
+estimated_tokens: 3400
+tags: [architecture-decision-record, payments, data-storage, technical-writing, trade-off-analysis]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

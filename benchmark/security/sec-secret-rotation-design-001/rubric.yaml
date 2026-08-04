@@ -1,0 +1,10 @@
+"Zero-downtime rotation mechanism (overlap windows)":
+  weight: 30
+"Shared vs per-service credential handling":
+  weight: 15
+"Signing-key rotation with outstanding tokens":
+  weight: 20
+"Secret-version propagation to consumers":
+  weight: 15
+"Cadence, emergency rotation, failure modes":
+  weight: 20

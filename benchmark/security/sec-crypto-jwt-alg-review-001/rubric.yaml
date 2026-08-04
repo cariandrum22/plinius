@@ -1,0 +1,10 @@
+"Algorithm-confusion and header-trust diagnosis":
+  weight: 30
+"Correct verification configuration":
+  weight: 20
+"Required claim validation (aud/iss/exp)":
+  weight: 20
+"Multi-issuer/key-selection handling":
+  weight: 15
+"Spec citations and fail-closed posture":
+  weight: 15

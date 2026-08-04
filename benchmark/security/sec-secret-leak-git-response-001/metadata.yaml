@@ -1,0 +1,10 @@
+id: sec-secret-leak-git-response-001
+title: Respond to a Secret Committed to Git History
+version: 1.0.0
+category: security
+difficulty: easy
+estimated_tokens: 2000
+tags: [secret-management, incident-response, credential-rotation, git]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

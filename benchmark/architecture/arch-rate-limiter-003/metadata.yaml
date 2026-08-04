@@ -1,0 +1,10 @@
+id: arch-rate-limiter-003
+title: "Design a Distributed Rate Limiter"
+version: 1.0.0
+category: architecture
+difficulty: expert
+estimated_tokens: 4800
+tags: [scalability, rate-limiting, distributed-systems, consistency]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

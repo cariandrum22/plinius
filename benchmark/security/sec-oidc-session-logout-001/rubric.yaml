@@ -1,0 +1,10 @@
+"Provider vs relying-party session model":
+  weight: 20
+"Single-logout propagation and mechanism trade-offs":
+  weight: 30
+"Token/session lifetime and refresh interaction":
+  weight: 20
+"Central revocation of compromised sessions":
+  weight: 15
+"Spec grounding and honest limits":
+  weight: 15

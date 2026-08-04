@@ -1,0 +1,8 @@
+Correctness:
+  weight: 25
+Trade-off comparison:
+  weight: 30
+Recommendation and split criteria:
+  weight: 25
+Latency-endpoint handling:
+  weight: 20

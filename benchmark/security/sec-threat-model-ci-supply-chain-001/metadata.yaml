@@ -1,0 +1,10 @@
+id: sec-threat-model-ci-supply-chain-001
+title: Threat Model a CI/CD Build and Release Pipeline
+version: 1.0.0
+category: security
+difficulty: expert
+estimated_tokens: 4400
+tags: [threat-modeling, supply-chain, ci-cd, slsa]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

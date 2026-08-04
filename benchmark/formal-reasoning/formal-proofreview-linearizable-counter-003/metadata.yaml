@@ -1,0 +1,10 @@
+id: formal-proofreview-linearizable-counter-003
+title: Review a Linearizability Proof Sketch for a Concurrent Counter
+version: 1.0.0
+category: formal-reasoning
+difficulty: expert
+estimated_tokens: 3800
+tags: [proof-review, linearizability, concurrency, atomics]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

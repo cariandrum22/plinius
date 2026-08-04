@@ -1,0 +1,10 @@
+id: se-perf-hot-path-allocation-024
+title: Reduce allocation pressure and GC-correlated tail latency in a Go request hot path
+version: 1.0.0
+category: software-engineering
+difficulty: expert
+estimated_tokens: 4200
+tags: [go, performance, memory-allocation, garbage-collection, profiling]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

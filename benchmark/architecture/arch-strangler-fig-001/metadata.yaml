@@ -1,0 +1,10 @@
+id: arch-strangler-fig-001
+title: "Incrementally Replace a Legacy Core System"
+version: 1.0.0
+category: architecture
+difficulty: hard
+estimated_tokens: 4400
+tags: [maintainability, strangler-fig, legacy-migration, incremental]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

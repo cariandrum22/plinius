@@ -1,0 +1,10 @@
+id: formal-spec-atomic-swap-001
+title: Specify the Contract of an Atomic Compare-and-Swap
+version: 1.0.0
+category: formal-reasoning
+difficulty: easy
+estimated_tokens: 1800
+tags: [specification, concurrency, contract, cas]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

@@ -1,0 +1,10 @@
+id: sec-oauth-token-storage-spa-001
+title: Design Token Storage and Handling for a Single-Page App
+version: 1.0.0
+category: security
+difficulty: hard
+estimated_tokens: 3600
+tags: [oauth, spa, token-storage, bff]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

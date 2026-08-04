@@ -1,0 +1,10 @@
+Correctness:
+  weight: 20
+SLI/SLO/error-budget reasoning:
+  weight: 25
+User-centric SLI selection:
+  weight: 20
+Error-budget-driven alerting:
+  weight: 20
+Differentiation and pitfalls:
+  weight: 15

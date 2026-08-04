@@ -1,0 +1,22 @@
+schema_version: 1
+id: pilot-frontier
+title: Frontier pilot — four-category smoke campaign
+description: >-
+  Runs one benchmark per category against the local vLLM runtime. Marked
+  exclude_from_rankings — this validates the framework, not a real ranking.
+
+benchmarks: all
+
+backends:
+  - vllm
+
+models:
+  - Qwen/Qwen2.5-0.5B-Instruct
+
+sampling:
+  temperature: 0
+  seed: 1
+  seed_strategy: fixed
+
+repetitions: 1
+exclude_from_rankings: true

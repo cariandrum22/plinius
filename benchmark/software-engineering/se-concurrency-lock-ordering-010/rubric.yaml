@@ -1,0 +1,12 @@
+Deadlock Root Cause Identification:
+  weight: 30
+Interleaving and Execution Trace Explanation:
+  weight: 20
+Intermittency Correlation Explanation:
+  weight: 10
+Lock Ordering Redesign Soundness:
+  weight: 25
+Alternatives and Trade off Analysis:
+  weight: 10
+Clarity and Communication:
+  weight: 5

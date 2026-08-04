@@ -1,0 +1,12 @@
+Cursor Semantics and Ordering Stability:
+  weight: 25
+Request and Response Contract Design:
+  weight: 20
+Concurrency and Consistency Reasoning:
+  weight: 20
+Backward Compatibility and Migration Strategy:
+  weight: 15
+Error Handling Completeness:
+  weight: 10
+Clarity and Justification:
+  weight: 10

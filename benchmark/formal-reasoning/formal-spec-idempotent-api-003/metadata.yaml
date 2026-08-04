@@ -1,0 +1,10 @@
+id: formal-spec-idempotent-api-003
+title: Specify Idempotency for a Payment Submission API
+version: 1.0.0
+category: formal-reasoning
+difficulty: hard
+estimated_tokens: 3400
+tags: [specification, idempotency, exactly-once, payments]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

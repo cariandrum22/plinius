@@ -1,0 +1,10 @@
+Identifies Testability Problems:
+  weight: 20
+Seam Design Quality:
+  weight: 30
+Business Logic Test Coverage:
+  weight: 25
+Boundary Justification:
+  weight: 15
+Clarity and Communication:
+  weight: 10

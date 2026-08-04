@@ -1,0 +1,10 @@
+id: arch-consistency-tradeoff-003
+title: "Consistency vs Availability for a Seat-Booking System"
+version: 1.0.0
+category: architecture
+difficulty: hard
+estimated_tokens: 4200
+tags: [trade-offs, consistency, availability, cap-theorem, correctness]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

@@ -1,0 +1,10 @@
+Correctness:
+  weight: 35
+Non-vacuity and Precision:
+  weight: 25
+Failure-mode Coverage:
+  weight: 20
+Concurrency Reasoning:
+  weight: 12
+Clarity:
+  weight: 8

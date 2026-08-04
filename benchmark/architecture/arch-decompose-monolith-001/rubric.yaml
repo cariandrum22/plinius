@@ -1,0 +1,10 @@
+Correctness:
+  weight: 25
+Boundary rationale:
+  weight: 25
+Migration strategy:
+  weight: 20
+Data ownership handling:
+  weight: 15
+Trade-off and risk analysis:
+  weight: 15

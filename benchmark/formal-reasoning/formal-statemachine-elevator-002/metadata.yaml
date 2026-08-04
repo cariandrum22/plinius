@@ -1,0 +1,10 @@
+id: formal-statemachine-elevator-002
+title: Reason About an Elevator Door Controller State Machine
+version: 1.0.0
+category: formal-reasoning
+difficulty: medium
+estimated_tokens: 2500
+tags: [state-machine, controller, safety, liveness]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

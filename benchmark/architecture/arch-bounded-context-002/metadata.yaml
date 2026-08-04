@@ -1,0 +1,10 @@
+id: arch-bounded-context-002
+title: "Identify Bounded Contexts for an Insurance Platform"
+version: 1.0.0
+category: architecture
+difficulty: hard
+estimated_tokens: 4200
+tags: [system-decomposition, domain-driven-design, bounded-context, modeling]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

@@ -1,0 +1,10 @@
+id: sec-oidc-id-token-validation-001
+title: Review ID Token Validation in a Relying Party
+version: 1.0.0
+category: security
+difficulty: medium
+estimated_tokens: 2800
+tags: [openid-connect, id-token, jwt-validation, authentication]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

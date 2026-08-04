@@ -1,0 +1,10 @@
+id: arch-cost-optimization-003
+title: "Cost-Aware Architecture for a Variable Workload"
+version: 1.0.0
+category: architecture
+difficulty: hard
+estimated_tokens: 4200
+tags: [cloud-architecture, cost-optimization, capacity-planning, trade-offs]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

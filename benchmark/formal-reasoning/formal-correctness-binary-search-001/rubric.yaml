@@ -1,0 +1,8 @@
+Correctness:
+  weight: 40
+Loop-invariant Rigor:
+  weight: 25
+Termination Argument:
+  weight: 20
+Clarity:
+  weight: 15

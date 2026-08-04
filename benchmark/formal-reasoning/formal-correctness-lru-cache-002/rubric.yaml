@@ -1,0 +1,10 @@
+Correctness:
+  weight: 35
+Invariant Coupling:
+  weight: 25
+Spec Conformance:
+  weight: 22
+Edge-case Reasoning:
+  weight: 10
+Clarity:
+  weight: 8

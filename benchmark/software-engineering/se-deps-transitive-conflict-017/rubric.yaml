@@ -1,0 +1,12 @@
+Root Cause Accuracy:
+  weight: 30
+Duplicate Module Instance Explanation:
+  weight: 15
+Correlation With Dependency Bump:
+  weight: 15
+Resolution Strategy Quality:
+  weight: 25
+Trade off and Risk Analysis:
+  weight: 10
+Clarity and Communication:
+  weight: 5

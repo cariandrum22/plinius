@@ -1,0 +1,10 @@
+id: arch-incident-observability-003
+title: "Observability to Diagnose Intermittent Cross-Service Latency"
+version: 1.0.0
+category: architecture
+difficulty: expert
+estimated_tokens: 5200
+tags: [observability, debuggability, distributed-systems, diagnosis]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

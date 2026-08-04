@@ -1,0 +1,10 @@
+Correctness:
+  weight: 20
+Write-path and ingestion design:
+  weight: 25
+Backpressure and durability:
+  weight: 25
+Storage and query fit:
+  weight: 15
+Trade-off analysis:
+  weight: 15

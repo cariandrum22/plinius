@@ -1,0 +1,11 @@
+## Intent
+Probes whether the model can translate a precisely specified but informally described concurrency contract into accurate, idiomatic API documentation, covering panics, error variants, blocking behavior, and ownership guarantees without inventing or omitting behavior.
+
+## Assumptions
+- The reviewer should treat the "Behavioral contract" section in the task as the sole source of truth; nothing outside it should be treated as canonical.
+- The reviewer is evaluating documentation of the given contract, not a critique or redesign of the API itself.
+- Standard Rust doc-comment conventions (summary line, `# Panics`, `# Errors`, `# Examples`) are the expected structural baseline, but minor structural variation that still conveys the same information should not be penalized.
+- The model was not given the actual (elided) implementation, only the contract description — documentation should reflect the contract as described, not speculate about internals.
+
+## Reviewer notes
+A strong answer treats every clause in the behavioral contract as a documentation obligation: it will not just say "blocks until space is available" but will also capture what happens to blocking callers when the queue closes, and will not conflate "queue is full" with "queue is closed" as reasons for blocking or failure. It correctly distinguishes the two different meanings of an empty/closed condition between `pop` (returns `None`) and `push` (returns `Err`, carrying the item back), and explains why `push` returns ownership of the rejected item while `pop` has nothing to return. It documents `len` as a snapshot with a caveat about staleness under concurrent access, rather than presenting it as a reliable precondition. It documents the `Send`/`Sync` reasoning at the type level, not just asserted as a fact. A weak answer produces generic boilerplate ("gets an item from the queue"), silently drops the closed-queue edge cases, invents behavior not stated (e.g., timeouts, cancellation, specific wake order guarantees), or documents `PushError::Closed` without explaining that it hands the item back. Watch particularly for hallucinated fairness/ordering guarantees across producers, since the contract explicitly disclaims them.

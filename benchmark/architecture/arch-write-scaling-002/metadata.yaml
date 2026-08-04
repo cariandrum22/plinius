@@ -1,0 +1,10 @@
+id: arch-write-scaling-002
+title: "Scale Write-Heavy Telemetry Ingestion"
+version: 1.0.0
+category: architecture
+difficulty: hard
+estimated_tokens: 4400
+tags: [scalability, write-path, ingestion, time-series, backpressure]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

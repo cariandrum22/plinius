@@ -1,0 +1,12 @@
+Incident Root Cause Mapping:
+  weight: 20
+Value Object Design Quality:
+  weight: 25
+Behavior and Validation Preservation:
+  weight: 20
+Refactored Code Concreteness:
+  weight: 15
+Migration Trade off Honesty:
+  weight: 15
+Clarity and Communication:
+  weight: 5

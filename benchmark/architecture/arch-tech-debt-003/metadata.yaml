@@ -1,0 +1,10 @@
+id: arch-tech-debt-003
+title: "Refactoring Plan for a Tangled Service"
+version: 1.0.0
+category: architecture
+difficulty: easy
+estimated_tokens: 2200
+tags: [maintainability, refactoring, technical-debt, testing]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

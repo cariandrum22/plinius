@@ -1,0 +1,10 @@
+Correctness:
+  weight: 35
+Case-split Rigor:
+  weight: 30
+Invariant Formulation:
+  weight: 20
+Non-vacuity:
+  weight: 8
+Clarity:
+  weight: 7

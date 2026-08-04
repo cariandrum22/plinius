@@ -1,0 +1,10 @@
+id: sec-oidc-session-logout-001
+title: Design OIDC Session Management and Logout Across Apps
+version: 1.0.0
+category: security
+difficulty: hard
+estimated_tokens: 3600
+tags: [openid-connect, logout, session-management, sso]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

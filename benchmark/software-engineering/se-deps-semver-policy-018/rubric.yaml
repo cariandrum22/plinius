@@ -1,0 +1,12 @@
+Semver Classification Accuracy:
+  weight: 25
+Sequencing and Coupling Reasoning:
+  weight: 15
+Deprecation and Release Strategy:
+  weight: 20
+Migration Path for Consumers:
+  weight: 15
+Churn vs Compatibility Trade off Reasoning:
+  weight: 15
+Clarity and Communication:
+  weight: 10

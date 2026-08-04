@@ -1,0 +1,10 @@
+"Threat model for browser token storage":
+  weight: 25
+"Architectural options compared":
+  weight: 20
+"Recommended design specificity":
+  weight: 25
+"Containment of script/XSS compromise":
+  weight: 20
+"Trade-off clarity and spec grounding":
+  weight: 10

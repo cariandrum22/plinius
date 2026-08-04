@@ -1,0 +1,10 @@
+Root Cause Accuracy:
+  weight: 35
+Explains Intermittent Nature:
+  weight: 15
+Recommended Fix Correctness:
+  weight: 30
+Trade off Analysis:
+  weight: 15
+Clarity and Communication:
+  weight: 5

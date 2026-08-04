@@ -1,0 +1,10 @@
+id: se-refactor-callback-pyramid-005
+title: Convert a nested-callback order-fulfillment workflow to async/await
+version: 1.0.0
+category: software-engineering
+difficulty: medium
+estimated_tokens: 3000
+tags: [typescript, nodejs, async-await, refactoring, error-handling]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

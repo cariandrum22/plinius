@@ -1,0 +1,10 @@
+id: formal-correctness-memo-fib-003
+title: Correctness of a Memoized Recursion
+version: 1.0.0
+category: formal-reasoning
+difficulty: medium
+estimated_tokens: 2300
+tags: [correctness, memoization, recursion, purity]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

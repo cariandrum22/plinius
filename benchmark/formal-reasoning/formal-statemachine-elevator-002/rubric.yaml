@@ -1,0 +1,10 @@
+Correctness:
+  weight: 35
+Safety Invariant:
+  weight: 28
+Liveness and Fairness:
+  weight: 22
+Handling Under-specification:
+  weight: 8
+Clarity:
+  weight: 7

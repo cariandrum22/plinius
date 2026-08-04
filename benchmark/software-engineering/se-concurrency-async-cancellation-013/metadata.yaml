@@ -1,0 +1,10 @@
+id: se-concurrency-async-cancellation-013
+title: Fix task leaks and swallowed errors in an asyncio fan-out coordinator with a deadline
+version: 1.0.0
+category: software-engineering
+difficulty: hard
+estimated_tokens: 3600
+tags: [python, asyncio, concurrency, cancellation, task-leak]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

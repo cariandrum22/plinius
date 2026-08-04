@@ -1,0 +1,10 @@
+Correctness:
+  weight: 20
+Ownership and lease design:
+  weight: 20
+Stalled-holder and fencing reasoning:
+  weight: 25
+Resource-side protection:
+  weight: 20
+Partition behavior and trade-offs:
+  weight: 15

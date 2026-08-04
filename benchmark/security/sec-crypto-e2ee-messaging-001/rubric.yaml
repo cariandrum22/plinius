@@ -1,0 +1,10 @@
+"Security properties and gaps analysis":
+  weight: 25
+"Key distribution and verification (MITM by server)":
+  weight: 25
+"Group-messaging key management":
+  weight: 15
+"Key-backup trade-offs":
+  weight: 15
+"Use of established protocols and trust honesty":
+  weight: 20

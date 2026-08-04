@@ -1,0 +1,10 @@
+Correctness:
+  weight: 25
+Compatibility definition:
+  weight: 25
+Versioning-scheme choice:
+  weight: 20
+Deprecation and sunset process:
+  weight: 20
+Trade-offs:
+  weight: 10

@@ -1,0 +1,10 @@
+id: arch-serverless-tradeoff-002
+title: "Serverless vs Containers for a Bursty Workload"
+version: 1.0.0
+category: architecture
+difficulty: medium
+estimated_tokens: 3000
+tags: [cloud-architecture, serverless, containers, trade-offs]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

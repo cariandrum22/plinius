@@ -1,0 +1,10 @@
+id: formal-statemachine-circuit-breaker-003
+title: Reason About a Circuit-Breaker State Machine
+version: 1.0.0
+category: formal-reasoning
+difficulty: hard
+estimated_tokens: 3000
+tags: [state-machine, circuit-breaker, resilience, safety]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

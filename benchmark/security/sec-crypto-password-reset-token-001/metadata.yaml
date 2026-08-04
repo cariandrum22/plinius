@@ -1,0 +1,10 @@
+id: sec-crypto-password-reset-token-001
+title: Review a Password-Reset Token Design
+version: 1.0.0
+category: security
+difficulty: medium
+estimated_tokens: 2600
+tags: [cryptography, password-reset, tokens, account-security]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

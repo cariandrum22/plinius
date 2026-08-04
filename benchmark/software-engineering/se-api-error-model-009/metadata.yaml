@@ -1,0 +1,10 @@
+id: se-api-error-model-009
+title: Design a Coherent Machine-Readable Error Model for a REST API
+version: 1.0.0
+category: software-engineering
+difficulty: medium
+estimated_tokens: 2800
+tags: [typescript, api-design, error-handling, rest-api]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

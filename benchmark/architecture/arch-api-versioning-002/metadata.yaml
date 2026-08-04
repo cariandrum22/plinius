@@ -1,0 +1,10 @@
+id: arch-api-versioning-002
+title: "API Versioning and Backward-Compatibility Strategy"
+version: 1.0.0
+category: architecture
+difficulty: medium
+estimated_tokens: 3000
+tags: [maintainability, api-design, versioning, compatibility]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

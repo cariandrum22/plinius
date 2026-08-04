@@ -1,0 +1,10 @@
+id: se-debug-goroutine-leak-001
+title: Diagnose a goroutine leak in a fan-out aggregation handler
+version: 1.0.0
+category: software-engineering
+difficulty: hard
+estimated_tokens: 3200
+tags: [go, concurrency, goroutine-leak, debugging, channels]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

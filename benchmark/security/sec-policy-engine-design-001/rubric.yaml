@@ -1,0 +1,10 @@
+"Decision/enforcement architecture":
+  weight: 20
+"Consistency vs latency vs availability trade-off":
+  weight: 30
+"Policy authoring, versioning, and review":
+  weight: 15
+"Auditability and explainability":
+  weight: 15
+"Failure modes: staleness, fail-open/closed, partition":
+  weight: 20

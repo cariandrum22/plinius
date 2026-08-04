@@ -1,0 +1,10 @@
+id: se-concurrency-worker-pool-011
+title: Redesign a worker pool for correct backpressure and graceful shutdown
+version: 1.0.0
+category: software-engineering
+difficulty: hard
+estimated_tokens: 3800
+tags: [rust, concurrency, backpressure, graceful-shutdown, channels]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

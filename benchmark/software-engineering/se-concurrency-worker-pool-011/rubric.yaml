@@ -1,0 +1,12 @@
+Backpressure Root Cause Diagnosis:
+  weight: 20
+Shutdown Defect Diagnosis:
+  weight: 20
+Redesign Correctness:
+  weight: 25
+Draining Semantics Clarity:
+  weight: 15
+Trade off Analysis:
+  weight: 15
+Clarity and Communication:
+  weight: 5

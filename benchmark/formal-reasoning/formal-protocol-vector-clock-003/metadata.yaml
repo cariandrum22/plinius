@@ -1,0 +1,10 @@
+id: formal-protocol-vector-clock-003
+title: Reason About Vector Clocks and Causal Ordering
+version: 1.0.0
+category: formal-reasoning
+difficulty: hard
+estimated_tokens: 3200
+tags: [protocol, vector-clocks, causality, happens-before]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

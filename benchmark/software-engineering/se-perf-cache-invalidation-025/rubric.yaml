@@ -1,0 +1,12 @@
+Mechanism Diagnosis Accuracy:
+  weight: 20
+Stampede Protection Design:
+  weight: 20
+Freshness and Invalidation Design:
+  weight: 20
+Trade off and Failure Mode Reasoning:
+  weight: 20
+Validation Strategy:
+  weight: 15
+Clarity and Communication:
+  weight: 5

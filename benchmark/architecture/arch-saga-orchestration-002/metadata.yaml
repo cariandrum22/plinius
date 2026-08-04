@@ -1,0 +1,10 @@
+id: arch-saga-orchestration-002
+title: "Design a Saga for a Multi-Service Order Workflow"
+version: 1.0.0
+category: architecture
+difficulty: hard
+estimated_tokens: 4600
+tags: [event-driven, saga, distributed-transactions, compensation]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

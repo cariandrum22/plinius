@@ -1,0 +1,10 @@
+id: sec-idor-review-001
+title: Review an API for Broken Object-Level Authorization
+version: 1.0.0
+category: security
+difficulty: medium
+estimated_tokens: 2600
+tags: [authorization, idor, bola, api-security]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

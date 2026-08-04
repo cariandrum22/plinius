@@ -1,0 +1,10 @@
+id: sec-threat-model-file-upload-001
+title: Threat Model a User File-Upload and Processing Feature
+version: 1.0.0
+category: security
+difficulty: medium
+estimated_tokens: 3000
+tags: [threat-modeling, file-upload, stride, input-validation]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

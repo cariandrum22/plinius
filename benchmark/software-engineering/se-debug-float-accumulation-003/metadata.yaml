@@ -1,0 +1,10 @@
+id: se-debug-float-accumulation-003
+title: Diagnose a one-cent invoice total mismatch caused by floating-point summation
+version: 1.0.0
+category: software-engineering
+difficulty: easy
+estimated_tokens: 1800
+tags: [rust, floating-point, money, debugging, correctness]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

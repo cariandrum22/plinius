@@ -1,0 +1,12 @@
+Diagnoses Flakiness Root Causes:
+  weight: 25
+Timezone Bug Identification:
+  weight: 20
+Deterministic Redesign Quality:
+  weight: 25
+Redesigned Test Coverage:
+  weight: 15
+Trade off Discussion:
+  weight: 10
+Clarity and Communication:
+  weight: 5

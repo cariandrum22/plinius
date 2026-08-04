@@ -1,0 +1,10 @@
+"Cookie attribute and scope correctness":
+  weight: 25
+"Session lifecycle: fixation, renewal, timeouts":
+  weight: 30
+"Revocation and server-side invalidation":
+  weight: 20
+"Attack-to-mitigation reasoning":
+  weight: 15
+"Trade-off clarity":
+  weight: 10

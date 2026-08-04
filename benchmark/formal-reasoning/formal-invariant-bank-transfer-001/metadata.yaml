@@ -1,0 +1,10 @@
+id: formal-invariant-bank-transfer-001
+title: State and Defend the Conservation Invariant for Transfers
+version: 1.0.0
+category: formal-reasoning
+difficulty: easy
+estimated_tokens: 1700
+tags: [invariants, conservation, state, banking]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

@@ -1,0 +1,10 @@
+id: sec-crypto-e2ee-messaging-001
+title: Review an End-to-End Encrypted Messaging Design
+version: 1.0.0
+category: security
+difficulty: expert
+estimated_tokens: 4600
+tags: [cryptography, e2ee, key-management, protocol-review]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

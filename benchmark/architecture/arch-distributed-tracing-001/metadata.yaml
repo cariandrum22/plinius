@@ -1,0 +1,10 @@
+id: arch-distributed-tracing-001
+title: "Observability for a Microservices Platform"
+version: 1.0.0
+category: architecture
+difficulty: medium
+estimated_tokens: 3200
+tags: [observability, tracing, metrics, logging]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

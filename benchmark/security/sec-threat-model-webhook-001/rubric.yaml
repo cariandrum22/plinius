@@ -1,0 +1,10 @@
+"Assets, boundaries, adversaries":
+  weight: 15
+"Authenticity, replay, and tampering coverage":
+  weight: 30
+"Request-handling and SSRF/DoS threats":
+  weight: 15
+"Idempotency and delivery semantics":
+  weight: 15
+"Mitigations, prioritization, and unsigned-sender stance":
+  weight: 25

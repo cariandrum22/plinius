@@ -1,0 +1,10 @@
+"Per-tenant trust establishment and scoping":
+  weight: 20
+"External assertion validation and claim mapping":
+  weight: 20
+"Cross-tenant isolation and impersonation prevention":
+  weight: 25
+"Containment of a malicious/misconfigured IdP":
+  weight: 20
+"Auditability and spec grounding":
+  weight: 15

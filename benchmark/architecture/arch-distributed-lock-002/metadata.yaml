@@ -1,0 +1,10 @@
+id: arch-distributed-lock-002
+title: "Coordination for a Leader-Based Job Scheduler"
+version: 1.0.0
+category: architecture
+difficulty: expert
+estimated_tokens: 5000
+tags: [distributed-systems, coordination, leader-election, fencing]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

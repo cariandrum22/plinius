@@ -1,0 +1,10 @@
+id: sec-code-sql-injection-review-001
+title: Review a Data-Access Layer for Injection
+version: 1.0.0
+category: security
+difficulty: easy
+estimated_tokens: 2200
+tags: [secure-coding, sql-injection, parameterization, input-validation]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

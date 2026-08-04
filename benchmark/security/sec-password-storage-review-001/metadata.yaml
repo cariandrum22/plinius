@@ -1,0 +1,10 @@
+id: sec-password-storage-review-001
+title: Review a Password Storage and Verification Implementation
+version: 1.0.0
+category: security
+difficulty: easy
+estimated_tokens: 2200
+tags: [authentication, password-storage, hashing, secure-coding]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

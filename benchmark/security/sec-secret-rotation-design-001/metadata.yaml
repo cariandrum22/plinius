@@ -1,0 +1,10 @@
+id: sec-secret-rotation-design-001
+title: Design a Secret Rotation and Distribution Strategy
+version: 1.0.0
+category: security
+difficulty: hard
+estimated_tokens: 3600
+tags: [secret-management, rotation, key-management, zero-downtime]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

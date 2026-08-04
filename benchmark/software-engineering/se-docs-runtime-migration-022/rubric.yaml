@@ -1,0 +1,12 @@
+Coverage of All Breaking Changes:
+  weight: 30
+Accuracy of Before/After Examples:
+  weight: 20
+Operational Pitfalls and Silent Default Changes:
+  weight: 20
+Step-by-Step Upgrade Guidance Usability:
+  weight: 15
+Rollback Guidance Quality:
+  weight: 10
+Clarity and Organization:
+  weight: 5

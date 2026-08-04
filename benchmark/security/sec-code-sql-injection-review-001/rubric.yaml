@@ -1,0 +1,10 @@
+"Correct injection diagnosis and input tracing":
+  weight: 30
+"Parameterization of values":
+  weight: 20
+"Safe handling of identifiers (sort col/dir)":
+  weight: 25
+"Idiomatic, line-specific fixes":
+  weight: 15
+"Precision and standards grounding":
+  weight: 10

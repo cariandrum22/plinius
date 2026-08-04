@@ -1,0 +1,10 @@
+Correctness:
+  weight: 20
+Cost-driver analysis:
+  weight: 25
+Optimization design:
+  weight: 25
+Trade-off and risk awareness:
+  weight: 20
+Sequencing:
+  weight: 10

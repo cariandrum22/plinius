@@ -1,0 +1,10 @@
+id: se-deps-lockfile-integrity-019
+title: Audit a drifted lockfile for supply-chain integrity weaknesses
+version: 1.0.0
+category: software-engineering
+difficulty: expert
+estimated_tokens: 4000
+tags: [npm, lockfile, supply-chain, dependency-pinning, ci-cd]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

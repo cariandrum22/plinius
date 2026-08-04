@@ -1,0 +1,10 @@
+id: arch-event-ordering-001
+title: "Guarantee Event Ordering in a Payments Pipeline"
+version: 1.0.0
+category: architecture
+difficulty: hard
+estimated_tokens: 4400
+tags: [event-driven, ordering, partitioning, messaging]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: true

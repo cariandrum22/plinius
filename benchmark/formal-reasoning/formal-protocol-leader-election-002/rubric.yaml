@@ -1,0 +1,10 @@
+Correctness:
+  weight: 35
+Quorum-intersection Rigor:
+  weight: 30
+Partition and Stale-leader Analysis:
+  weight: 20
+Assumption Precision:
+  weight: 8
+Clarity:
+  weight: 7

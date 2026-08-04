@@ -1,0 +1,10 @@
+Correctness:
+  weight: 20
+Context boundary quality:
+  weight: 25
+Context map relationships:
+  weight: 20
+Ubiquitous-language handling:
+  weight: 20
+Integration and team fit:
+  weight: 15

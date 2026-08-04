@@ -1,0 +1,10 @@
+id: formal-spec-rate-limiter-002
+title: Specify a Token-Bucket Rate Limiter Precisely
+version: 1.0.0
+category: formal-reasoning
+difficulty: medium
+estimated_tokens: 2600
+tags: [specification, rate-limiting, token-bucket, liveness]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

@@ -1,0 +1,10 @@
+"Completeness of required validations":
+  weight: 30
+"Signature and key handling correctness":
+  weight: 20
+"Critique of unsafe trust assumptions":
+  weight: 20
+"Handling tokens from untrusted channels":
+  weight: 15
+"Spec citations and fail-closed posture":
+  weight: 15

@@ -1,0 +1,10 @@
+id: arch-decompose-monolith-001
+title: "Decompose a Monolithic Order-Management System"
+version: 1.0.0
+category: architecture
+difficulty: medium
+estimated_tokens: 3200
+tags: [system-decomposition, microservices, boundaries, migration]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

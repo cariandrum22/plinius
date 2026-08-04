@@ -1,0 +1,10 @@
+id: sec-rbac-vs-abac-design-001
+title: Select and Design an Access-Control Model for a Multi-Tenant API
+version: 1.0.0
+category: security
+difficulty: medium
+estimated_tokens: 3200
+tags: [authorization, rbac, abac, multi-tenancy]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

@@ -1,0 +1,12 @@
+Root Cause Accuracy:
+  weight: 30
+Explains Skip and Duplicate Symmetry:
+  weight: 15
+Explains Bulk Update Aggravation:
+  weight: 10
+Proposed Fix Correctness:
+  weight: 25
+Trade off Analysis:
+  weight: 15
+Clarity and Communication:
+  weight: 5

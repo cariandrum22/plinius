@@ -1,0 +1,10 @@
+Correctness:
+  weight: 25
+Three-pillars reasoning:
+  weight: 25
+End-to-end correlation:
+  weight: 20
+Signal selection for localization:
+  weight: 15
+Cost, sampling, cardinality trade-offs:
+  weight: 15

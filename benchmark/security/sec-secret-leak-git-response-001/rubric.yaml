@@ -1,0 +1,10 @@
+"Correct prioritization (revoke first) and reasoning":
+  weight: 30
+"Understanding of git history and its limits":
+  weight: 25
+"Handling distributed copies (forks/clones/CI)":
+  weight: 15
+"Prevention controls":
+  weight: 20
+"Clarity and trust reasoning":
+  weight: 10

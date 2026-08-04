@@ -1,0 +1,10 @@
+Weakness Identification Completeness:
+  weight: 30
+Mechanism Explanation Accuracy:
+  weight: 20
+Detection and Prevention Feasibility:
+  weight: 15
+Hardening Strategy Quality:
+  weight: 25
+Clarity and Communication:
+  weight: 10

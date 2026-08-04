@@ -1,0 +1,10 @@
+id: sec-oidc-federation-broker-001
+title: Design a Federated Identity Broker
+version: 1.0.0
+category: security
+difficulty: expert
+estimated_tokens: 4400
+tags: [openid-connect, federation, identity-broker, saml]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

@@ -1,0 +1,10 @@
+id: sec-oauth-scope-design-001
+title: Design Scopes and Consent for a Third-Party API Platform
+version: 1.0.0
+category: security
+difficulty: hard
+estimated_tokens: 3600
+tags: [oauth, scopes, consent, least-privilege]
+author: plinius-benchmarks
+license: CC-BY-4.0
+golden: false

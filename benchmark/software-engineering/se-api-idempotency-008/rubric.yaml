@@ -1,0 +1,12 @@
+Idempotency Key Scope and Fingerprinting:
+  weight: 20
+Concurrent Duplicate Handling:
+  weight: 20
+Response Replay Correctness:
+  weight: 20
+Storage and Expiry Design:
+  weight: 15
+Failure Mode and Processor Interaction Reasoning:
+  weight: 15
+Clarity and Trade off Justification:
+  weight: 10

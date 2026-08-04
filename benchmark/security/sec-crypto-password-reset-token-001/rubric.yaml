@@ -1,0 +1,10 @@
+"Token predictability and generation diagnosis":
+  weight: 30
+"Storage and single-use enforcement":
+  weight: 20
+"Lifecycle: expiry, session invalidation":
+  weight: 20
+"Correct target design":
+  weight: 20
+"Standards grounding and clarity":
+  weight: 10
