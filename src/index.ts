@@ -117,6 +117,40 @@ export * from "./manifest/manifest.js";
 export * from "./manifest/reproduce.js";
 export * from "./manifest/audit.js";
 
+// --- Benchmark Framework & Campaign ---
+// Framework benchmark assets. Names that collide with the legacy suite schema
+// (Difficulty/Rubric/…) are re-exported under Framework-prefixed aliases.
+export {
+  BENCHMARK_ASSET_SCHEMA_VERSION,
+  CategorySchema,
+  BenchmarkAssetSchema,
+  DifficultySchema as FrameworkDifficultySchema,
+  parseBenchmarkAsset,
+  parseRubric,
+  camelizeKeys as camelizeAssetKeys,
+} from "./framework/benchmark.js";
+export type {
+  Category,
+  BenchmarkAsset,
+  Rubric as FrameworkRubric,
+  RubricCriterion,
+  Difficulty as FrameworkDifficulty,
+} from "./framework/benchmark.js";
+export {
+  loadAllBenchmarks as loadAllFrameworkBenchmarks,
+  loadBenchmarkById as loadFrameworkBenchmarkById,
+  loadBenchmarkFromDir as loadFrameworkBenchmarkFromDir,
+  getBenchmarkRoot,
+  benchmarkRelativePath,
+} from "./framework/loader.js";
+export type { LoadedFrameworkBenchmark } from "./framework/loader.js";
+export * from "./framework/campaign.js";
+export * from "./framework/runner.js";
+export * from "./framework/review.js";
+export * from "./framework/aggregate.js";
+export * from "./framework/report.js";
+export * from "./framework/store.js";
+
 // --- Execution Backend abstraction ---
 export * from "./backend/capabilities.js";
 export * from "./backend/errors.js";
