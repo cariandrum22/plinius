@@ -27,6 +27,13 @@ import {
 import { runReproduce } from "./commands/reproduce.js";
 import { runAudit } from "./commands/audit.js";
 import { runBackendList, runBackendInfo, runBackendHealth } from "./commands/backend.js";
+import { runBenchmarkList, runBenchmarkShow } from "./commands/benchmark-fw.js";
+import {
+  runCampaignCreate,
+  runCampaignRun,
+  runCampaignStatus,
+  runCampaignReport,
+} from "./commands/campaign.js";
 import { PLINIUS_VERSION } from "./version.js";
 
 const VERSION = PLINIUS_VERSION;
@@ -38,7 +45,8 @@ Usage:
   plinius <command> [options]
 
 Commands:
-  benchmark    Run legacy benchmark prompts against configured targets
+  benchmark    Framework assets (list | show); bare: legacy prompt runner
+  campaign     Campaign lifecycle (create | run | status | report)
   targets      List configured benchmark targets
   suites       List versioned benchmark suites (benchmark/suites/)
   experiment   Run a versioned experiment (repeated suite runs)
@@ -115,12 +123,48 @@ async function main(): Promise<void> {
 
   try {
     switch (command) {
-      case "benchmark":
-        await runBenchmarks({
-          targetId: getOption(args, "--target"),
-          promptProfile: getOption(args, "--prompt-profile"),
-        });
+      case "benchmark": {
+        const sub = args[1];
+        if (sub === "list") {
+          await runBenchmarkList();
+        } else if (sub === "show") {
+          const id = args[2] && !args[2].startsWith("--") ? args[2] : getOption(args, "--id");
+          if (!id) { console.error("benchmark show requires <id>"); process.exit(1); }
+          await runBenchmarkShow(id);
+        } else {
+          // Bare `benchmark` (no known subcommand): legacy prompt runner.
+          await runBenchmarks({
+            targetId: getOption(args, "--target"),
+            promptProfile: getOption(args, "--prompt-profile"),
+          });
+        }
         break;
+      }
+
+      case "campaign": {
+        const sub = args[1];
+        if (sub === "create") {
+          const id = args[2] && !args[2].startsWith("--") ? args[2] : getOption(args, "--id");
+          if (!id) { console.error("campaign create requires <id>"); process.exit(1); }
+          await runCampaignCreate({ id });
+        } else if (sub === "run") {
+          const campaign = getOption(args, "--campaign");
+          if (!campaign) { console.error("campaign run requires --campaign <id|path>"); process.exit(1); }
+          await runCampaignRun({ campaign, seed: getOption(args, "--seed") });
+        } else if (sub === "status") {
+          const campaign = getOption(args, "--campaign");
+          if (!campaign) { console.error("campaign status requires --campaign <id|path>"); process.exit(1); }
+          await runCampaignStatus({ campaign });
+        } else if (sub === "report") {
+          const campaign = getOption(args, "--campaign");
+          if (!campaign) { console.error("campaign report requires --campaign <id|path>"); process.exit(1); }
+          await runCampaignReport({ campaign });
+        } else {
+          console.error(`Unknown 'campaign' subcommand: ${sub ?? "(none)"}. Use create | run | status | report.`);
+          process.exit(1);
+        }
+        break;
+      }
 
       case "targets":
         await runTargets();

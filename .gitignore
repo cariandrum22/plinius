@@ -17,6 +17,14 @@ build/
 # Artifacts (benchmark results, evaluations)
 benchmark/artifacts/
 
+# Campaign execution artifacts and reviews (generated). Dirs kept via .gitkeep;
+# benchmark assets (benchmark/<category>/) and campaign specs (campaign/) are
+# tracked, but their run outputs are not.
+reports/*
+!reports/.gitkeep
+reviews/*
+!reviews/.gitkeep
+
 # Benchmark prompts are tracked as samples
 # Users can modify or replace these with their own prompts
 
