@@ -7,7 +7,7 @@ umask 077
 
 readonly STAGE_ID="plinius-qualification-2026-08-22-diagnostic-one-shot-r1"
 readonly IMAGE="vllm/vllm-openai@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967"
-readonly IMAGE_VERSION="0.27.1"
+readonly IMAGE_TAG="vllm/vllm-openai:v0.27.1"
 readonly QWEN_NAME="vllm-qwen"
 readonly QWEN_MODEL="Qwen/Qwen3.8-27B"
 readonly QWEN_REVISION="1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0"
@@ -80,6 +80,7 @@ print_plan() {
   jq -n \
     --arg stage "$STAGE_ID" \
     --arg image "$IMAGE" \
+    --arg imageTag "$IMAGE_TAG" \
     --arg qwenName "$QWEN_NAME" \
     --arg qwenModel "$QWEN_MODEL" \
     --arg qwenRevision "$QWEN_REVISION" \
@@ -90,7 +91,7 @@ print_plan() {
     --arg gptossRevision "$GPTOSS_REVISION" \
     --arg gptossSnapshot "$GPTOSS_SNAPSHOT" \
     --argjson gptossArgs "$(json_array "${GPTOSS_ARGS[@]}")" \
-    '{schemaVersion:2, stageId:$stage, image:$image, networkDownloads:false,
+    '{schemaVersion:2, stageId:$stage, image:$image, imageTag:$imageTag, networkDownloads:false,
       hostPortRequirement:"8001-and-8002-free", deepwikiAction:"untouched", targets:[
       {container:$qwenName, model:$qwenModel, revision:$qwenRevision, endpoint:"http://localhost:8001/v1", gpus:[1,2], snapshot:$qwenSnapshot, engineArgv:$qwenArgs},
       {container:$gptossName, model:$gptossModel, revision:$gptossRevision, endpoint:"http://localhost:8002/v1", gpus:[3], snapshot:$gptossSnapshot, engineArgv:$gptossArgs}
@@ -117,12 +118,15 @@ verify_snapshot() {
 }
 
 verify_local_image() {
-  local image_json version
+  local image_json
   image_json=$(docker image inspect "$IMAGE" 2>/dev/null) || die "pinned image is absent locally; image pull is prohibited"
-  jq -e --arg image "$IMAGE" 'length == 1 and (.[0].RepoDigests | index($image)) != null' \
-    <<<"$image_json" >/dev/null || die "local image RepoDigests do not contain the pinned digest"
-  version=$(jq -r '.[0].Config.Labels["org.opencontainers.image.version"] // .[0].Config.Labels["vllm.version"] // .[0].Config.Labels.version // empty' <<<"$image_json")
-  [[ "$version" == "$IMAGE_VERSION" ]] || die "local image version label is absent or not ${IMAGE_VERSION}"
+  jq -e --arg image "$IMAGE" --arg imageTag "$IMAGE_TAG" '
+    length == 1 and
+    (.[0].RepoDigests | index($image)) != null and
+    (.[0].RepoTags | index($imageTag)) != null and
+    .[0].Config.Labels["org.opencontainers.image.version"] == $imageTag and
+    .[0].Config.Labels["ai.vllm.image.tag"] == $imageTag
+  ' <<<"$image_json" >/dev/null || die "local image digest, tag, or exact version labels do not match the approved image"
 }
 
 assert_target_names_absent() {

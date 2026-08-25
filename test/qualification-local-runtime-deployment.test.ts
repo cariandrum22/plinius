@@ -10,6 +10,7 @@ interface DeploymentPlan {
   schemaVersion: number;
   stageId: string;
   image: string;
+  imageTag: string;
   networkDownloads: boolean;
   targets: Array<{
     container: string;
@@ -36,6 +37,7 @@ describe("qualification local-runtime deployment", () => {
     expect(value.image).toBe(
       "vllm/vllm-openai@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967",
     );
+    expect(value.imageTag).toBe("vllm/vllm-openai:v0.27.1");
     expect(value.networkDownloads).toBe(false);
     expect(value.hostPortRequirement).toBe("8001-and-8002-free");
     expect(value.deepwikiAction).toBe("untouched");
