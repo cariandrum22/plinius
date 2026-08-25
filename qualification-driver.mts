@@ -12,10 +12,9 @@
  * make a run pass.
  */
 import { mkdir, writeFile } from "fs/promises";
-import { readFileSync, readdirSync, existsSync, lstatSync, realpathSync, createReadStream } from "fs";
+import { readFileSync, readdirSync, existsSync, lstatSync } from "fs";
 import { join, resolve } from "path";
 import { createHash } from "crypto";
-import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 import { loadBenchmarkById } from "./src/framework/loader.js";
@@ -82,14 +81,10 @@ import type {
   CostLookupWireEvidence,
 } from "./src/continuation/wire.js";
 import {
-  observeLocalRuntime,
   deriveExpectedLocalRuntimes,
 } from "./src/continuation/runtime-observer.js";
 import type {
   ExpectedLocalRuntime,
-  ObserverDeps,
-  ObserverFs,
-  CommandResult,
 } from "./src/continuation/runtime-observer.js";
 import type {
   ExpectedLocalBinding,
@@ -99,6 +94,15 @@ import type {
   ParsedCheckpointArtifact,
   ParsedA100Preflight,
 } from "./src/continuation/local-runtime.js";
+import {
+  localCanaryRequestSha256,
+  readExecutionAttestationFile,
+} from "./src/qualification/execution-attestation.js";
+import type {
+  ExecutionAttestation,
+  ExpectedExecutionAttestation,
+  LoadedExecutionAttestation,
+} from "./src/qualification/execution-attestation.js";
 
 const CAMPAIGN_ID = "plinius-qualification-2026-08-22-v1";
 const OR_BASE = "https://openrouter.ai/api/v1";
@@ -572,6 +576,7 @@ export function buildFrozenOrder(): Cell[] {
 export const CONTINUATION_RUN_SCHEMA_VERSION = QUALIFICATION_RUN_SCHEMA_VERSION;
 
 export const CONTINUATION_STAGE_ID = "plinius-qualification-2026-08-22-diagnostic-continuation-driver-r1";
+export const ONE_SHOT_STAGE_ID = "plinius-qualification-2026-08-22-diagnostic-one-shot-r1";
 
 /** The three authority files whose RAW SHA-256 gate the continuation. */
 export interface HistoricalDigestExpectation {
@@ -2136,58 +2141,152 @@ export function loadExpectedLocalRuntimesFromParent(parentRoot: string): Expecte
   return deriveExpectedLocalRuntimes({ a100Preflight: a100, checkpoints });
 }
 
-/**
- * Node-backed observer effects (F01). A SHELL-FREE command runner (spawnSync with an
- * argv array, timeout and bounded output — never a shell string), a filesystem view
- * that STREAM-hashes each file, and a /v1/models fetch. Used only by the live
- * continuation entrypoint (Stage C2); the offline tests drive observeLocalRuntime
- * with mock effects instead.
- */
-export function nodeObserverDeps(now: () => string): ObserverDeps {
-  const runCommand = (argv: string[], opts: { timeoutMs: number; maxBytes: number }): CommandResult => {
-    const r = spawnSync(argv[0], argv.slice(1), {
-      timeout: opts.timeoutMs,
-      maxBuffer: opts.maxBytes,
-      shell: false,
-      encoding: "utf-8",
-    });
-    if (r.error) {
-      const timedOut = (r.error as NodeJS.ErrnoException).code === "ETIMEDOUT" || r.signal === "SIGTERM";
-      return { status: null, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut, error: timedOut ? undefined : r.error.message };
-    }
-    return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", timedOut: r.signal === "SIGTERM" };
-  };
-  const fs: ObserverFs = {
-    realpath: (p) => realpathSync(p),
-    lstat: (p) => lstatSync(p),
-    readdir: (p) => readdirSync(p),
-    hashFile: (p) =>
-      new Promise((resolvePromise, reject) => {
-        const h = createHash("sha256");
-        let size = 0;
-        const s = createReadStream(p);
-        s.on("data", (c: Buffer) => {
-          size += c.length;
-          h.update(c);
-        });
-        s.on("error", reject);
-        s.on("end", () => resolvePromise({ sizeBytes: size, sha256: h.digest("hex") }));
-      }),
-  };
-  const fetchModels = async (url: string) => {
-    const res = await fetch(url);
-    return { status: res.status, text: () => res.text() };
-  };
-  return { runCommand, fs, fetchModels, now, ociBinary: "docker" };
+export const ONE_SHOT_EXPECTED_HOST = {
+  instanceId: "i-020008472625521bd",
+  instanceType: "p4d.24xlarge",
+  availabilityZone: "us-west-2b",
+  operatingSystem: "Ubuntu",
+  gpuModel: "NVIDIA A100-SXM4-40GB",
+  gpuCount: 8,
+} as const;
+
+function sha256Prefixed(value: string): string {
+  return value.startsWith("sha256:") ? value : `sha256:${value}`;
+}
+
+function authorityEngineArgv(engineArgs: string): string[] {
+  const trimmed = engineArgs.trim();
+  if (trimmed.length === 0 || /["'\\]/.test(trimmed)) {
+    throw new Error("parent serving.engineArgs is not a plain token sequence");
+  }
+  const tokens = trimmed.split(/\s+/);
+  if (tokens.some((token) => token.length === 0 || token.includes("\0"))) {
+    throw new Error("parent serving.engineArgs contains an invalid token");
+  }
+  return tokens;
+}
+
+function imageDigest(image: string): string {
+  const match = image.match(/@(sha256:[0-9a-f]{64})$/);
+  if (!match) throw new Error(`parent vLLM image is not digest-pinned: ${image}`);
+  return match[1];
 }
 
 /**
- * Build a local-binding probe. Each target's raw runtime observation comes from
- * `observe` (live OCI inspection + snapshot hashing + /v1/models, wired by the
- * Stage C2 operator; mocked in the offline tests). The digests are RE-COMPUTED
- * from the raw files/config by {@link buildObservedBinding}, never read from a
- * prefilled file. When a target is not observable the probe emits a null binding,
- * so the gate fails closed BEFORE any dispatch.
+ * Build the exact Fable-attestation expectation from fixed-digest parent files.
+ * No value comes from the attestation itself and no live OCI fact is inferred on Mac.
+ */
+export function buildExpectedExecutionAttestationFromParent(parentRoot: string): ExpectedExecutionAttestation {
+  const bindings = loadExpectedLocalBindingsFromParent(parentRoot);
+  const runtimes = loadExpectedLocalRuntimesFromParent(parentRoot);
+  if (runtimes.length !== 2 || bindings.length !== 2) {
+    throw new Error(`parent Evidence must define exactly two local targets (runtime=${runtimes.length}, binding=${bindings.length})`);
+  }
+  const bindingBySlug = new Map(bindings.map((binding) => [binding.requestedSlug, binding]));
+  return {
+    campaignId: CAMPAIGN_ID,
+    stageId: ONE_SHOT_STAGE_ID,
+    host: { ...ONE_SHOT_EXPECTED_HOST },
+    targets: runtimes.map((runtime) => {
+      const binding = bindingBySlug.get(runtime.requestedSlug);
+      if (!binding?.weightManifestDigest) throw new Error(`parent weight manifest missing for ${runtime.requestedSlug}`);
+      return {
+        requestedSlug: runtime.requestedSlug,
+        endpoint: runtime.endpoint,
+        servedModelId: runtime.servedModelId,
+        checkpointRevision: runtime.checkpointRevision,
+        weightManifestSha256: sha256Prefixed(binding.weightManifestDigest),
+        ociImageDigest: imageDigest(runtime.vllmImage),
+        engineArgv: authorityEngineArgv(runtime.engineArgs),
+        canaryRequestSha256: localCanaryRequestSha256(runtime.servedModelId),
+      };
+    }),
+  };
+}
+
+export interface OneShotBootstrap {
+  outputRoot: string;
+  parentRoot: string;
+  parentBundlePath: string;
+  orKey: string;
+  historicalExpectation: HistoricalDigestExpectation;
+  expectedAttestation: ExpectedExecutionAttestation;
+  expectedLocalBindings: ExpectedLocalBinding[];
+  loadedAttestation: LoadedExecutionAttestation;
+}
+
+export interface OneShotBootstrapDeps {
+  readEnv?: (name: string) => string | undefined;
+  now?: () => string;
+  buildExpected?: (parentRoot: string) => ExpectedExecutionAttestation;
+  loadExpectedBindings?: (parentRoot: string) => ExpectedLocalBinding[];
+  verifyHistorical?: (expected: HistoricalDigestExpectation) => DigestVerifyResult;
+  readAttestation?: (
+    path: string,
+    expected: ExpectedExecutionAttestation,
+    nowUtc: string,
+  ) => LoadedExecutionAttestation;
+}
+
+/**
+ * Read all non-secret authority inputs and validate the Fable attestation before
+ * touching the OpenRouter credential. Injectable effects make that order testable.
+ */
+export function prepareOneShotBootstrap(deps: OneShotBootstrapDeps = {}): OneShotBootstrap {
+  const readEnv = deps.readEnv ?? ((name: string) => process.env[name]);
+  const required = (name: string): string => {
+    const value = readEnv(name);
+    if (!value) throw new Error(`missing required environment variable ${name}`);
+    return value;
+  };
+
+  if (readEnv("CONTINUATION_RESUME") !== undefined) {
+    throw new Error("CONTINUATION_RESUME is prohibited in diagnostic-one-shot-r1");
+  }
+  if (readEnv("PLINIUS_LOCAL_BINDING_DIR") !== undefined) {
+    throw new Error("PLINIUS_LOCAL_BINDING_DIR is prohibited: Fable attestation is the only live-runtime source");
+  }
+
+  const outputRoot = required("CONTINUATION_OUTPUT_ROOT");
+  const parentRoot = required("PARENT_EVIDENCE_ROOT");
+  const parentBundlePath = required("PARENT_BUNDLE_PATH");
+  const attestationPath = required("FABLE_EXECUTION_ATTESTATION_PATH");
+  const expectedAttestation = (deps.buildExpected ?? buildExpectedExecutionAttestationFromParent)(parentRoot);
+  const expectedLocalBindings = (deps.loadExpectedBindings ?? loadExpectedLocalBindingsFromParent)(parentRoot);
+  const historicalExpectation: HistoricalDigestExpectation = {
+    parentBundlePath,
+    parentBundleSha256: HISTORICAL_DIGESTS.parentBundleSha256,
+    frozenDefinitionPath: join(parentRoot, "campaign", "frozen-campaign-definition.json"),
+    frozenDefinitionSha256: HISTORICAL_DIGESTS.frozenDefinitionSha256,
+    historicalRunPath: join(parentRoot, "campaign", "runs", "run-d43bb9bcd2a03c20.json"),
+    historicalRunSha256: HISTORICAL_DIGESTS.historicalRunSha256,
+  };
+  const historical = (deps.verifyHistorical ?? verifyHistoricalDigestsFromFiles)(historicalExpectation);
+  if (!historical.ok) throw new Error("historical authority digest mismatch");
+  const loadedAttestation = (deps.readAttestation ?? readExecutionAttestationFile)(
+    attestationPath,
+    expectedAttestation,
+    (deps.now ?? (() => new Date().toISOString()))(),
+  );
+
+  // Deliberately last: an invalid authority input or attestation cannot read this key.
+  const orKey = required("OPENROUTER_API_KEY");
+  return {
+    outputRoot,
+    parentRoot,
+    parentBundlePath,
+    orKey,
+    historicalExpectation,
+    expectedAttestation,
+    expectedLocalBindings,
+    loadedAttestation,
+  };
+}
+
+/**
+ * Historical injected local-binding helper retained for r7 regression fixtures.
+ * The one-shot production entrypoint does not call it; live facts come only from
+ * the strict Fable attestation.
  */
 export function makeLocalBindingProbe(deps: {
   now: () => string;
@@ -2220,105 +2319,86 @@ export function makeLocalBindingProbe(deps: {
   };
 }
 
-async function continuationMain() {
-  const outputRoot = requireEnv("CONTINUATION_OUTPUT_ROOT");
-  const orKey = requireEnv("OPENROUTER_API_KEY");
-  const parentRoot = requireEnv("PARENT_EVIDENCE_ROOT");
-  const parentBundlePath = requireEnv("PARENT_BUNDLE_PATH");
-  const now = () => new Date().toISOString();
-  const exp: HistoricalDigestExpectation = {
-    parentBundlePath,
-    parentBundleSha256: HISTORICAL_DIGESTS.parentBundleSha256,
-    frozenDefinitionPath: join(parentRoot, "campaign", "frozen-campaign-definition.json"),
-    frozenDefinitionSha256: HISTORICAL_DIGESTS.frozenDefinitionSha256,
-    historicalRunPath: join(parentRoot, "campaign", "runs", "run-d43bb9bcd2a03c20.json"),
-    historicalRunSha256: HISTORICAL_DIGESTS.historicalRunSha256,
-  };
-
-  // F01: expected local bindings are re-derived ONLY from the parent artifacts. An
-  // arbitrary PLINIUS_LOCAL_BINDING_DIR is REJECTED (no expected value may come
-  // from an arbitrary directory).
-  if (process.env.PLINIUS_LOCAL_BINDING_DIR) {
-    throw new Error("PLINIUS_LOCAL_BINDING_DIR is not permitted: expected local bindings are derived only from parent Evidence");
-  }
-  const expectedLocalBindings = loadExpectedLocalBindingsFromParent(parentRoot);
-  const expectedLocalRuntimes = loadExpectedLocalRuntimesFromParent(parentRoot);
-
-  // F01/F06: the PRODUCTION observer inspects the live OCI runtime (shell-free argv,
-  // timeout, bounded output), stream-hashes the confirmed snapshot, and checks
-  // /v1/models — for every local target — BEFORE the OpenRouter catalog is fetched.
-  // The observed binding's digests are RE-COMPUTED from the measured files (never a
-  // prefilled digest); an unobservable target (OCI tool / container / mount absent,
-  // or any mismatch) yields no observation, so the local gate fails closed with zero
-  // OpenRouter calls, zero catalog artifact and zero generation.
-  const observerDeps = nodeObserverDeps(now);
-  const expectedBindingBySlug = new Map(expectedLocalBindings.map((b) => [b.requestedSlug, b]));
-  let observedLocal: LocalTargetBinding[] = [];
-  const localPreflight = async (): Promise<LocalPreflightResult> => {
-    const reasons: string[] = [];
-    const observed: LocalTargetBinding[] = [];
-    const resolutions: Array<{ slug: string; resolvedExactly: boolean; reasons: string[] }> = [];
-    const evaluatedAtUtc = now();
-    for (const expRuntime of expectedLocalRuntimes) {
-      const { observation, reasons: obsReasons } = await observeLocalRuntime(expRuntime, observerDeps);
-      const binding: LocalTargetBinding =
-        observation != null
-          ? buildObservedBinding(observation, bareSha256)
-          : {
-              requestedSlug: expRuntime.requestedSlug,
-              endpoint: expRuntime.endpoint,
-              healthy: false,
-              servedModelId: null,
-              checkpointRevision: null,
-              weightManifestDigest: null,
-              servingConfigDigest: null,
-              tensorParallelism: null,
-              precision: null,
-              capturedAtUtc: now(),
-            };
-      observed.push(binding);
-      const r = resolveLocalTarget(expectedBindingBySlug.get(expRuntime.requestedSlug), binding, evaluatedAtUtc);
-      reasons.push(...obsReasons.map((x) => `${expRuntime.requestedSlug}:${x}`), ...r.reasons);
-      resolutions.push({ slug: expRuntime.requestedSlug, resolvedExactly: r.resolution.resolvedExactly, reasons: r.reasons });
+function attestationLocalBindings(
+  attestation: ExecutionAttestation,
+  expected: ExpectedExecutionAttestation,
+): LocalTargetBinding[] {
+  const expectedBySlug = new Map(expected.targets.map((target) => [target.requestedSlug, target]));
+  return attestation.targets.map((target) => {
+    if (!expectedBySlug.has(target.requestedSlug)) {
+      throw new Error(`unexpected attested local target ${target.requestedSlug}`);
     }
-    observedLocal = observed;
-    const ok = expectedLocalRuntimes.length > 0 && resolutions.every((x) => x.resolvedExactly);
-    const artifactBody = JSON.stringify(
-      { localRuntimePreflightSchemaVersion: 1, evaluatedAtUtc, ok, observed, resolutions, reasons },
-      null,
-      2,
-    );
-    return { ok, reasons, observed, artifactBody };
-  };
+    const tpIndex = target.ociProcess.engineArgv.indexOf("--tensor-parallel-size");
+    const tpRaw = tpIndex >= 0 ? target.ociProcess.engineArgv[tpIndex + 1] : undefined;
+    const tensorParallelism = tpRaw != null && /^\d+$/.test(tpRaw) ? Number(tpRaw) : null;
+    const dtypeIndex = target.ociProcess.engineArgv.indexOf("--dtype");
+    const precision = dtypeIndex >= 0 ? target.ociProcess.engineArgv[dtypeIndex + 1] ?? null : null;
+    return {
+      requestedSlug: target.requestedSlug,
+      endpoint: target.endpoint,
+      healthy: target.canary.passed,
+      servedModelId: target.servedModelId,
+      checkpointRevision: target.checkpointRevision,
+      weightManifestDigest: target.weightManifestSha256.slice("sha256:".length),
+      servingConfigDigest: null,
+      tensorParallelism,
+      precision,
+      capturedAtUtc: attestation.capturedAtUtc,
+      observedContainerImage: target.ociImageDigest,
+      observedEngineArgs: target.ociProcess.engineArgv.join(" "),
+      observedCheckpointPath: null,
+    };
+  });
+}
+
+/**
+ * Bounded Stage C2 entrypoint. It accepts one fresh invocation only; runtime facts
+ * come exclusively from the already-validated Fable execution attestation.
+ */
+async function oneShotMain() {
+  const bootstrap = prepareOneShotBootstrap();
+  const {
+    outputRoot,
+    orKey,
+    historicalExpectation,
+    expectedAttestation,
+    expectedLocalBindings,
+    loadedAttestation,
+  } = bootstrap;
+  const now = () => new Date().toISOString();
+  const observedLocal = attestationLocalBindings(loadedAttestation.attestation, expectedAttestation);
+  const attestationArtifactBody = JSON.stringify(
+    {
+      executionAttestationSchemaVersion: loadedAttestation.attestation.schemaVersion,
+      sourceSha256: loadedAttestation.sha256,
+      sourceBytes: loadedAttestation.bytes,
+      sourceRawBody: loadedAttestation.rawBody,
+      validation: "exact",
+      attestation: loadedAttestation.attestation,
+    },
+    null,
+    2,
+  );
 
   const result = await runContinuation({
     outputRoot,
     generate: (cell, plan, req) => liveGenerate(cell, plan, req, orKey),
-    verifyHistoricalDigests: () => verifyHistoricalDigestsFromFiles(exp),
-    localPreflight,
+    verifyHistoricalDigests: () => verifyHistoricalDigestsFromFiles(historicalExpectation),
+    localPreflight: async () => ({
+      ok: true,
+      reasons: [],
+      observed: observedLocal,
+      artifactBody: attestationArtifactBody,
+    }),
     preflight: () => livePreflight({ orKey, now, expectedLocalBindings, precomputedObserved: observedLocal }),
     planCell: defaultPlanCell,
     buildRequest: defaultBuildRequest,
     now,
-    isResume: process.env.CONTINUATION_RESUME === "1",
-    // The fresh request plan the resume re-derivation deep-equals the stored request
-    // wire against (F02): the exact chat-completions URL + the frozen benchmark messages.
-    resumeRequestPlan: async (cell) => {
-      const t = TARGETS.find((x) => x.slug === cell.target);
-      if (!t) return null;
-      const l = await loadBenchmarkById(cell.benchmark);
-      return {
-        url: `${t.baseUrl}/chat/completions`,
-        messages: [
-          { role: "system", content: l.systemPrompt },
-          { role: "user", content: l.userPrompt },
-        ],
-      };
-    },
+    isResume: false,
+    stageId: ONE_SHOT_STAGE_ID,
   });
   console.log(
-    `CONTINUATION executed=${result.summary.executedThisInvocation} ` +
-      `cumulativeTerminal=${result.summary.cumulativeTerminalContinuation} ` +
+    `ONE_SHOT executed=${result.summary.executedThisInvocation} ` +
       `passed=${result.summary.cumulativePassedContinuation} failed=${result.summary.cumulativeFailedContinuation} ` +
       `stopped=${result.stopped ?? "no"} overall=${result.summary.overallStatus} ` +
       `summary=${result.summaryFile} manifest=${result.runtimeManifestFile}`,
@@ -2327,15 +2407,17 @@ async function continuationMain() {
 
 /**
  * Resolve the driver mode. Fail-closed BEFORE any network or credential access:
- * an absent or unknown mode is rejected. The default 24-cell campaign runs only
- * under the explicit "default" mode; the diagnostic continuation runs only under
- * "diagnostic-continuation-r1".
+ * an absent or unknown mode is rejected. The old continuation mode is retired;
+ * the bounded diagnostic run is available only as "diagnostic-one-shot-r1".
  */
-export function resolveDriverMode(raw: string | undefined): "default" | "diagnostic-continuation-r1" {
+export function resolveDriverMode(raw: string | undefined): "default" | "diagnostic-one-shot-r1" {
   if (raw === "default") return "default";
-  if (raw === "diagnostic-continuation-r1") return "diagnostic-continuation-r1";
+  if (raw === "diagnostic-continuation-r1") {
+    throw new Error("diagnostic-continuation-r1 is retired; automatic continuation/resume is prohibited");
+  }
+  if (raw === "diagnostic-one-shot-r1") return "diagnostic-one-shot-r1";
   throw new Error(
-    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default or diagnostic-continuation-r1`,
+    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default or diagnostic-one-shot-r1`,
   );
 }
 
@@ -2355,7 +2437,7 @@ function invokedDirectly(): boolean {
 
 if (invokedDirectly()) {
   const mode = resolveDriverMode(process.env.PLINIUS_DRIVER_MODE);
-  const entry = mode === "diagnostic-continuation-r1" ? continuationMain : main;
+  const entry = mode === "diagnostic-one-shot-r1" ? oneShotMain : main;
   entry().catch((e) => {
     console.error("DRIVER ERROR:", e);
     process.exit(1);

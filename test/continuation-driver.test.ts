@@ -422,7 +422,8 @@ describe("frozen order, plan and mode gate", () => {
     expect(() => resolveDriverMode(undefined)).toThrow(/unknown or absent/);
     expect(() => resolveDriverMode("bogus")).toThrow();
     expect(resolveDriverMode("default")).toBe("default");
-    expect(resolveDriverMode("diagnostic-continuation-r1")).toBe("diagnostic-continuation-r1");
+    expect(() => resolveDriverMode("diagnostic-continuation-r1")).toThrow(/retired/);
+    expect(resolveDriverMode("diagnostic-one-shot-r1")).toBe("diagnostic-one-shot-r1");
   });
 });
 
