@@ -22,8 +22,6 @@ readonly LABEL_KEY="org.plinius.qualification-stage"
 readonly MAX_IDLE_GPU_MIB=1024
 readonly HEALTH_TIMEOUT_SECONDS=1800
 
-ROLLBACK_DEEPWIKI_ID=""
-
 readonly A100_PREFLIGHT_SHA="30ffa0e7d8d10b1470c66519c4aae7af71139977f339d46ffc5b9b2c0b4a2db0"
 readonly QWEN_CHECKPOINT_SHA="9eac6a8940991f17e25af6b6a0c1107d2934aa6eb13893fba09b351e39b82c31"
 readonly GPTOSS_CHECKPOINT_SHA="b75d875327d58a1e8cc91d7f2ae0c4091d65e839ffb923f58cbda4c0e9fe35c9"
@@ -56,7 +54,6 @@ Usage:
 
 Required for preflight/deploy:
   PARENT_EVIDENCE_ROOT         Verified extracted parent Evidence root
-  PLINIUS_DEEPWIKI_CONTAINER  Running Docker container currently owning port 8001
 
 Required for deploy/status/teardown:
   PLINIUS_RUNTIME_STATE       Absolute path to the lifecycle state JSON
@@ -93,7 +90,8 @@ print_plan() {
     --arg gptossRevision "$GPTOSS_REVISION" \
     --arg gptossSnapshot "$GPTOSS_SNAPSHOT" \
     --argjson gptossArgs "$(json_array "${GPTOSS_ARGS[@]}")" \
-    '{schemaVersion:1, stageId:$stage, image:$image, networkDownloads:false, targets:[
+    '{schemaVersion:2, stageId:$stage, image:$image, networkDownloads:false,
+      hostPortRequirement:"8001-and-8002-free", deepwikiAction:"untouched", targets:[
       {container:$qwenName, model:$qwenModel, revision:$qwenRevision, endpoint:"http://localhost:8001/v1", gpus:[1,2], snapshot:$qwenSnapshot, engineArgv:$qwenArgs},
       {container:$gptossName, model:$gptossModel, revision:$gptossRevision, endpoint:"http://localhost:8002/v1", gpus:[3], snapshot:$gptossSnapshot, engineArgv:$gptossArgs}
     ]}'
@@ -125,24 +123,6 @@ verify_local_image() {
     <<<"$image_json" >/dev/null || die "local image RepoDigests do not contain the pinned digest"
   version=$(jq -r '.[0].Config.Labels["org.opencontainers.image.version"] // .[0].Config.Labels["vllm.version"] // .[0].Config.Labels.version // empty' <<<"$image_json")
   [[ "$version" == "$IMAGE_VERSION" ]] || die "local image version label is absent or not ${IMAGE_VERSION}"
-}
-
-container_process_json() {
-  docker inspect --type container "$1" | jq -c '.[0] | {id:.Id,name:(.Name|ltrimstr("/")),running:.State.Running,path:.Path,args:.Args,image:.Config.Image}'
-}
-
-verify_deepwiki() {
-  local info
-  info=$(container_process_json "$PLINIUS_DEEPWIKI_CONTAINER") || die "deepwiki must be a Docker-managed container"
-  jq -e '
-    .running == true and
-    (([.path] + .args) as $a |
-      ($a | index("-m")) as $m |
-      ($a | index("--port")) as $p |
-      $m != null and $a[$m + 1] == "api.main" and
-      $p != null and $a[$p + 1] == "8001")
-  ' <<<"$info" >/dev/null || die "deepwiki live process is not the approved python -m api.main --port 8001 shape"
-  jq -r '.id' <<<"$info"
 }
 
 assert_target_names_absent() {
@@ -196,7 +176,6 @@ preflight() {
   require_command ss
   [[ "$(uname -s)" == "Linux" ]] || die "deployment is supported only on Linux"
   [[ -n "${PARENT_EVIDENCE_ROOT:-}" ]] || die "PARENT_EVIDENCE_ROOT is required"
-  [[ -n "${PLINIUS_DEEPWIKI_CONTAINER:-}" ]] || die "PLINIUS_DEEPWIKI_CONTAINER is required"
   require_absolute PARENT_EVIDENCE_ROOT "$PARENT_EVIDENCE_ROOT"
   [[ -d "$PARENT_EVIDENCE_ROOT" && ! -L "$PARENT_EVIDENCE_ROOT" ]] || die "parent Evidence root is invalid"
   docker info >/dev/null 2>&1 || die "Docker daemon is unavailable"
@@ -209,9 +188,9 @@ preflight() {
   verify_snapshot "$GPTOSS_SNAPSHOT" "$GPTOSS_REVISION"
   verify_local_image
   assert_target_names_absent
+  assert_port_free 8001
   assert_port_free 8002
   assert_qualification_gpus_idle
-  verify_deepwiki >/dev/null
   printf 'LOCAL_RUNTIME_PREFLIGHT_OK\n'
 }
 
@@ -237,16 +216,14 @@ reserve_state() {
 
 write_state() {
   local phase=$1
-  local deepwiki_id=$2
-  local qwen_id=${3:-}
-  local gptoss_id=${4:-}
+  local qwen_id=${2:-}
+  local gptoss_id=${3:-}
   local tmp="${PLINIUS_RUNTIME_STATE}.tmp.$$"
   jq -n \
     --arg stage "$STAGE_ID" --arg phase "$phase" --arg updated "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg deepwikiId "$deepwiki_id" --arg deepwikiName "$PLINIUS_DEEPWIKI_CONTAINER" \
     --arg qwenId "$qwen_id" --arg gptossId "$gptoss_id" \
-    '{schemaVersion:1,stageId:$stage,phase:$phase,updatedAtUtc:$updated,
-      deepwiki:{id:$deepwikiId,name:$deepwikiName},
+    '{schemaVersion:2,stageId:$stage,phase:$phase,updatedAtUtc:$updated,
+      deepwiki:{action:"untouched"},
       qualification:{qwen:{id:$qwenId,name:"vllm-qwen"},gptoss:{id:$gptossId,name:"vllm-gptoss"}}}' >"$tmp"
   chmod 0600 "$tmp"
   mv -f "$tmp" "$PLINIUS_RUNTIME_STATE"
@@ -327,15 +304,11 @@ cleanup_qualification_container() {
 }
 
 rollback_deploy() {
-  local deepwiki_id=$1
   trap - EXIT ERR INT TERM
   cleanup_qualification_container "$QWEN_NAME" || true
   cleanup_qualification_container "$GPTOSS_NAME" || true
-  if [[ -n "$deepwiki_id" ]] && docker container inspect "$deepwiki_id" >/dev/null 2>&1; then
-    docker start "$deepwiki_id" >/dev/null 2>&1 || true
-  fi
   if [[ -n "${PLINIUS_RUNTIME_STATE:-}" && -f "$PLINIUS_RUNTIME_STATE" ]]; then
-    write_state rolled_back "$deepwiki_id" "" "" || true
+    write_state rolled_back "" "" || true
   fi
 }
 
@@ -343,46 +316,39 @@ deploy_exit_handler() {
   local status=$1
   trap - EXIT ERR INT TERM
   if (( status != 0 )); then
-    rollback_deploy "$ROLLBACK_DEEPWIKI_ID"
+    rollback_deploy
   fi
   exit "$status"
 }
 
 deploy() {
-  local deepwiki_id qwen_id gptoss_id
+  local qwen_id gptoss_id
   state_file_checks
   [[ ! -e "$PLINIUS_RUNTIME_STATE" ]] || die "runtime state already exists; deploy is not resumable"
   preflight
-  deepwiki_id=$(verify_deepwiki)
-  ROLLBACK_DEEPWIKI_ID=$deepwiki_id
   reserve_state
-  write_state prepared "$deepwiki_id" "" ""
+  write_state prepared "" ""
   # EXIT catches explicit die()/exit paths as well as set -e failures. ERR alone
-  # would leave deepwiki stopped when a post-stop validation calls die().
+  # would bypass cleanup when a post-create validation calls die().
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'deploy_exit_handler $?' EXIT
 
-  docker stop --time 30 "$deepwiki_id" >/dev/null
-  sleep 2
-  assert_port_free 8001
-  write_state deepwiki_stopped "$deepwiki_id" "" ""
-
   qwen_id=$(create_qwen)
   verify_container_plan "$QWEN_NAME" "$(json_array "${QWEN_ARGS[@]}")" 8001 "$QWEN_CACHE_ROOT" '["1","2"]'
-  write_state qwen_created "$deepwiki_id" "$qwen_id" ""
+  write_state qwen_created "$qwen_id" ""
   gptoss_id=$(create_gptoss)
   verify_container_plan "$GPTOSS_NAME" "$(json_array "${GPTOSS_ARGS[@]}")" 8002 "$GPTOSS_CACHE_ROOT" '["3"]'
-  write_state containers_created "$deepwiki_id" "$qwen_id" "$gptoss_id"
+  write_state containers_created "$qwen_id" "$gptoss_id"
 
   docker start "$QWEN_NAME" "$GPTOSS_NAME" >/dev/null
-  write_state containers_started "$deepwiki_id" "$qwen_id" "$gptoss_id"
+  write_state containers_started "$qwen_id" "$gptoss_id"
   # Both models load concurrently after docker start. Keep health checks in this
   # process so ERR handling has exactly one rollback owner.
   wait_for_model http://localhost:8001/v1 "$QWEN_MODEL"
   wait_for_model http://localhost:8002/v1 "$GPTOSS_MODEL"
 
-  write_state deployed "$deepwiki_id" "$qwen_id" "$gptoss_id"
+  write_state deployed "$qwen_id" "$gptoss_id"
   trap - EXIT ERR INT TERM
   printf 'LOCAL_RUNTIME_DEPLOYED state=%s\n' "$PLINIUS_RUNTIME_STATE"
 }
@@ -394,7 +360,7 @@ read_state() {
   mode=$(stat -c '%a' "$PLINIUS_RUNTIME_STATE")
   owner=$(stat -c '%u' "$PLINIUS_RUNTIME_STATE")
   [[ "$mode" == "600" && "$owner" == "$(id -u)" ]] || die "runtime state must be mode 0600 and owned by the executing uid"
-  jq -e --arg stage "$STAGE_ID" '.schemaVersion == 1 and .stageId == $stage' "$PLINIUS_RUNTIME_STATE" >/dev/null || die "runtime state schema or stage mismatch"
+  jq -e --arg stage "$STAGE_ID" '.schemaVersion == 2 and .stageId == $stage and .deepwiki.action == "untouched"' "$PLINIUS_RUNTIME_STATE" >/dev/null || die "runtime state schema or stage mismatch"
   cat "$PLINIUS_RUNTIME_STATE"
 }
 
@@ -408,15 +374,12 @@ status_runtime() {
 }
 
 teardown() {
-  local state phase deepwiki_id deepwiki_name qwen_id gptoss_id actual
+  local state phase qwen_id gptoss_id actual
   state=$(read_state)
   phase=$(jq -r '.phase' <<<"$state")
   [[ "$phase" != "restored" ]] || die "runtime was already restored"
-  deepwiki_id=$(jq -r '.deepwiki.id' <<<"$state")
-  deepwiki_name=$(jq -r '.deepwiki.name' <<<"$state")
   qwen_id=$(jq -r '.qualification.qwen.id' <<<"$state")
   gptoss_id=$(jq -r '.qualification.gptoss.id' <<<"$state")
-  PLINIUS_DEEPWIKI_CONTAINER=$deepwiki_name
 
   if docker container inspect "$QWEN_NAME" >/dev/null 2>&1; then
     actual=$(docker inspect --format '{{.Id}}' "$QWEN_NAME")
@@ -428,18 +391,10 @@ teardown() {
   fi
   cleanup_qualification_container "$QWEN_NAME"
   cleanup_qualification_container "$GPTOSS_NAME"
+  assert_port_free 8001
   assert_port_free 8002
-
-  actual=$(docker inspect --format '{{.Id}}' "$deepwiki_id") || die "recorded deepwiki container no longer exists"
-  [[ "$actual" == "$deepwiki_id" ]] || die "deepwiki container identity changed"
-  docker start "$deepwiki_id" >/dev/null
-  local deadline=$((SECONDS + 120))
-  until port_is_listening 8001; do
-    (( SECONDS < deadline )) || die "deepwiki did not restore port 8001"
-    sleep 2
-  done
-  write_state restored "$deepwiki_id" "" ""
-  printf 'LOCAL_RUNTIME_TORN_DOWN_AND_DEEPWIKI_RESTORED state=%s\n' "$PLINIUS_RUNTIME_STATE"
+  write_state restored "" ""
+  printf 'LOCAL_RUNTIME_TORN_DOWN_DEEPWIKI_UNTOUCHED state=%s\n' "$PLINIUS_RUNTIME_STATE"
 }
 
 main() {

@@ -20,6 +20,8 @@ interface DeploymentPlan {
     snapshot: string;
     engineArgv: string[];
   }>;
+  hostPortRequirement: string;
+  deepwikiAction: string;
 }
 
 function plan(): DeploymentPlan {
@@ -29,12 +31,14 @@ function plan(): DeploymentPlan {
 describe("qualification local-runtime deployment", () => {
   it("emits the frozen two-target plan without GPU 0", () => {
     const value = plan();
-    expect(value.schemaVersion).toBe(1);
+    expect(value.schemaVersion).toBe(2);
     expect(value.stageId).toBe("plinius-qualification-2026-08-22-diagnostic-one-shot-r1");
     expect(value.image).toBe(
       "vllm/vllm-openai@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967",
     );
     expect(value.networkDownloads).toBe(false);
+    expect(value.hostPortRequirement).toBe("8001-and-8002-free");
+    expect(value.deepwikiAction).toBe("untouched");
     expect(value.targets.map((target) => target.gpus)).toEqual([[1, 2], [3]]);
     expect(value.targets.flatMap((target) => target.gpus)).not.toContain(0);
   });
@@ -74,6 +78,8 @@ describe("qualification local-runtime deployment", () => {
     expect(source).not.toMatch(/docker\s+(?:image\s+)?pull/);
     expect(source).not.toMatch(/huggingface-cli|hf\s+download|snapshot_download/);
     expect(source).not.toMatch(/\bkill(?:all)?\b|\bpkill\b/);
+    expect(source).not.toContain("PLINIUS_DEEPWIKI_CONTAINER");
+    expect(source).not.toContain("verify_deepwiki");
     expect(source).toContain("HF_HUB_OFFLINE=1");
     expect(source).toContain("TRANSFORMERS_OFFLINE=1");
   });
