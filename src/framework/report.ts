@@ -8,11 +8,23 @@
  * only summarizes facts.
  */
 import { CampaignSpec } from "./campaign.js";
-import { FrameworkRunRecord } from "./runner.js";
+import { FrameworkRunRecord, RunAttempt } from "./runner.js";
 import { ReviewSet, reviewStateCounts } from "./review.js";
 import { ModelAggregate } from "./aggregate.js";
 
-export const REPORT_SCHEMA_VERSION = 1;
+/**
+ * Campaign report schema version.
+ *
+ * Version 2 is a breaking shape change over version 1. The cost summary now sums
+ * EVERY attempt of every logical run (version 1 summed only each run's headline,
+ * i.e. its final attempt) and counts logical runs and attempts as distinct
+ * units. Version 2 also carries no `succeeded`/`failed` fields: the collapsed
+ * "succeeded" count of the old pipeline — which reported truncated and empty
+ * runs as successes — is deliberately absent, replaced by the separate transport
+ * / response / final-completeness / qualification counts. No migration is
+ * provided; version 1 reports are read-only historical artifacts.
+ */
+export const REPORT_SCHEMA_VERSION = 2;
 
 export interface BackendSummary {
   backend: string;
@@ -28,17 +40,78 @@ export interface BenchmarkSummary {
   runs: number;
 }
 
+/**
+ * Cost accounting.
+ *
+ * Every figure here is summed over ATTEMPTS, not logical runs: a retried run's
+ * earlier attempts each incurred cost and must be counted. Logical runs and
+ * attempts are reported as separate units, and an attempt whose cost is unknown
+ * is counted as unknown — never coerced to $0.
+ */
 export interface CostSummary {
+  /** Sum over every attempt with a known cost. Null when no attempt cost is known. */
   totalEstimatedUsd: number | null;
-  runsWithCost: number;
-  runsWithoutCost: number;
-  byBackend: { backend: string; costModel: string; estimatedUsd: number | null }[];
+  /** One per backend×model×benchmark×repetition. */
+  logicalRuns: number;
+  /** Total attempts across all logical runs (≥ logicalRuns). */
+  attempts: number;
+  attemptsWithKnownCost: number;
+  attemptsWithUnknownCost: number;
+  byBackend: {
+    backend: string;
+    costModel: string;
+    estimatedUsd: number | null;
+    attempts: number;
+    attemptsWithKnownCost: number;
+  }[];
 }
 
+/**
+ * Per-attempt costs for one record, with a fail-compatible fallback: a legacy
+ * record that predates the attempts array is treated as exactly one attempt
+ * carrying the headline cost, so it is neither dropped nor double-counted.
+ */
+function attemptCostsOf(r: FrameworkRunRecord): { costModel: string; estimatedUsd: number | null }[] {
+  const attempts = (r as { attempts?: RunAttempt[] }).attempts;
+  if (Array.isArray(attempts) && attempts.length > 0) {
+    return attempts.map((a) => ({
+      costModel: a.cost?.costModel ?? "UNKNOWN",
+      estimatedUsd: a.cost?.estimatedUsd ?? null,
+    }));
+  }
+  return [{ costModel: r.cost?.costModel ?? "UNKNOWN", estimatedUsd: r.cost?.estimatedUsd ?? null }];
+}
+
+/**
+ * Runtime counts.
+ *
+ * The four completeness levels are reported separately and never merged. A
+ * transport success is only that: it says the call came back, not that a usable
+ * answer did. `qualified` is the sole count that means a complete final answer
+ * on an accepted terminal finish reason.
+ */
 export interface RuntimeSummary {
   totalRuns: number;
-  succeeded: number;
-  failed: number;
+  /** Logical runs and attempts are counted separately. */
+  logicalRuns: number;
+  attempts: number;
+  /** The call completed at the transport layer. NOT a quality signal. */
+  transportOk: number;
+  transportFailed: number;
+  /** A readable provider payload came back. */
+  responseReceived: number;
+  /** Non-empty final answer, distinct from reasoning. */
+  finalComplete: number;
+  emptyFinal: number;
+  reasoningOnly: number;
+  truncated: number;
+  filtered: number;
+  normalizerError: number;
+  /** Complete final answer AND accepted terminal finish reason. */
+  qualified: number;
+  notQualified: number;
+  /** Canonical finish reason histogram. */
+  finishReasons: Record<string, number>;
   averageLatencyMs: number | null;
 }
 
@@ -109,36 +182,76 @@ export function buildCampaignReport(input: BuildReportInput): CampaignReport {
   }
   const benchmarks = [...benchMap.values()].sort((a, b) => a.benchmarkId.localeCompare(b.benchmarkId));
 
-  // Cost.
-  const withCost = records.filter((r) => r.cost.estimatedUsd !== null);
-  const costByBackend = new Map<string, { costModel: string; estimatedUsd: number | null }>();
+  // Cost — summed over EVERY attempt of every logical run. A retried run's
+  // earlier attempts still cost money and are never dropped from the total.
+  const allAttemptCosts = records.flatMap((r) => attemptCostsOf(r));
+  const knownAttemptCosts = allAttemptCosts.filter((c) => c.estimatedUsd !== null);
+  const costByBackend = new Map<
+    string,
+    { costModel: string; estimatedUsd: number | null; attempts: number; attemptsWithKnownCost: number }
+  >();
   for (const r of records) {
-    const c = costByBackend.get(r.backend) ?? { costModel: r.cost.costModel, estimatedUsd: null };
-    if (r.cost.estimatedUsd !== null) c.estimatedUsd = (c.estimatedUsd ?? 0) + r.cost.estimatedUsd;
+    const costs = attemptCostsOf(r);
+    const c =
+      costByBackend.get(r.backend) ??
+      { costModel: r.cost?.costModel ?? costs[0]?.costModel ?? "UNKNOWN", estimatedUsd: null, attempts: 0, attemptsWithKnownCost: 0 };
+    for (const ac of costs) {
+      c.attempts += 1;
+      if (ac.estimatedUsd !== null) {
+        c.estimatedUsd = (c.estimatedUsd ?? 0) + ac.estimatedUsd;
+        c.attemptsWithKnownCost += 1;
+      }
+    }
     costByBackend.set(r.backend, c);
   }
   const cost: CostSummary = {
-    totalEstimatedUsd: withCost.length > 0 ? round(sum(withCost.map((r) => r.cost.estimatedUsd!))) : null,
-    runsWithCost: withCost.length,
-    runsWithoutCost: records.length - withCost.length,
+    totalEstimatedUsd:
+      knownAttemptCosts.length > 0 ? round(sum(knownAttemptCosts.map((c) => c.estimatedUsd!))) : null,
+    logicalRuns: records.length,
+    attempts: allAttemptCosts.length,
+    attemptsWithKnownCost: knownAttemptCosts.length,
+    attemptsWithUnknownCost: allAttemptCosts.length - knownAttemptCosts.length,
     byBackend: [...costByBackend.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([backend, c]) => ({
         backend,
         costModel: c.costModel,
         estimatedUsd: c.estimatedUsd === null ? null : round(c.estimatedUsd),
+        attempts: c.attempts,
+        attemptsWithKnownCost: c.attemptsWithKnownCost,
       })),
   };
 
-  // Runtime.
+  // Runtime. Each completeness level is counted on its own terms; a transport
+  // success is never promoted into a quality result.
   const failed = records.filter((r) => r.error !== null).length;
+  const countFinal = (s: string) =>
+    records.filter((r) => r.status?.finalCompleteness === s).length;
+  const finishReasons: Record<string, number> = {};
+  for (const r of records) {
+    const key = r.finishReasonMapping?.canonical ?? "unknown";
+    finishReasons[key] = (finishReasons[key] ?? 0) + 1;
+  }
+  const qualified = records.filter((r) => r.status?.qualification === "pass").length;
   const latencies = records
     .map((r) => (typeof r.metrics.latencyMs === "number" ? r.metrics.latencyMs : null))
     .filter((x): x is number => x !== null);
   const runtime: RuntimeSummary = {
     totalRuns: records.length,
-    succeeded: records.length - failed,
-    failed,
+    logicalRuns: records.length,
+    attempts: records.reduce((n, r) => n + (r.attemptCount ?? 1), 0),
+    transportOk: records.filter((r) => r.status?.transport === "ok").length,
+    transportFailed: records.filter((r) => r.status?.transport !== "ok").length,
+    responseReceived: records.filter((r) => r.status?.response === "received").length,
+    finalComplete: countFinal("complete"),
+    emptyFinal: countFinal("empty_final"),
+    reasoningOnly: countFinal("reasoning_only"),
+    truncated: countFinal("truncated"),
+    filtered: countFinal("filtered"),
+    normalizerError: countFinal("normalizer_error"),
+    qualified,
+    notQualified: records.length - qualified,
+    finishReasons,
     averageLatencyMs: latencies.length > 0 ? round(sum(latencies) / latencies.length, 1) : null,
   };
 
@@ -198,7 +311,14 @@ export function renderReportMarkdown(report: CampaignReport): string {
 
   p(`## Campaign Summary`);
   p();
-  p(`- Runs: ${report.runtime.totalRuns} (succeeded ${report.runtime.succeeded}, failed ${report.runtime.failed})`);
+  p(
+    `- Runs: ${report.runtime.logicalRuns} logical / ${report.runtime.attempts} attempts ` +
+      `(qualified ${report.runtime.qualified}, not qualified ${report.runtime.notQualified})`,
+  );
+  p(
+    `- Transport ok ${report.runtime.transportOk} · response received ${report.runtime.responseReceived} · ` +
+      `final complete ${report.runtime.finalComplete} — a transport success is not a complete answer`,
+  );
   p(`- Models: ${report.models.length}`);
   p(`- Backends: ${report.backends.map((b) => b.backend).join(", ") || "—"}`);
   p(`- Benchmarks: ${report.benchmarks.length}`);
@@ -261,17 +381,31 @@ export function renderReportMarkdown(report: CampaignReport): string {
 
   p(`## Cost`);
   p();
-  p(`- Total estimated: ${report.cost.totalEstimatedUsd === null ? "unknown" : `$${report.cost.totalEstimatedUsd}`}`);
-  p(`- Runs with cost: ${report.cost.runsWithCost} · without: ${report.cost.runsWithoutCost}`);
+  p(
+    `- Total estimated: ${report.cost.totalEstimatedUsd === null ? "unknown" : `$${report.cost.totalEstimatedUsd}`} ` +
+      `(summed over all attempts)`,
+  );
+  p(
+    `- Logical runs: ${report.cost.logicalRuns} · attempts: ${report.cost.attempts} ` +
+      `(cost known ${report.cost.attemptsWithKnownCost}, unknown ${report.cost.attemptsWithUnknownCost})`,
+  );
   for (const b of report.cost.byBackend) {
-    p(`  - ${b.backend}: ${b.costModel}${b.estimatedUsd === null ? "" : ` ($${b.estimatedUsd})`}`);
+    p(
+      `  - ${b.backend}: ${b.costModel}${b.estimatedUsd === null ? "" : ` ($${b.estimatedUsd})`} ` +
+        `over ${b.attempts} attempt(s)`,
+    );
   }
   p();
 
   p(`## Runtime`);
   p();
   p(`- Total runs: ${report.runtime.totalRuns}`);
-  p(`- Succeeded: ${report.runtime.succeeded} · Failed: ${report.runtime.failed}`);
+  p(
+    `- Qualified: ${report.runtime.qualified} · Not qualified: ${report.runtime.notQualified} ` +
+      `(empty final ${report.runtime.emptyFinal}, reasoning-only ${report.runtime.reasoningOnly}, ` +
+      `truncated ${report.runtime.truncated}, filtered ${report.runtime.filtered}, ` +
+      `normalizer error ${report.runtime.normalizerError}, transport failed ${report.runtime.transportFailed})`,
+  );
   p(`- Average latency: ${report.runtime.averageLatencyMs === null ? "unknown" : `${report.runtime.averageLatencyMs} ms`}`);
   p();
 

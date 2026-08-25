@@ -6,7 +6,7 @@ import { join } from "path";
 import { parseBenchmarkAsset, parseRubric } from "../src/framework/benchmark.js";
 import { loadAllBenchmarks, loadBenchmarkById, LoadedFrameworkBenchmark } from "../src/framework/loader.js";
 import { parseCampaignSpec, campaignBenchmarkRefs, CampaignSpec } from "../src/framework/campaign.js";
-import { runCampaign, computeRunId } from "../src/framework/runner.js";
+import { runCampaign, computeRunId, FRAMEWORK_RUN_SCHEMA_VERSION } from "../src/framework/runner.js";
 import {
   createReviewSet,
   advanceTask,
@@ -16,7 +16,7 @@ import {
   ReviewableRun,
 } from "../src/framework/review.js";
 import { aggregateResults } from "../src/framework/aggregate.js";
-import { buildCampaignReport, renderReportMarkdown } from "../src/framework/report.js";
+import { buildCampaignReport, renderReportMarkdown, REPORT_SCHEMA_VERSION } from "../src/framework/report.js";
 import { resolveCampaignBenchmarks } from "../src/commands/campaign.js";
 
 import { ExecutionBackend } from "../src/backend/interface.js";
@@ -334,7 +334,13 @@ describe("aggregation and report", () => {
     const agg = aggregateResults(set, mapping);
     const report = buildCampaignReport({ spec, records, aggregates: agg, reviewSet: set, generatedAt: NOW() });
     expect(report.runtime.totalRuns).toBe(4);
-    expect(report.runtime.succeeded).toBe(4);
+    // `succeeded` used to mean "the call came back", which is how 120 truncated
+    // and empty runs were once reported as successes. Transport and
+    // qualification are now counted separately: the stub returns a non-empty
+    // answer on a normal stop, so all four qualify on their own merits.
+    expect(report.runtime.transportOk).toBe(4);
+    expect(report.runtime.qualified).toBe(4);
+    expect(report.runtime.notQualified).toBe(0);
     expect(report.backends[0].backend).toBe("stub");
     expect(report.benchmarks.length).toBe(2);
     expect(report.knownLimitations.some((l) => /No LLM judge/.test(l))).toBe(true);
@@ -342,5 +348,216 @@ describe("aggregation and report", () => {
     for (const section of ["Campaign Summary", "Models", "Backend", "Benchmarks", "Review Summary", "Cost", "Runtime", "Known Limitations"]) {
       expect(md).toContain(`## ${section}`);
     }
+  });
+});
+
+// --- authority findings A-05 (retry accounting + provenance) and A-07 (schema) --
+
+/** Transport-ok but non-qualifying (empty final) response at a fixed cost/attempt. */
+class CostBackend implements ExecutionBackend {
+  name() { return "stub"; }
+  version() { return "9.9.9"; }
+  metadata(): BackendMetadata { return { backendName: "stub", backendVersion: "9.9.9", vendor: "Stub", apiVersion: "v1" }; }
+  async capabilities(): Promise<BackendCapabilities> { return { capabilities: unknownCapabilities(), maxContextLength: null, maxOutputLength: null }; }
+  async discoverModels(): Promise<ModelDescriptor[]> {
+    return [{ id: "m-a", canonicalSlug: "m-a", ownedBy: "stub", contextLength: 4096, backendMetadata: null }];
+  }
+  async resolveModel(requestedModel: string): Promise<ResolveResult> {
+    return { requestedModel, resolvedModel: requestedModel, found: true, isAlias: false, warnings: [] };
+  }
+  async execute(request: ExecutionRequest): Promise<ExecutionResult> {
+    const provenance: ExecutionProvenance = {
+      backend: "stub", endpoint: "http://stub/v1", model: request.model, created: null,
+      requestId: "req-cost", seed: null, sampling: null, finishReason: "stop", usage: null, backendMetadata: null,
+    };
+    return {
+      text: "", // empty final → never qualifies → runner retries to the cap
+      finishReason: "stop",
+      metrics: { latencyMs: 5, promptTokens: 1, completionTokens: 0, totalTokens: 1, promptTps: null, generationTps: null, queueTimeMs: null },
+      provenance,
+      cost: { costModel: "METERED", estimatedUsd: 0.001 } as CostEstimate,
+      raw: { id: "req-cost", model: request.model, choices: [{ finish_reason: "stop", message: { role: "assistant", content: "" } }] },
+    };
+  }
+  async *stream(): AsyncIterable<StreamChunk> { yield { delta: "", done: true }; }
+  async estimateCost(): Promise<CostEstimate> { return { costModel: "METERED", estimatedUsd: 0.001 }; }
+  async provenance(): Promise<ExecutionProvenance | null> { return null; }
+  async health(): Promise<HealthResult> { return { backend: "stub", healthy: true, checks: [], checkedAt: NOW() }; }
+}
+
+/** Attempt 0 returns a non-qualifying response with provenance; later attempts throw. */
+class FlakyProvenanceBackend implements ExecutionBackend {
+  private calls = 0;
+  name() { return "stub"; }
+  version() { return "9.9.9"; }
+  metadata(): BackendMetadata { return { backendName: "stub", backendVersion: "9.9.9", vendor: "Stub", apiVersion: "v1" }; }
+  async capabilities(): Promise<BackendCapabilities> { return { capabilities: unknownCapabilities(), maxContextLength: null, maxOutputLength: null }; }
+  async discoverModels(): Promise<ModelDescriptor[]> {
+    return [{ id: "m-a", canonicalSlug: "m-a", ownedBy: "stub", contextLength: 4096, backendMetadata: null }];
+  }
+  async resolveModel(requestedModel: string): Promise<ResolveResult> {
+    return { requestedModel, resolvedModel: requestedModel, found: true, isAlias: false, warnings: [] };
+  }
+  async execute(request: ExecutionRequest): Promise<ExecutionResult> {
+    this.calls += 1;
+    if (this.calls === 1) {
+      const provenance: ExecutionProvenance = {
+        backend: "stub", endpoint: "http://early/v1", model: "m/early", created: "2026-01-01T00:00:00Z",
+        requestId: "req-early", seed: null, sampling: null, finishReason: "stop", usage: null,
+        backendMetadata: { tier: "gold" },
+      };
+      return {
+        text: "", // non-qualifying, so the runner keeps retrying
+        finishReason: "stop",
+        metrics: { latencyMs: 7, promptTokens: 1, completionTokens: 0, totalTokens: 1, promptTps: null, generationTps: null, queueTimeMs: null },
+        provenance,
+        cost: { costModel: "METERED", estimatedUsd: 0.001 } as CostEstimate,
+        raw: { id: "req-early", model: "m/early", choices: [{ finish_reason: "stop", message: { role: "assistant", content: "" } }] },
+      };
+    }
+    throw new BackendError("timeout", "later attempt failed", { backend: "stub" });
+  }
+  async *stream(): AsyncIterable<StreamChunk> { yield { delta: "", done: true }; }
+  async estimateCost(): Promise<CostEstimate> { return { costModel: "METERED", estimatedUsd: 0.001 }; }
+  async provenance(): Promise<ExecutionProvenance | null> { return null; }
+  async health(): Promise<HealthResult> { return { backend: "stub", healthy: true, checks: [], checkedAt: NOW() }; }
+}
+
+/** A version-1 style record with NO attempts array — exercises the legacy fallback. */
+function legacyRecord(estimatedUsd: number | null, id: string): Record<string, unknown> {
+  return {
+    schemaVersion: 1,
+    runId: `run-legacy-${id}`,
+    campaignId: "camp-one",
+    benchmarkId: "b-legacy",
+    benchmarkVersion: "1.0.0",
+    category: "security",
+    backend: "legacy",
+    backendVersion: "1.0.0",
+    model: "m-legacy",
+    cost: { costModel: "METERED", estimatedUsd },
+    status: { transport: "ok", response: "received", finalCompleteness: "complete", qualification: "pass", failureReasons: [] },
+    finishReasonMapping: { raw: "stop", canonical: "stop", accepted: true, matchedTable: "normal_termination" },
+    metrics: { latencyMs: 1 },
+    error: null,
+    // deliberately no `attempts` / `attemptCount`
+  };
+}
+
+describe("A-05 retry accounting and provenance", () => {
+  it("sums cost over every attempt of every logical run, counting runs and attempts separately", async () => {
+    const spec = fixtureCampaign({ models: ["m-a"] });
+    const benchmarks = await loadAllBenchmarks(root); // se-one + sec-two = 2 logical runs
+    const { records } = await runCampaign({
+      spec, benchmarks, resolveBackend: () => new CostBackend(),
+      outputDir: join(outDir, "a05-cost"), now: NOW, maxAttempts: 3,
+    });
+    expect(records.length).toBe(2);
+    expect(records.every((r) => r.attemptCount === 3)).toBe(true);
+
+    const report = buildCampaignReport({ spec, records, aggregates: [], reviewSet: null, generatedAt: NOW() });
+    // 2 logical runs × 3 attempts × $0.001 = $0.006 — headline-only would be $0.002.
+    expect(report.cost.logicalRuns).toBe(2);
+    expect(report.cost.attempts).toBe(6);
+    expect(report.cost.totalEstimatedUsd).toBe(0.006);
+    expect(report.cost.attemptsWithKnownCost).toBe(6);
+    expect(report.cost.attemptsWithUnknownCost).toBe(0);
+    const stub = report.cost.byBackend.find((b) => b.backend === "stub")!;
+    expect(stub.estimatedUsd).toBe(0.006);
+    expect(stub.attempts).toBe(6);
+    expect(stub.attemptsWithKnownCost).toBe(6);
+  });
+
+  it("falls back to headline cost for a legacy record and never coerces unknown cost to $0", () => {
+    const spec = fixtureCampaign();
+    const records = [legacyRecord(0.002, "known"), legacyRecord(null, "unknown")] as unknown as Parameters<typeof buildCampaignReport>[0]["records"];
+    const report = buildCampaignReport({ spec, records, aggregates: [], reviewSet: null, generatedAt: NOW() });
+    expect(report.cost.logicalRuns).toBe(2);
+    expect(report.cost.attempts).toBe(2); // one attempt each, via the fallback
+    expect(report.cost.totalEstimatedUsd).toBe(0.002); // unknown is NOT added as 0
+    expect(report.cost.attemptsWithKnownCost).toBe(1);
+    expect(report.cost.attemptsWithUnknownCost).toBe(1);
+  });
+
+  it("reports total cost as null (unknown) when no attempt cost is known", () => {
+    const spec = fixtureCampaign();
+    const records = [legacyRecord(null, "u1")] as unknown as Parameters<typeof buildCampaignReport>[0]["records"];
+    const report = buildCampaignReport({ spec, records, aggregates: [], reviewSet: null, generatedAt: NOW() });
+    expect(report.cost.totalEstimatedUsd).toBeNull(); // not 0
+    expect(report.cost.attemptsWithUnknownCost).toBe(1);
+  });
+
+  it("does not let a final transport failure inherit an earlier attempt's provenance", async () => {
+    const spec = fixtureCampaign({ models: ["m-a"] });
+    const all = await loadAllBenchmarks(root);
+    const benchmarks = all.filter((b) => b.asset.id === "se-one"); // 1 logical run
+    const { records } = await runCampaign({
+      spec, benchmarks, resolveBackend: () => new FlakyProvenanceBackend(),
+      outputDir: join(outDir, "a05-prov"), now: NOW, maxAttempts: 3,
+    });
+    expect(records.length).toBe(1);
+    const r = records[0];
+    expect(r.attemptCount).toBe(3); // never qualifies → runs to the cap
+    expect(r.attempts[2].error?.kind).toBe("timeout"); // final attempt failed transport
+
+    // Headline provenance is the FINAL (failed) attempt's: it carries no request
+    // id, endpoint, provider metadata, created time, or the early response model.
+    expect(r.generationProvenance.generationId).toBeNull();
+    expect(r.generationProvenance.endpoint).toBeNull();
+    expect(r.generationProvenance.providerMetadata).toBeNull();
+    expect(r.generationProvenance.createdAt).toBeNull();
+    expect(r.generationProvenance.model).not.toBe("m/early");
+    expect(r.generationProvenance.canonicalSlug).not.toBe("m/early");
+
+    // The early attempt's provenance is retained on attempt 0 only.
+    expect(r.attempts[0].generationProvenance.generationId).toBe("req-early");
+    expect(r.attempts[0].generationProvenance.providerMetadata).toEqual({ tier: "gold" });
+    expect(r.attempts[2].generationProvenance.generationId).toBeNull();
+
+    // The manifest's headline provenance likewise carries no early request id.
+    expect(r.manifest.generationProvenance[0].generationId).toBeNull();
+  });
+});
+
+describe("A-07 schema versions", () => {
+  it("stamps fresh run records at version 2 with per-attempt generation provenance", async () => {
+    const spec = fixtureCampaign({ models: ["m-a"] });
+    const benchmarks = await loadAllBenchmarks(root);
+    const { records } = await runCampaign({
+      spec, benchmarks, resolveBackend: () => new StubBackend(),
+      outputDir: join(outDir, "a07-run"), now: NOW,
+    });
+    expect(FRAMEWORK_RUN_SCHEMA_VERSION).toBe(2);
+    for (const r of records) {
+      expect(r.schemaVersion).toBe(2);
+      // required v2 shape: headline + per-attempt generation provenance
+      expect(r.generationProvenance).toBeTruthy();
+      expect(r.attempts.every((a) => a.generationProvenance !== undefined)).toBe(true);
+    }
+  });
+
+  it("does not misidentify a version-1 record as version 2", () => {
+    const v1 = legacyRecord(0.001, "v1");
+    expect(v1.schemaVersion).toBe(1);
+    expect(v1.schemaVersion).not.toBe(FRAMEWORK_RUN_SCHEMA_VERSION);
+  });
+
+  it("emits version-2 reports with no collapsed succeeded/failed fields", async () => {
+    const spec = fixtureCampaign({ models: ["m-a"] });
+    const benchmarks = await loadAllBenchmarks(root);
+    const { records } = await runCampaign({
+      spec, benchmarks, resolveBackend: () => new StubBackend(),
+      outputDir: join(outDir, "a07-report"), now: NOW,
+    });
+    const report = buildCampaignReport({ spec, records, aggregates: [], reviewSet: null, generatedAt: NOW() });
+    expect(REPORT_SCHEMA_VERSION).toBe(2);
+    expect(report.schemaVersion).toBe(2);
+    // the old collapsed counts are gone at every level
+    expect(report).not.toHaveProperty("succeeded");
+    expect(report).not.toHaveProperty("failed");
+    expect(report.runtime).not.toHaveProperty("succeeded");
+    expect(report.runtime).not.toHaveProperty("failed");
+    expect(report.cost).not.toHaveProperty("runsWithCost");
+    expect(report.cost).not.toHaveProperty("runsWithoutCost");
   });
 });

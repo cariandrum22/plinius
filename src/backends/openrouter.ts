@@ -115,6 +115,9 @@ export class OpenRouterBackend implements InferenceBackend {
         : undefined,
       latencyMs,
       providerRequestId: completion.id,
+      // The provider payload verbatim, so reasoning fields and routing metadata
+      // survive into the run record rather than being summarised away.
+      rawMetadata: completion as unknown as Record<string, unknown>,
     };
   }
 

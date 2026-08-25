@@ -189,13 +189,18 @@ export class OpenAICompatibleBackend implements InferenceBackend {
     latencyMs: number,
   ): InferenceResponse {
     const choice = payload.choices?.[0];
-    if (!choice || typeof choice.message?.content !== "string") {
+    if (!choice) {
       throw new InferenceError(
         "invalid_response",
         `Backend ${this.id} returned no valid choice/content`,
         { backendId: this.id },
       );
     }
+    // A reasoning-only answer arrives as `content: null`. That is a real
+    // provider outcome, not a transport fault, so it is preserved and left for
+    // completeness classification to record as a failure — discarding it here
+    // would hide the very case the qualification campaign has to detect.
+    const content = typeof choice.message?.content === "string" ? choice.message.content : "";
 
     const usage = payload.usage
       ? {
@@ -206,12 +211,14 @@ export class OpenAICompatibleBackend implements InferenceBackend {
       : undefined;
 
     return {
-      text: choice.message.content,
+      text: content,
       finishReason: choice.finish_reason ?? undefined,
       usage,
       latencyMs,
       providerRequestId: payload.id,
-      rawMetadata: { model: payload.model },
+      // The provider payload verbatim. It is the audit record for the run and
+      // must not be reduced to a summary of itself.
+      rawMetadata: payload as unknown as Record<string, unknown>,
     };
   }
 
