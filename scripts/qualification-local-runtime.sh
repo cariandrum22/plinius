@@ -252,7 +252,7 @@ verify_container_plan() {
     .[0].HostConfig.IpcMode == "host" and
     .[0].HostConfig.PortBindings["8000/tcp"] == [{HostIp:"127.0.0.1",HostPort:$hostPort}] and
     ([.[0].Mounts[] | select(.Type == "bind" and .Source == $cacheRoot and .Destination == $cacheRoot and .RW == false)] | length) == 1 and
-    ([.[0].HostConfig.DeviceRequests[]?.DeviceIDs] | index($deviceIds)) != null and
+    ([.[0].HostConfig.DeviceRequests[]?.DeviceIDs] | any(. == $deviceIds)) and
     (.[0].Config.Env | index("HF_HUB_CACHE=" + $cacheRoot + "/hub")) != null and
     (.[0].Config.Env | index("HF_HUB_OFFLINE=1")) != null and
     (.[0].Config.Env | index("TRANSFORMERS_OFFLINE=1")) != null and

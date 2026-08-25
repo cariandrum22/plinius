@@ -29,6 +29,64 @@ function plan(): DeploymentPlan {
   return JSON.parse(execFileSync("bash", [script, "plan"], { encoding: "utf8" })) as DeploymentPlan;
 }
 
+function inspectFixture(
+  value: DeploymentPlan,
+  target: DeploymentPlan["targets"][number],
+  hostPort: string,
+  cacheRoot: string,
+  deviceIds: string[],
+): unknown[] {
+  return [
+    {
+      Config: {
+        Image: value.image,
+        Labels: { "org.plinius.qualification-stage": value.stageId },
+        Env: [`HF_HUB_CACHE=${cacheRoot}/hub`, "HF_HUB_OFFLINE=1", "TRANSFORMERS_OFFLINE=1"],
+      },
+      Path: "vllm",
+      Args: target.engineArgv,
+      HostConfig: {
+        RestartPolicy: { Name: "no" },
+        IpcMode: "host",
+        PortBindings: { "8000/tcp": [{ HostIp: "127.0.0.1", HostPort: hostPort }] },
+        DeviceRequests: [{ DeviceIDs: deviceIds }],
+      },
+      Mounts: [{ Type: "bind", Source: cacheRoot, Destination: cacheRoot, RW: false }],
+    },
+  ];
+}
+
+function verifyInspectFixture(
+  fixture: unknown[],
+  target: DeploymentPlan["targets"][number],
+  hostPort: string,
+  cacheRoot: string,
+  expectedDeviceIds: string[],
+) {
+  return spawnSync(
+    "bash",
+    [
+      "-c",
+      'source "$1"; docker() { printf %s "$INSPECT_JSON"; }; ' +
+        'verify_container_plan "$NAME" "$EXPECTED_ARGS" "$HOST_PORT" "$CACHE_ROOT" "$DEVICE_IDS"',
+      "bash",
+      script,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        INSPECT_JSON: JSON.stringify(fixture),
+        NAME: target.container,
+        EXPECTED_ARGS: JSON.stringify(target.engineArgv),
+        HOST_PORT: hostPort,
+        CACHE_ROOT: cacheRoot,
+        DEVICE_IDS: JSON.stringify(expectedDeviceIds),
+      },
+    },
+  );
+}
+
 describe("qualification local-runtime deployment", () => {
   it("emits the frozen two-target plan without GPU 0", () => {
     const value = plan();
@@ -103,5 +161,27 @@ describe("qualification local-runtime deployment", () => {
     );
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("TCP port 8001 is already listening");
+  });
+
+  it("accepts the exact Qwen and gpt-oss Docker device requests", () => {
+    const value = plan();
+    const cases = [
+      { target: value.targets[0], port: "8001", cache: "/data/hf-cache", devices: ["1", "2"] },
+      { target: value.targets[1], port: "8002", cache: "/home/ubuntu/.cache/huggingface", devices: ["3"] },
+    ];
+    for (const item of cases) {
+      const fixture = inspectFixture(value, item.target, item.port, item.cache, item.devices);
+      const result = verifyInspectFixture(fixture, item.target, item.port, item.cache, item.devices);
+      expect(result.status, result.stderr).toBe(0);
+    }
+  });
+
+  it("rejects a Docker device request that differs from the frozen plan", () => {
+    const value = plan();
+    const qwen = value.targets[0];
+    const fixture = inspectFixture(value, qwen, "8001", "/data/hf-cache", ["1", "3"]);
+    const result = verifyInspectFixture(fixture, qwen, "8001", "/data/hf-cache", ["1", "2"]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("created container does not match the frozen plan");
   });
 });
