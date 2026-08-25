@@ -143,7 +143,9 @@ port_is_listening() {
 }
 
 assert_port_free() {
-  port_is_listening "$1" && die "TCP port $1 is already listening"
+  if port_is_listening "$1"; then
+    die "TCP port $1 is already listening"
+  fi
 }
 
 assert_qualification_gpus_idle() {
@@ -425,4 +427,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

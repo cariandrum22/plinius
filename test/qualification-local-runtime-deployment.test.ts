@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -84,5 +84,24 @@ describe("qualification local-runtime deployment", () => {
     expect(source).not.toContain("verify_deepwiki");
     expect(source).toContain("HF_HUB_OFFLINE=1");
     expect(source).toContain("TRANSFORMERS_OFFLINE=1");
+  });
+
+  it("accepts a free host port under set -e", () => {
+    const output = execFileSync(
+      "bash",
+      ["-c", 'source "$1"; port_is_listening() { return 1; }; assert_port_free 8001; printf FREE', "bash", script],
+      { encoding: "utf8" },
+    );
+    expect(output).toBe("FREE");
+  });
+
+  it("rejects a listening host port", () => {
+    const result = spawnSync(
+      "bash",
+      ["-c", 'source "$1"; port_is_listening() { return 0; }; assert_port_free 8001', "bash", script],
+      { encoding: "utf8" },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("TCP port 8001 is already listening");
   });
 });
