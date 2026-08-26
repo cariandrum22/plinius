@@ -103,6 +103,28 @@ import type {
   ExpectedExecutionAttestation,
   LoadedExecutionAttestation,
 } from "./src/qualification/execution-attestation.js";
+import {
+  serializeProviderRouting,
+  parseProviderRoutingWire,
+  providerRoutingEqual,
+  buildProviderRouting,
+  paidPassFor,
+  paidUsedParams,
+  paidCellMaxTokens,
+  estimateCellCeilingUsd,
+  checkBudgetBeforeDispatch,
+  verifyPaidTargetAgainstCatalog,
+  PAID_BENCHMARKS,
+  PAID_REASONING_BUDGET,
+} from "./src/qualification/paid-campaign.js";
+import type {
+  ProviderRouting,
+  PaidPassDefinition,
+  PaidCell,
+  PaidTarget,
+  CatalogModelInfo,
+  CatalogVerifyNeed,
+} from "./src/qualification/paid-campaign.js";
 
 const CAMPAIGN_ID = "plinius-qualification-2026-08-22-v1";
 const OR_BASE = "https://openrouter.ai/api/v1";
@@ -701,6 +723,12 @@ export interface RequestBody {
   temperature: number | null;
   topP: number | null;
   seed: number | null;
+  /**
+   * Paid-pass provider routing. Present ONLY for paid hosted passes; undefined on
+   * every existing (non-paid) path, which leaves the wire unchanged. It is the one
+   * typed routing shape — there is no generic extra-params injection.
+   */
+  providerRouting?: ProviderRouting;
 }
 
 /** The captured request actually transmitted, plus response identity from the payload. */
@@ -1920,6 +1948,13 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
         temperature: args.req.temperature ?? undefined,
         topP: args.req.topP ?? undefined,
         seed: args.req.seed ?? undefined,
+        // Paid-pass provider routing is serialized to the wire `provider` field
+        // ONLY here, at the OpenRouter (hosted) adapter boundary. Non-paid paths
+        // leave `providerRouting` undefined, so the wire is unchanged.
+        extraParams:
+          args.isHosted && args.req.providerRouting
+            ? { provider: serializeProviderRouting(args.req.providerRouting) }
+            : undefined,
       },
       timeoutMs: args.timeoutMs,
     });
@@ -1955,6 +1990,7 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
   let wireTemp: number | null = null;
   let wireTopP: number | null = null;
   let wireSeed: number | null = null;
+  let wireRouting: ProviderRouting | undefined;
   try {
     const w = JSON.parse(capturedReqBody) as Record<string, unknown>;
     if (typeof w.model === "string") wireModel = w.model;
@@ -1962,10 +1998,23 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
     wireTemp = typeof w.temperature === "number" ? w.temperature : null;
     wireTopP = typeof w.top_p === "number" ? w.top_p : null;
     wireSeed = typeof w.seed === "number" ? w.seed : null;
+    // Re-derive the provider routing ACTUALLY sent from the captured wire bytes
+    // (never from the plan). Only a strictly-valid routing is carried forward.
+    if (w.provider !== undefined) {
+      const parsed = parseProviderRoutingWire(w.provider);
+      if (parsed.ok) wireRouting = parsed.routing;
+    }
   } catch {
     /* no wire body captured (e.g. the fetch never ran) — drift will be flagged */
   }
-  const requestSent: RequestBody = { model: wireModel, maxTokens: wireMax ?? args.req.maxTokens, temperature: wireTemp, topP: wireTopP, seed: wireSeed };
+  const requestSent: RequestBody = {
+    model: wireModel,
+    maxTokens: wireMax ?? args.req.maxTokens,
+    temperature: wireTemp,
+    topP: wireTopP,
+    seed: wireSeed,
+    providerRouting: wireRouting,
+  };
   // Byte-preserving wire preimages (F02): base64 + sha-over-raw-bytes + byte length.
   // Digest / bytes are taken from the preimage's own raw bytes, never a re-encode.
   const requestPreimage: WireBodyPreimage | null = capturedReqBody ? encodeWireBody(capturedReqBody) : null;
@@ -2405,19 +2454,512 @@ async function oneShotMain() {
   );
 }
 
+// --- paid passes (Paid Pass r1) ---------------------------------------------
+
+const PAID_TIMEOUT_MS = 600_000;
+
+/** Everything one paid cell needs to plan its request — no network, no credential. */
+export interface PaidCellPlan {
+  runId: string;
+  orderIndex: number;
+  target: PaidTarget;
+  benchmarkId: string;
+  endpoint: string;
+  maxTokens: number;
+  /** Upper-bound prompt tokens, for the catalog-ceiling budget estimate. */
+  promptTokensEstimate: number;
+  messages: ChatMessage[];
+  req: RequestBody;
+  header: Omit<QualificationRecordHeader, "timestamp">;
+  usedParams: string[];
+}
+
+/**
+ * Plan one paid cell offline: load and hash-verify the benchmark, build the
+ * prompt snapshot and run id, and construct the request WITH its typed provider
+ * routing. No network and no credential.
+ */
+export async function paidPlanCell(pass: PaidPassDefinition, cell: PaidCell, orderIndex: number): Promise<PaidCellPlan> {
+  const target = pass.targets.find((t) => t.slug === cell.target);
+  const bcfg = PAID_BENCHMARKS.find((b) => b.id === cell.benchmark);
+  if (!target || !bcfg) throw new Error(`unknown paid cell ${cell.target} x ${cell.benchmark}`);
+  const l = await loadBenchmarkById(cell.benchmark);
+  if (l.contentHash !== bcfg.contentHash) {
+    throw new Error(`content hash mismatch for ${cell.benchmark}: ${l.contentHash} != ${bcfg.contentHash}`);
+  }
+  const rubric = captureRubric(l.rubric);
+  const reference = captureReferenceAsset(l.references);
+  const promptSnapshot = buildPromptSnapshot({
+    systemPrompt: l.systemPrompt,
+    userPrompt: l.userPrompt,
+    rubric: rubric.canonicalString,
+  });
+  const maxTokens = paidCellMaxTokens(cell.benchmark);
+  const promptChars = (l.systemPrompt?.length ?? 0) + l.userPrompt.length;
+  const promptTokensEstimate = Math.ceil(promptChars / 4) + 512; // rough upper bound for the ceiling estimate
+  const runId = `run-${canonicalHash({
+    campaignId: pass.campaignId,
+    benchmarkId: l.asset.id,
+    benchmarkContentHash: l.contentHash,
+    backend: "openrouter",
+    model: target.slug,
+    repetitionIndex: 0,
+    promptId: promptSnapshot.promptId,
+  }).slice(7, 23)}`;
+  const sampling = {
+    maxTokens,
+    temperature: target.sampling.temperature,
+    topP: target.sampling.topP,
+    seed: target.sampling.seed,
+    temperatureSent: target.sampling.temperature !== null,
+    topPSent: target.sampling.topP !== null,
+    seedSent: target.sampling.seed !== null,
+  };
+  const req: RequestBody = {
+    model: target.slug,
+    maxTokens,
+    temperature: target.sampling.temperature,
+    topP: target.sampling.topP,
+    seed: target.sampling.seed,
+    providerRouting: buildProviderRouting(target),
+  };
+  const header: Omit<QualificationRecordHeader, "timestamp"> = {
+    runId,
+    sentinel: cell.sentinel,
+    orderIndex,
+    benchmarkId: l.asset.id,
+    benchmarkVersion: l.asset.version,
+    benchmarkContentHash: l.contentHash,
+    rubricHash: rubric.rubricHash,
+    referenceAsset: reference,
+    category: l.asset.category,
+    golden: l.asset.golden,
+    backend: "openrouter",
+    requestedSlug: target.slug,
+    resolvedSlug: target.slug,
+    substitutionUsed: false,
+    fallbackUsed: false,
+    endpoint: OR_BASE,
+    promptSnapshot,
+    sampling,
+  };
+  return {
+    runId,
+    orderIndex,
+    target,
+    benchmarkId: l.asset.id,
+    endpoint: OR_BASE,
+    maxTokens,
+    promptTokensEstimate,
+    messages: [
+      { role: "system", content: l.systemPrompt },
+      { role: "user", content: l.userPrompt },
+    ],
+    req,
+    header,
+    usedParams: paidUsedParams(target),
+  };
+}
+
+/** The outcome of the paid catalog preflight (gates 6-10). */
+export interface PaidPreflightOutcome {
+  ok: boolean;
+  reasons: string[];
+  /** The durable catalog+verification artifact body (finalized at gate 11). */
+  catalogArtifactBody: string;
+  perTarget: Array<{ slug: string; ok: boolean; reasons: string[] }>;
+}
+
+/**
+ * Verify every pass target against a fetched catalog map (gates 7-10): exact slug
+ * resolution, exact provider-endpoint resolution, parameter capability, and price
+ * ceilings; then the pass-level budget upper bound (each cell's ceiling estimate
+ * within the per-run cap and the total within the pass cap). Pure — the catalog is
+ * fetched by the caller (anonymously) and passed in.
+ */
+export function verifyPaidCatalog(
+  pass: PaidPassDefinition,
+  cells: PaidCell[],
+  catalog: Map<string, CatalogModelInfo>,
+): PaidPreflightOutcome {
+  const reasons: string[] = [];
+  const perTarget: Array<{ slug: string; ok: boolean; reasons: string[] }> = [];
+  const targetBySlug = new Map(pass.targets.map((t) => [t.slug, t]));
+  for (const target of pass.targets) {
+    const need: CatalogVerifyNeed = {
+      maxTokens: Math.max(...PAID_BENCHMARKS.map((b) => b.finalBudget)) + PAID_REASONING_BUDGET,
+      promptTokens: 8192,
+      usedParams: paidUsedParams(target),
+    };
+    const v = verifyPaidTargetAgainstCatalog(catalog.get(target.slug), target, need);
+    perTarget.push({ slug: target.slug, ok: v.ok, reasons: v.reasons });
+    if (!v.ok) reasons.push(...v.reasons.map((r) => `${target.slug}:${r}`));
+  }
+  // Budget upper bound: each cell's ceiling estimate <= per-run cap; total <= pass cap.
+  let totalCeiling = 0;
+  for (const cell of cells) {
+    const target = targetBySlug.get(cell.target);
+    if (!target) {
+      reasons.push(`budget:unknown_target:${cell.target}`);
+      continue;
+    }
+    const est = estimateCellCeilingUsd(target, 8192, paidCellMaxTokens(cell.benchmark));
+    if (est > pass.budget.perRunCapUsd) reasons.push(`budget:per_run_ceiling_exceeded:${cell.target}x${cell.benchmark}`);
+    totalCeiling += est;
+  }
+  if (totalCeiling > pass.budget.totalCapUsd) reasons.push("budget:total_ceiling_exceeded");
+  const catalogArtifactBody = JSON.stringify(
+    { campaignId: pass.campaignId, stageId: pass.stageId, perTarget, budget: pass.budget, totalCeilingUsd: totalCeiling },
+    null,
+    2,
+  );
+  return { ok: reasons.length === 0, reasons, catalogArtifactBody, perTarget };
+}
+
+/** Injectable dependencies for the paid credential-ordering bootstrap. */
+export interface PaidBootstrapDeps {
+  mode: PaidPassDefinition["mode"];
+  readEnv?: (name: string) => string | undefined;
+  /** Gate 1 — source/commit/tree (Mac authority anchor; default ok). */
+  verifySource?: () => { ok: boolean; reasons: string[] };
+  /** Gates 2-3 — parent Evidence bundle + frozen definition + historical run. */
+  verifyParentEvidence?: () => DigestVerifyResult;
+  /** Gate 4 — campaign definition + benchmark content hashes. */
+  verifyCampaignBenchmarks?: (pass: PaidPassDefinition, cells: PaidCell[]) => Promise<{ ok: boolean; reasons: string[] }>;
+  /** Gate 5 — fresh empty output root. */
+  assertOutputRootEmpty?: (root: string) => void;
+  /** Gates 6-10 — anonymous public catalog fetch + verification (NO credential). */
+  fetchCatalogAndVerify?: (pass: PaidPassDefinition, cells: PaidCell[]) => Promise<PaidPreflightOutcome>;
+  /** Gate 11 — durable catalog artifact finalize, BEFORE the credential read. */
+  finalizeCatalogArtifact?: (outputRoot: string, body: string) => void;
+  now?: () => string;
+}
+
+export interface PaidBootstrap {
+  pass: PaidPassDefinition;
+  cells: PaidCell[];
+  outputRoot: string;
+  preflight: PaidPreflightOutcome;
+  orKey: string;
+}
+
+/**
+ * Ordered credential gate: the OPENROUTER_API_KEY is read LAST, only after all of
+ * source/commit/tree, parent Evidence, historical run, campaign+benchmark hashes,
+ * the fresh output root, the anonymous public catalog + exact resolution + provider
+ * endpoint + parameter capability + price ceiling + budget upper bound, and the
+ * durable catalog artifact have succeeded. Any earlier failure throws BEFORE the
+ * key is read — so an invalid preflight makes zero provider/generation calls and
+ * reads no credential. Every gate is injectable so the env-read spy test can fail
+ * any one and assert the key was never read.
+ */
+export async function preparePaidBootstrap(deps: PaidBootstrapDeps): Promise<PaidBootstrap> {
+  const readEnv = deps.readEnv ?? ((name: string) => process.env[name]);
+  const required = (name: string): string => {
+    const v = readEnv(name);
+    if (!v) throw new Error(`missing required environment variable ${name}`);
+    return v;
+  };
+  if (readEnv("CONTINUATION_RESUME") !== undefined) throw new Error("CONTINUATION_RESUME is prohibited in paid passes");
+  if (readEnv("PLINIUS_LOCAL_BINDING_DIR") !== undefined) throw new Error("PLINIUS_LOCAL_BINDING_DIR is prohibited in paid passes");
+
+  const { pass, cells } = paidPassFor(deps.mode);
+  const outputRoot = required("CONTINUATION_OUTPUT_ROOT");
+
+  const src = (deps.verifySource ?? (() => ({ ok: true, reasons: [] })))();
+  if (!src.ok) throw new Error(`source verification failed: ${src.reasons.join(",")}`);
+
+  if (deps.verifyParentEvidence) {
+    const pe = deps.verifyParentEvidence();
+    if (!pe.ok) throw new Error("parent evidence / historical digest mismatch");
+  }
+  if (deps.verifyCampaignBenchmarks) {
+    const cb = await deps.verifyCampaignBenchmarks(pass, cells);
+    if (!cb.ok) throw new Error(`campaign/benchmark verification failed: ${cb.reasons.join(",")}`);
+  }
+  (deps.assertOutputRootEmpty ?? assertEmptyOutputRoot)(outputRoot);
+
+  const preflight = deps.fetchCatalogAndVerify
+    ? await deps.fetchCatalogAndVerify(pass, cells)
+    : { ok: true, reasons: [], catalogArtifactBody: "{}", perTarget: [] };
+  if (!preflight.ok) throw new Error(`catalog preflight failed: ${preflight.reasons.join(",")}`);
+  if (deps.finalizeCatalogArtifact) deps.finalizeCatalogArtifact(outputRoot, preflight.catalogArtifactBody);
+
+  // Deliberately last: an invalid gate above cannot reach this credential read.
+  const orKey = required("OPENROUTER_API_KEY");
+  return { pass, cells, outputRoot, preflight, orKey };
+}
+
+export interface RunPaidPassOptions {
+  pass: PaidPassDefinition;
+  cells: PaidCell[];
+  outputRoot: string;
+  /** Plan one cell (offline). */
+  planCell: (cell: PaidCell, orderIndex: number) => Promise<PaidCellPlan>;
+  /** Dispatch one cell (network in production; injected mock in tests). */
+  generate: (cell: PaidCell, plan: PaidCellPlan, req: RequestBody) => Promise<GenerateFacts>;
+  now?: () => string;
+  onEvent?: (event: string) => void;
+}
+
+export interface RunPaidPassResult {
+  campaignId: string;
+  stageId: string;
+  stopped: string | null;
+  dispatchedRunIds: string[];
+  skippedGroups: string[];
+  skippedRunIds: string[];
+  spentUsd: number;
+  passed: number;
+  failed: number;
+}
+
+/**
+ * Run a paid pass. Per the paid contract there is NO resume/retry/fallback: a
+ * fresh empty output root is required, each cell is dispatched at most once, and a
+ * process that dies after a request never re-dispatches. Before every dispatch the
+ * cumulative actual spend plus the next cell's catalog-ceiling estimate is checked
+ * against the per-run and total caps (stop before the provider call on breach). The
+ * request wire is re-derived and its model + full provider routing must match the
+ * plan exactly. The billed cost must resolve after each response — an unknown cost
+ * stops the pass and is never backfilled as 0. A global sentinel failure stops the
+ * pass; a per-model sentinel failure skips only that model's remaining cells.
+ */
+export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPassResult> {
+  const now = opts.now ?? (() => new Date().toISOString());
+  const runsDir = join(opts.outputRoot, "runs");
+  assertEmptyOutputRoot(opts.outputRoot);
+  await mkdir(runsDir, { recursive: true });
+  opts.onEvent?.("gate:output_root");
+
+  const skippedGroups = new Set<string>();
+  const skippedRunIds: string[] = [];
+  const dispatchedRunIds: string[] = [];
+  let spentUsd = 0;
+  let passed = 0;
+  let failed = 0;
+  let stopped: string | null = null;
+
+  for (let i = 0; i < opts.cells.length; i++) {
+    const cell = opts.cells[i];
+    const orderIndex = i + 1;
+    const plan = await opts.planCell(cell, orderIndex);
+    if (skippedGroups.has(cell.group)) {
+      skippedRunIds.push(plan.runId);
+      continue;
+    }
+    const routing = buildProviderRouting(plan.target);
+
+    // Budget gate BEFORE dispatch: ceiling estimate within per-run, cumulative within total.
+    const estimate = estimateCellCeilingUsd(plan.target, plan.promptTokensEstimate, plan.maxTokens);
+    const bc = checkBudgetBeforeDispatch(spentUsd, estimate, opts.pass.budget);
+    if (!bc.ok) {
+      stopped = `budget_exceeded:${bc.reasons.join(",")}`;
+      break;
+    }
+
+    // Durable intent + dispatch_started BEFORE the provider call.
+    const timestamp = now();
+    prepareIntent(runsDir, {
+      campaignId: opts.pass.campaignId,
+      orderIndex,
+      runId: plan.runId,
+      target: cell.target,
+      benchmark: cell.benchmark,
+      attemptIndex: 0,
+      createdAt: timestamp,
+    });
+    markDispatchStarted(runsDir, plan.runId);
+    if (cell.sentinel) opts.onEvent?.("dispatch:sentinel");
+
+    const facts = await opts.generate(cell, plan, plan.req);
+
+    // Re-derive the request identity from the wire: model + full routing must match.
+    const wireRoutingOk =
+      facts.requestSent.model === plan.target.slug &&
+      facts.requestSent.providerRouting != null &&
+      providerRoutingEqual(facts.requestSent.providerRouting, routing);
+    if (!wireRoutingOk) {
+      stopped = `request_wire_mismatch:${plan.runId}`;
+      break;
+    }
+
+    // Billed cost must resolve; an unknown cost stops the pass (never backfilled as 0).
+    const actualCostUsd = facts.cost.actualCostUsd;
+    if (actualCostUsd == null) {
+      stopped = `cost_unknown:${plan.runId}`;
+      break;
+    }
+    spentUsd += actualCostUsd;
+
+    const attempt = buildQualificationAttempt({
+      attemptIndex: 0,
+      timestamp,
+      backend: "openrouter",
+      requestedSlug: plan.target.slug,
+      endpoint: OR_BASE,
+      raw: facts.raw,
+      text: facts.text,
+      rawFinish: facts.rawFinish,
+      transportError: facts.transportError,
+      usage: facts.usage,
+      latencyMs: facts.latencyMs,
+      cost: facts.cost,
+      routing: {
+        ...(facts.routing ?? {}),
+        providerRoutingSent: serializeProviderRouting(routing),
+        requestWireSha256: facts.requestWireSha256 ?? null,
+        responseWireSha256: facts.responseWireSha256 ?? null,
+        costLookupWireSha256: facts.costLookupWireSha256 ?? null,
+      },
+    });
+    const record = buildQualificationRunRecord({ ...plan.header, timestamp }, [attempt]);
+    // Byte-preserving wire evidence (request / response / cost lookup) alongside the record.
+    await writeFile(join(runsDir, `${plan.runId}.wire.json`), JSON.stringify(facts.wire ?? null, null, 2), "utf-8");
+    await writeFile(join(runsDir, `${plan.runId}.json`), JSON.stringify(record, null, 2), "utf-8");
+    dispatchedRunIds.push(plan.runId);
+    if (record.status.qualification === "pass") passed++;
+    else failed++;
+
+    if (cell.sentinel && record.status.qualification !== "pass") {
+      if (opts.pass.sentinelScope === "global") {
+        stopped = `campaign_sentinel_not_accepted:${cell.target}`;
+        break;
+      }
+      skippedGroups.add(cell.group); // per-model: skip this model's remaining cells only
+    }
+  }
+
+  const summary = {
+    campaignId: opts.pass.campaignId,
+    stageId: opts.pass.stageId,
+    mode: opts.pass.mode,
+    completedUtc: now(),
+    stopped,
+    totalCells: opts.cells.length,
+    dispatched: dispatchedRunIds.length,
+    skipped: skippedRunIds.length,
+    passed,
+    failed,
+    spentUsd,
+    budget: opts.pass.budget,
+    skippedGroups: [...skippedGroups],
+  };
+  await writeFile(join(opts.outputRoot, "paid-pass-summary.json"), JSON.stringify(summary, null, 2), "utf-8");
+
+  return {
+    campaignId: opts.pass.campaignId,
+    stageId: opts.pass.stageId,
+    stopped,
+    dispatchedRunIds,
+    skippedGroups: [...skippedGroups],
+    skippedRunIds,
+    spentUsd,
+    passed,
+    failed,
+  };
+}
+
+/**
+ * Production entrypoint for a paid pass. Reuses the credential-last bootstrap and
+ * the dispatch loop; the actual OpenRouter calls happen only in `generate` and
+ * only after every gate passes. This never touches local runtime / Docker / GPU /
+ * Fable attestation.
+ */
+async function paidMain(mode: PaidPassDefinition["mode"]): Promise<void> {
+  const boot = await preparePaidBootstrap({
+    mode,
+    verifyCampaignBenchmarks: async (pass, cells) => {
+      const reasons: string[] = [];
+      const ids = new Set(cells.map((c) => c.benchmark));
+      for (const id of ids) {
+        const bcfg = PAID_BENCHMARKS.find((b) => b.id === id);
+        if (!bcfg) {
+          reasons.push(`unknown_benchmark:${id}`);
+          continue;
+        }
+        const l = await loadBenchmarkById(id);
+        if (l.contentHash !== bcfg.contentHash) reasons.push(`benchmark_hash_mismatch:${id}`);
+      }
+      return { ok: reasons.length === 0, reasons };
+    },
+    fetchCatalogAndVerify: async (pass, cells) => {
+      const catalog = await fetchPaidCatalog(pass);
+      return verifyPaidCatalog(pass, cells, catalog);
+    },
+  });
+
+  const result = await runPaidPass({
+    pass: boot.pass,
+    cells: boot.cells,
+    outputRoot: boot.outputRoot,
+    planCell: (cell, orderIndex) => paidPlanCell(boot.pass, cell, orderIndex),
+    generate: (cell, plan, req) =>
+      dispatchViaBackend({
+        backendId: "openrouter",
+        baseUrl: OR_BASE,
+        apiKey: boot.orKey,
+        timeoutMs: PAID_TIMEOUT_MS,
+        isHosted: true,
+        req,
+        messages: plan.messages,
+        fetchFn: globalThis.fetch as FetchFn,
+        costLookup: (id) => generationCost(id, boot.orKey),
+      }),
+  });
+  console.log(
+    `PAID ${boot.pass.mode} dispatched=${result.dispatchedRunIds.length} passed=${result.passed} ` +
+      `failed=${result.failed} skipped=${result.skippedRunIds.length} spent=$${result.spentUsd.toFixed(4)} ` +
+      `stopped=${result.stopped ?? "no"}`,
+  );
+}
+
+/** Fetch the public OpenRouter catalog + per-target endpoints (anonymous, no key). */
+async function fetchPaidCatalog(pass: PaidPassDefinition): Promise<Map<string, CatalogModelInfo>> {
+  const out = new Map<string, CatalogModelInfo>();
+  const models = (await (await fetch(`${OR_BASE}/models`)).json()) as { data?: Array<{ id?: string }> };
+  const ids = new Set((models.data ?? []).map((m) => m.id).filter((x): x is string => typeof x === "string"));
+  for (const target of pass.targets) {
+    if (!ids.has(target.slug)) {
+      out.set(target.slug, { id: target.slug, endpoints: [] } as CatalogModelInfo & { __missing?: boolean });
+      continue;
+    }
+    const epRes = (await (await fetch(`${OR_BASE}/models/${target.slug}/endpoints`)).json()) as {
+      data?: { endpoints?: Array<Record<string, unknown>> };
+    };
+    const endpoints = (epRes.data?.endpoints ?? []).map((e) => ({
+      tag: String((e.tag as string) ?? (e.provider_name as string) ?? (e.name as string) ?? ""),
+      pricing: {
+        prompt: (e.pricing as { prompt?: number | string })?.prompt ?? null,
+        completion: (e.pricing as { completion?: number | string })?.completion ?? null,
+      },
+      contextLength: (e.context_length as number) ?? null,
+      maxCompletionTokens: (e.max_completion_tokens as number) ?? null,
+      supportedParameters: (e.supported_parameters as string[]) ?? [],
+    }));
+    out.set(target.slug, { id: target.slug, endpoints });
+  }
+  return out;
+}
+
 /**
  * Resolve the driver mode. Fail-closed BEFORE any network or credential access:
- * an absent or unknown mode is rejected. The old continuation mode is retired;
- * the bounded diagnostic run is available only as "diagnostic-one-shot-r1".
+ * an absent or unknown mode is rejected. The old continuation mode is retired; the
+ * bounded diagnostic run is "diagnostic-one-shot-r1"; the two partitioned paid
+ * passes are "diagnostic-hosted-paid-r1" and "diagnostic-candidate-paid-r1".
  */
-export function resolveDriverMode(raw: string | undefined): "default" | "diagnostic-one-shot-r1" {
+export function resolveDriverMode(
+  raw: string | undefined,
+): "default" | "diagnostic-one-shot-r1" | "diagnostic-hosted-paid-r1" | "diagnostic-candidate-paid-r1" {
   if (raw === "default") return "default";
   if (raw === "diagnostic-continuation-r1") {
     throw new Error("diagnostic-continuation-r1 is retired; automatic continuation/resume is prohibited");
   }
   if (raw === "diagnostic-one-shot-r1") return "diagnostic-one-shot-r1";
+  if (raw === "diagnostic-hosted-paid-r1") return "diagnostic-hosted-paid-r1";
+  if (raw === "diagnostic-candidate-paid-r1") return "diagnostic-candidate-paid-r1";
   throw new Error(
-    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default or diagnostic-one-shot-r1`,
+    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default, diagnostic-one-shot-r1, diagnostic-hosted-paid-r1 or diagnostic-candidate-paid-r1`,
   );
 }
 
@@ -2437,7 +2979,12 @@ function invokedDirectly(): boolean {
 
 if (invokedDirectly()) {
   const mode = resolveDriverMode(process.env.PLINIUS_DRIVER_MODE);
-  const entry = mode === "diagnostic-one-shot-r1" ? oneShotMain : main;
+  const entry =
+    mode === "diagnostic-one-shot-r1"
+      ? oneShotMain
+      : mode === "diagnostic-hosted-paid-r1" || mode === "diagnostic-candidate-paid-r1"
+        ? () => paidMain(mode)
+        : main;
   entry().catch((e) => {
     console.error("DRIVER ERROR:", e);
     process.exit(1);
