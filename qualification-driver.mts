@@ -12,9 +12,10 @@
  * make a run pass.
  */
 import { mkdir, writeFile } from "fs/promises";
-import { readFileSync, readdirSync, existsSync, lstatSync } from "fs";
-import { join, resolve } from "path";
+import { readFileSync, readdirSync, existsSync, lstatSync, mkdirSync } from "fs";
+import { join, resolve, dirname } from "path";
 import { createHash } from "crypto";
+import { execSync } from "child_process";
 import { fileURLToPath } from "url";
 
 import { loadBenchmarkById } from "./src/framework/loader.js";
@@ -63,6 +64,7 @@ import {
   verifyReferencedArtifact,
   readIntent,
   readRecord,
+  LOCK_FILENAME,
 } from "./src/continuation/journal.js";
 import type { InvocationLock } from "./src/continuation/journal.js";
 import {
@@ -73,6 +75,7 @@ import {
 import {
   encodeWireBody,
   sanitizeHeaders,
+  parseWireJson,
 } from "./src/continuation/wire.js";
 import type {
   AttemptWireEvidence,
@@ -103,6 +106,41 @@ import type {
   ExpectedExecutionAttestation,
   LoadedExecutionAttestation,
 } from "./src/qualification/execution-attestation.js";
+import {
+  serializeProviderRouting,
+  parseProviderRoutingWire,
+  providerRoutingEqual,
+  buildProviderRouting,
+  paidPassFor,
+  paidUsedParams,
+  paidCellMaxTokens,
+  estimateCellCeilingUsd,
+  checkBudgetBeforeDispatch,
+  validatePaidActualCost,
+  verifyPaidDispatch,
+  verifyPaidTargetAgainstCatalog,
+  verifyAuthoritySourceManifest,
+  AUTHORITY_SOURCE_MANIFEST_SIGNER,
+  reDerivePaidFromRawObservation,
+  verifyPaidManifest,
+  tokenUpperBound,
+  PAID_BENCHMARKS,
+  PAID_REASONING_BUDGET,
+} from "./src/qualification/paid-campaign.js";
+import type {
+  ProviderRouting,
+  PaidPassDefinition,
+  PaidCell,
+  PaidTarget,
+  CatalogModelInfo,
+  CatalogVerifyNeed,
+  ObservedDispatch,
+  AuthoritySourceManifest,
+  ObservedSource,
+  PaidRawObservation,
+  PaidManifestRef,
+  PaidBindingManifest,
+} from "./src/qualification/paid-campaign.js";
 
 const CAMPAIGN_ID = "plinius-qualification-2026-08-22-v1";
 const OR_BASE = "https://openrouter.ai/api/v1";
@@ -701,6 +739,12 @@ export interface RequestBody {
   temperature: number | null;
   topP: number | null;
   seed: number | null;
+  /**
+   * Paid-pass provider routing. Present ONLY for paid hosted passes; undefined on
+   * every existing (non-paid) path, which leaves the wire unchanged. It is the one
+   * typed routing shape — there is no generic extra-params injection.
+   */
+  providerRouting?: ProviderRouting;
 }
 
 /** The captured request actually transmitted, plus response identity from the payload. */
@@ -1833,6 +1877,17 @@ export async function livePreflight(args: LivePreflightArgs): Promise<PreflightR
   return { ok: reasons.length === 0, reasons, catalog, rawBody: text, resolution, localBindings: observed };
 }
 
+/**
+ * One durable-wire-sink event. `request` / `response` carry the exact byte-preserving
+ * preimage captured at the fetch boundary; `cost_lookup` carries the WHOLE cost-lookup
+ * poll chain captured right after the generation-cost lookup returns. A paid caller
+ * persists each to disk immediately, and the raw observation is later assembled SOLELY
+ * from these persisted fragments — never from the adapter's returned object.
+ */
+export type PaidWireEvent =
+  | { stage: "request" | "response"; url: string | null; method: string | null; httpStatus?: number | null; preimage: WireBodyPreimage | null }
+  | { stage: "cost_lookup"; costLookup: CostLookupWireEvidence | null };
+
 /** Arguments to {@link dispatchViaBackend}. */
 export interface DispatchArgs {
   backendId: string;
@@ -1848,6 +1903,14 @@ export interface DispatchArgs {
   costLookup?: (generationId: string) => Promise<GenerationCostResult>;
   /** Clock for the response-receipt timestamp — injected in tests. */
   now?: () => string;
+  /**
+   * Durable wire sink, invoked SYNCHRONOUSLY at the fetch boundary: `request`
+   * right before the provider call (with the exact request preimage) and
+   * `response` right after the bytes are received (with the response preimage and
+   * status). A paid caller persists each immediately so a later throw cannot lose
+   * a billed request/response. Non-paid callers omit it and are unaffected.
+   */
+  onWire?: (ev: PaidWireEvent) => void;
 }
 
 /**
@@ -1874,6 +1937,9 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
     capturedUrl = url;
     capturedMethod = (init?.method as string) ?? "GET";
     capturedReqBody = typeof init?.body === "string" ? init.body : "";
+    // Send-time durable sink: the request wire is persisted BEFORE the provider is
+    // called, so an exception after this point cannot lose the billed request.
+    args.onWire?.({ stage: "request", url: capturedUrl, method: capturedMethod, preimage: capturedReqBody ? encodeWireBody(capturedReqBody) : null });
     const res = await args.fetchFn(url, init);
     responseReceivedUtc = now();
     // Allowlisted response headers only — authorization / cookie / set-cookie / any
@@ -1894,6 +1960,9 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
       capturedResBytes = null;
       capturedResBody = null;
     }
+    // Receive-time durable sink: the response wire is persisted right after the
+    // bytes are received, before any parsing/cost-lookup that might throw.
+    args.onWire?.({ stage: "response", url: capturedUrl, method: capturedMethod, httpStatus: capturedResStatus, preimage: capturedResBytes != null ? encodeWireBody(capturedResBytes) : null });
     return res;
   };
 
@@ -1920,6 +1989,13 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
         temperature: args.req.temperature ?? undefined,
         topP: args.req.topP ?? undefined,
         seed: args.req.seed ?? undefined,
+        // Paid-pass provider routing is serialized to the wire `provider` field
+        // ONLY here, at the OpenRouter (hosted) adapter boundary. Non-paid paths
+        // leave `providerRouting` undefined, so the wire is unchanged.
+        extraParams:
+          args.isHosted && args.req.providerRouting
+            ? { provider: serializeProviderRouting(args.req.providerRouting) }
+            : undefined,
       },
       timeoutMs: args.timeoutMs,
     });
@@ -1955,6 +2031,7 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
   let wireTemp: number | null = null;
   let wireTopP: number | null = null;
   let wireSeed: number | null = null;
+  let wireRouting: ProviderRouting | undefined;
   try {
     const w = JSON.parse(capturedReqBody) as Record<string, unknown>;
     if (typeof w.model === "string") wireModel = w.model;
@@ -1962,10 +2039,23 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
     wireTemp = typeof w.temperature === "number" ? w.temperature : null;
     wireTopP = typeof w.top_p === "number" ? w.top_p : null;
     wireSeed = typeof w.seed === "number" ? w.seed : null;
+    // Re-derive the provider routing ACTUALLY sent from the captured wire bytes
+    // (never from the plan). Only a strictly-valid routing is carried forward.
+    if (w.provider !== undefined) {
+      const parsed = parseProviderRoutingWire(w.provider);
+      if (parsed.ok) wireRouting = parsed.routing;
+    }
   } catch {
     /* no wire body captured (e.g. the fetch never ran) — drift will be flagged */
   }
-  const requestSent: RequestBody = { model: wireModel, maxTokens: wireMax ?? args.req.maxTokens, temperature: wireTemp, topP: wireTopP, seed: wireSeed };
+  const requestSent: RequestBody = {
+    model: wireModel,
+    maxTokens: wireMax ?? args.req.maxTokens,
+    temperature: wireTemp,
+    topP: wireTopP,
+    seed: wireSeed,
+    providerRouting: wireRouting,
+  };
   // Byte-preserving wire preimages (F02): base64 + sha-over-raw-bytes + byte length.
   // Digest / bytes are taken from the preimage's own raw bytes, never a re-encode.
   const requestPreimage: WireBodyPreimage | null = capturedReqBody ? encodeWireBody(capturedReqBody) : null;
@@ -2004,6 +2094,9 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
     costLookupWireBytes = g.rawBodyBytes ?? null;
     costLookupHttpStatus = g.httpStatus ?? null;
     costLookupWire = g.wire ?? null;
+    // Durable sink: persist the WHOLE cost-lookup poll chain right after it settles,
+    // so the raw observation's billed cost is re-derivable from the stored bytes.
+    args.onWire?.({ stage: "cost_lookup", costLookup: costLookupWire });
     // The lookup provider is recorded, but does NOT overwrite the independently
     // observed response provider (F03) — a hosted mismatch is a validation failure,
     // not something to paper over by copying the lookup value into the response.
@@ -2405,19 +2498,1020 @@ async function oneShotMain() {
   );
 }
 
+// --- paid passes (Paid Pass r1) ---------------------------------------------
+
+const PAID_TIMEOUT_MS = 600_000;
+
+/** Everything one paid cell needs to plan its request — no network, no credential. */
+export interface PaidCellPlan {
+  runId: string;
+  orderIndex: number;
+  target: PaidTarget;
+  benchmarkId: string;
+  endpoint: string;
+  maxTokens: number;
+  /** Upper-bound prompt tokens, for the catalog-ceiling budget estimate. */
+  promptTokensEstimate: number;
+  messages: ChatMessage[];
+  req: RequestBody;
+  header: Omit<QualificationRecordHeader, "timestamp">;
+  usedParams: string[];
+}
+
+/**
+ * Plan one paid cell offline: load and hash-verify the benchmark, build the
+ * prompt snapshot and run id, and construct the request WITH its typed provider
+ * routing. No network and no credential.
+ */
+export async function paidPlanCell(pass: PaidPassDefinition, cell: PaidCell, orderIndex: number): Promise<PaidCellPlan> {
+  const target = pass.targets.find((t) => t.slug === cell.target);
+  const bcfg = PAID_BENCHMARKS.find((b) => b.id === cell.benchmark);
+  if (!target || !bcfg) throw new Error(`unknown paid cell ${cell.target} x ${cell.benchmark}`);
+  const l = await loadBenchmarkById(cell.benchmark);
+  if (l.contentHash !== bcfg.contentHash) {
+    throw new Error(`content hash mismatch for ${cell.benchmark}: ${l.contentHash} != ${bcfg.contentHash}`);
+  }
+  const rubric = captureRubric(l.rubric);
+  const reference = captureReferenceAsset(l.references);
+  const promptSnapshot = buildPromptSnapshot({
+    systemPrompt: l.systemPrompt,
+    userPrompt: l.userPrompt,
+    rubric: rubric.canonicalString,
+  });
+  const maxTokens = paidCellMaxTokens(cell.benchmark);
+  // A GUARANTEED token upper bound: every token encodes at least one UTF-8 byte, so
+  // the token count never exceeds the byte length (correct for non-ASCII too). Plus
+  // a chat-template margin. Over-estimating is the fail-closed budget direction.
+  const promptTokensEstimate = tokenUpperBound(`${l.systemPrompt ?? ""}${l.userPrompt}`);
+  const runId = `run-${canonicalHash({
+    campaignId: pass.campaignId,
+    benchmarkId: l.asset.id,
+    benchmarkContentHash: l.contentHash,
+    backend: "openrouter",
+    model: target.slug,
+    repetitionIndex: 0,
+    promptId: promptSnapshot.promptId,
+  }).slice(7, 23)}`;
+  const sampling = {
+    maxTokens,
+    temperature: target.sampling.temperature,
+    topP: target.sampling.topP,
+    seed: target.sampling.seed,
+    temperatureSent: target.sampling.temperature !== null,
+    topPSent: target.sampling.topP !== null,
+    seedSent: target.sampling.seed !== null,
+  };
+  const req: RequestBody = {
+    model: target.slug,
+    maxTokens,
+    temperature: target.sampling.temperature,
+    topP: target.sampling.topP,
+    seed: target.sampling.seed,
+    providerRouting: buildProviderRouting(target),
+  };
+  const header: Omit<QualificationRecordHeader, "timestamp"> = {
+    runId,
+    sentinel: cell.sentinel,
+    orderIndex,
+    benchmarkId: l.asset.id,
+    benchmarkVersion: l.asset.version,
+    benchmarkContentHash: l.contentHash,
+    rubricHash: rubric.rubricHash,
+    referenceAsset: reference,
+    category: l.asset.category,
+    golden: l.asset.golden,
+    backend: "openrouter",
+    requestedSlug: target.slug,
+    resolvedSlug: target.slug,
+    substitutionUsed: false,
+    fallbackUsed: false,
+    endpoint: OR_BASE,
+    promptSnapshot,
+    sampling,
+  };
+  return {
+    runId,
+    orderIndex,
+    target,
+    benchmarkId: l.asset.id,
+    endpoint: OR_BASE,
+    maxTokens,
+    promptTokensEstimate,
+    messages: [
+      { role: "system", content: l.systemPrompt },
+      { role: "user", content: l.userPrompt },
+    ],
+    req,
+    header,
+    usedParams: paidUsedParams(target),
+  };
+}
+
+/** The outcome of the paid catalog preflight (gates 6-10). */
+export interface PaidPreflightOutcome {
+  ok: boolean;
+  reasons: string[];
+  /** The durable catalog+verification artifact body (finalized at gate 11). */
+  catalogArtifactBody: string;
+  perTarget: Array<{ slug: string; ok: boolean; reasons: string[]; providerDisplay?: string }>;
+  /** The verified provider DISPLAY name for each target slug (from the catalog). */
+  providerDisplay: Record<string, string>;
+}
+
+/**
+ * Verify every pass target against a fetched catalog map (gates 7-10): exact slug
+ * resolution, exact provider-endpoint resolution, parameter capability, price
+ * ceilings, and a non-empty provider display name; then the pass-level budget
+ * upper bound using the PER-CELL prompt-token upper bound (not a fixed value) —
+ * each cell's ceiling estimate within the per-run cap and the total within the
+ * pass cap. Pure — the catalog and the per-benchmark prompt bounds are computed by
+ * the caller and passed in.
+ */
+export function verifyPaidCatalog(
+  pass: PaidPassDefinition,
+  cells: PaidCell[],
+  catalog: Map<string, CatalogModelInfo>,
+  promptTokensByBenchmark: Map<string, number>,
+): PaidPreflightOutcome {
+  const reasons: string[] = [];
+  const perTarget: PaidPreflightOutcome["perTarget"] = [];
+  const providerDisplay: Record<string, string> = {};
+  const targetBySlug = new Map(pass.targets.map((t) => [t.slug, t]));
+  const maxPromptBound = Math.max(0, ...[...promptTokensByBenchmark.values()]);
+  for (const target of pass.targets) {
+    const need: CatalogVerifyNeed = {
+      maxTokens: Math.max(...PAID_BENCHMARKS.map((b) => b.finalBudget)) + PAID_REASONING_BUDGET,
+      promptTokens: maxPromptBound,
+      usedParams: paidUsedParams(target),
+    };
+    const v = verifyPaidTargetAgainstCatalog(catalog.get(target.slug), target, need);
+    perTarget.push({ slug: target.slug, ok: v.ok, reasons: v.reasons, providerDisplay: v.providerDisplay });
+    if (v.providerDisplay) providerDisplay[target.slug] = v.providerDisplay;
+    if (!v.ok) reasons.push(...v.reasons.map((r) => `${target.slug}:${r}`));
+  }
+  // Budget upper bound: each cell's ceiling estimate (its own prompt bound + max
+  // completion) <= per-run cap; total <= pass cap.
+  let totalCeiling = 0;
+  for (const cell of cells) {
+    const target = targetBySlug.get(cell.target);
+    if (!target) {
+      reasons.push(`budget:unknown_target:${cell.target}`);
+      continue;
+    }
+    const promptBound = promptTokensByBenchmark.get(cell.benchmark);
+    if (promptBound == null) {
+      reasons.push(`budget:no_prompt_bound:${cell.benchmark}`);
+      continue;
+    }
+    const est = estimateCellCeilingUsd(target, promptBound, paidCellMaxTokens(cell.benchmark));
+    if (est > pass.budget.perRunCapUsd) reasons.push(`budget:per_run_ceiling_exceeded:${cell.target}x${cell.benchmark}`);
+    totalCeiling += est;
+  }
+  if (totalCeiling > pass.budget.totalCapUsd) reasons.push("budget:total_ceiling_exceeded");
+  const catalogArtifactBody = JSON.stringify(
+    { campaignId: pass.campaignId, stageId: pass.stageId, perTarget, providerDisplay, budget: pass.budget, totalCeilingUsd: totalCeiling },
+    null,
+    2,
+  );
+  return { ok: reasons.length === 0, reasons, catalogArtifactBody, perTarget, providerDisplay };
+}
+
+/**
+ * Injectable dependencies for the paid credential-ordering bootstrap. Every
+ * verification gate is REQUIRED — there is no default-success gate — so a
+ * production caller MUST wire real source, parent-Evidence, campaign/benchmark,
+ * catalog, empty-root, lock and catalog-finalize implementations, and a missing
+ * one fails closed. Tests supply lightweight (fs-free) stubs.
+ */
+export interface PaidBootstrapDeps {
+  mode: PaidPassDefinition["mode"];
+  readEnv?: (name: string) => string | undefined;
+  /** Gate 1 — source/commit/tree authority anchor. Required. Returns the source
+   * authentication attestation (VALIDSIG fingerprint + manifest/signature digests) so
+   * the bootstrap can bind it durably into the final Evidence. */
+  verifySource: () => { ok: boolean; reasons: string[]; attestation?: Record<string, unknown> };
+  /** Gates 2-3 — parent Evidence bundle + frozen definition + historical run. Required. */
+  verifyParentEvidence: () => DigestVerifyResult;
+  /** Gate 4 — campaign definition + benchmark content hashes. Required. */
+  verifyCampaignBenchmarks: (pass: PaidPassDefinition, cells: PaidCell[]) => Promise<{ ok: boolean; reasons: string[] }>;
+  /** Gates 6-10 — anonymous public catalog fetch + verification (NO credential). Required. */
+  fetchCatalogAndVerify: (pass: PaidPassDefinition, cells: PaidCell[]) => Promise<PaidPreflightOutcome>;
+  /** Gate 5 — assert a fresh empty output root (default: the real journal check). */
+  assertOutputRootEmpty?: (root: string) => void;
+  /** Acquire the durable invocation lock spanning gate 11 and the whole run. */
+  acquireLock?: (outputRoot: string, stageId: string, now: () => string) => InvocationLock | null;
+  /** Gate 11 — durable catalog artifact finalize (via the lock), BEFORE the key read. */
+  finalizeCatalogArtifact?: (lock: InvocationLock | null, outputRoot: string, body: string) => { file: string; sha256: string; bytes: number } | null | void;
+  now?: () => string;
+}
+
+export interface PaidBootstrap {
+  pass: PaidPassDefinition;
+  cells: PaidCell[];
+  outputRoot: string;
+  preflight: PaidPreflightOutcome;
+  /** The held invocation lock (null only when a test stubs acquisition). */
+  lock: InvocationLock | null;
+  /** Content-addressed ref of the durable catalog-preflight artifact, for the manifest. */
+  catalogArtifactRef: { file: string; sha256: string; bytes: number } | null;
+  /** Content-addressed ref of the durable source-authentication attestation (F05). */
+  sourceAttestationRef: { file: string; sha256: string; bytes: number } | null;
+  orKey: string;
+}
+
+let paidInvocationCounter = 0;
+
+/**
+ * Ordered credential gate: the OPENROUTER_API_KEY is read LAST, only after ALL of
+ * — source/commit/tree, parent Evidence + historical run, campaign+benchmark
+ * hashes, the fresh empty output root, the anonymous public catalog + exact
+ * resolution + provider endpoint + parameter capability + price ceiling + budget
+ * upper bound, and the DURABLE catalog artifact finalize — have succeeded. The
+ * empty-root check and the lock are taken once here (gate 5) so the catalog
+ * finalize (gate 11) no longer collides with an empty-root re-check in the runner.
+ * Any earlier failure throws BEFORE the key is read: an invalid preflight makes
+ * zero provider/generation calls and reads no credential.
+ */
+export async function preparePaidBootstrap(deps: PaidBootstrapDeps): Promise<PaidBootstrap> {
+  const now = deps.now ?? (() => new Date().toISOString());
+  const readEnv = deps.readEnv ?? ((name: string) => process.env[name]);
+  const required = (name: string): string => {
+    const v = readEnv(name);
+    if (!v) throw new Error(`missing required environment variable ${name}`);
+    return v;
+  };
+  if (readEnv("CONTINUATION_RESUME") !== undefined) throw new Error("CONTINUATION_RESUME is prohibited in paid passes");
+  if (readEnv("PLINIUS_LOCAL_BINDING_DIR") !== undefined) throw new Error("PLINIUS_LOCAL_BINDING_DIR is prohibited in paid passes");
+
+  const { pass, cells } = paidPassFor(deps.mode);
+  const outputRoot = required("CONTINUATION_OUTPUT_ROOT");
+
+  const src = deps.verifySource();
+  if (!src.ok) throw new Error(`source verification failed: ${src.reasons.join(",")}`);
+  const sourceAttestationBody = JSON.stringify({ schemaVersion: 1, ...(src.attestation ?? {}) }, null, 2);
+
+  const pe = deps.verifyParentEvidence();
+  if (!pe.ok) throw new Error("parent evidence / historical digest mismatch");
+
+  const cb = await deps.verifyCampaignBenchmarks(pass, cells);
+  if (!cb.ok) throw new Error(`campaign/benchmark verification failed: ${cb.reasons.join(",")}`);
+
+  // Gate 5: fresh empty output root, THEN acquire the lock (its lock file is not
+  // "content" and is created after the empty check).
+  (deps.assertOutputRootEmpty ?? assertEmptyOutputRoot)(outputRoot);
+  const acquire =
+    deps.acquireLock ??
+    ((root: string, stageId: string, clock: () => string) =>
+      acquireInvocationLock(root, { stageId, invocationId: `${stageId}#${paidInvocationCounter++}`, startedAt: clock() }));
+  const lock = acquire(outputRoot, pass.stageId, now);
+
+  const preflight = await deps.fetchCatalogAndVerify(pass, cells);
+
+  // Gate 11 FIRST: finalize the catalog artifact (raw preimages + verification)
+  // durably — a FAILED catalog is durable NEGATIVE evidence, so it is persisted
+  // BEFORE the ok gate rather than thrown away.
+  const finalizeCatalog =
+    deps.finalizeCatalogArtifact ??
+    ((l: InvocationLock | null, root: string, body: string) =>
+      l ? finalizeArtifact(root, `paid-catalog-preflight-${fullSha(body)}.json`, body, l) : null);
+  const catalogArtifactRef = finalizeCatalog(lock, outputRoot, preflight.catalogArtifactBody) ?? null;
+
+  // Bind the source authentication attestation durably (F05) — the VALIDSIG
+  // fingerprint and the manifest/signature digests, so the trust anchor's proof is
+  // part of the final Evidence, not just an ephemeral gpg exit code.
+  const sourceAttestationRef = lock
+    ? finalizeArtifact(outputRoot, `paid-source-attestation-${fullSha(sourceAttestationBody)}.json`, sourceAttestationBody, lock)
+    : null;
+  if (!preflight.ok) throw new Error(`catalog preflight failed: ${preflight.reasons.join(",")}`);
+
+  // Deliberately last: an invalid gate above cannot reach this credential read.
+  const orKey = required("OPENROUTER_API_KEY");
+  return { pass, cells, outputRoot, preflight, lock, catalogArtifactRef, sourceAttestationRef, orKey };
+}
+
+export interface RunPaidPassOptions {
+  pass: PaidPassDefinition;
+  cells: PaidCell[];
+  outputRoot: string;
+  /** Plan one cell (offline). */
+  planCell: (cell: PaidCell, orderIndex: number) => Promise<PaidCellPlan>;
+  /** Dispatch one cell (network in production; injected mock in tests). `onWire` is
+   * the durable send/receive sink the dispatch must forward to its adapter. */
+  generate: (cell: PaidCell, plan: PaidCellPlan, req: RequestBody, onWire: (ev: PaidWireEvent) => void) => Promise<GenerateFacts>;
+  /** The verified provider DISPLAY name per target slug (from the preflight). */
+  providerDisplay: Record<string, string>;
+  /** The held invocation lock (from the bootstrap). When absent, the runner
+   * acquires its own and asserts a fresh empty root (standalone/test path). */
+  lock?: InvocationLock | null;
+  /** Content-addressed reference of the durable catalog-preflight artifact, so the
+   * final manifest binds it too. */
+  catalogArtifactRef?: PaidManifestRef | null;
+  /** The authenticated source-manifest artifact ref, bound by the final manifest. */
+  sourceManifestRef?: PaidManifestRef | null;
+  /** The detached-signature file over the source manifest (F05). */
+  sourceSignatureRef?: PaidManifestRef | null;
+  /** The source-authentication attestation (VALIDSIG fingerprint + digests) (F05). */
+  sourceAttestationRef?: PaidManifestRef | null;
+  /** Parent-input refs (bundle / evidence anchors), bound by the final manifest. */
+  parentInputRefs?: PaidManifestRef[];
+  now?: () => string;
+  onEvent?: (event: string) => void;
+}
+
+export interface RunPaidPassResult {
+  campaignId: string;
+  stageId: string;
+  stopped: string | null;
+  dispatchedRunIds: string[];
+  skippedGroups: string[];
+  skippedRunIds: string[];
+  spentUsd: number;
+  passed: number;
+  failed: number;
+  /** The strict binding manifest that content-addresses every artifact. */
+  manifestFile: string | null;
+}
+
+/**
+ * Run a paid pass. Per the paid contract there is NO resume/retry/fallback: a
+ * fresh empty output root is required, each cell is dispatched at most once, and a
+ * process that dies after a request never re-dispatches. Before every dispatch the
+ * cumulative actual spend plus the next cell's catalog-ceiling estimate is checked
+ * against the per-run and total caps (stop before the provider call on breach). The
+ * request wire is re-derived and its model + full provider routing must match the
+ * plan exactly. The billed cost must resolve after each response — an unknown cost
+ * stops the pass and is never backfilled as 0. A global sentinel failure stops the
+ * pass; a per-model sentinel failure skips only that model's remaining cells.
+ */
+export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPassResult> {
+  const now = opts.now ?? (() => new Date().toISOString());
+  const runsDir = join(opts.outputRoot, "runs");
+  // The lock is the bootstrap's when given (the empty-root check already ran
+  // there, so it is NOT repeated). Standalone/test path: acquire and assert empty.
+  const ownLock = opts.lock == null;
+  const lock: InvocationLock =
+    opts.lock ??
+    (() => {
+      assertEmptyOutputRoot(opts.outputRoot);
+      return acquireInvocationLock(opts.outputRoot, {
+        stageId: opts.pass.stageId,
+        invocationId: `${opts.pass.stageId}#${paidInvocationCounter++}`,
+        startedAt: now(),
+      });
+    })();
+  mkdirSync(runsDir, { recursive: true, mode: 0o700 });
+  opts.onEvent?.("gate:output_root");
+
+  const skippedGroups = new Set<string>();
+  const skippedRunIds: string[] = [];
+  const dispatchedRunIds: string[] = [];
+  const recordRefs: PaidManifestRef[] = [];
+  const wireRefs: PaidManifestRef[] = [];
+  const rawObsRefs: PaidManifestRef[] = [];
+  let spentUsd = 0;
+  let passed = 0;
+  let failed = 0;
+  let stopped: string | null = null;
+  let manifestFile: string | null = null;
+
+  // Finalize a content-addressed artifact whose FILENAME is the SHA of the EXACT
+  // bytes written, so the name and the body digest can never disagree. Returns a
+  // manifest ref (path relative to the output root) plus the absolute path.
+  const finalizeCA = (dir: string, prefix: string, body: string): PaidManifestRef & { path: string } => {
+    const filename = `${prefix}-${fullSha(body)}.json`;
+    const res = finalizeArtifact(dir, filename, body, lock);
+    const rel = dir === runsDir ? `runs/${filename}` : filename;
+    return { file: rel, sha256: res.sha256, bytes: res.bytes, path: join(dir, filename) };
+  };
+
+  try {
+    for (let i = 0; i < opts.cells.length; i++) {
+      const cell = opts.cells[i];
+      const orderIndex = i + 1;
+      const plan = await opts.planCell(cell, orderIndex);
+      if (skippedGroups.has(cell.group)) {
+        skippedRunIds.push(plan.runId);
+        continue;
+      }
+      const routing = buildProviderRouting(plan.target);
+
+      // Budget gate BEFORE dispatch: ceiling estimate within per-run, cumulative within total.
+      const estimate = estimateCellCeilingUsd(plan.target, plan.promptTokensEstimate, plan.maxTokens);
+      const bc = checkBudgetBeforeDispatch(spentUsd, estimate, opts.pass.budget);
+      if (!bc.ok) {
+        stopped = `budget_exceeded:${bc.reasons.join(",")}`;
+        break;
+      }
+
+      // Durable intent + dispatch_started BEFORE the provider call.
+      const timestamp = now();
+      prepareIntent(runsDir, {
+        campaignId: opts.pass.campaignId,
+        orderIndex,
+        runId: plan.runId,
+        target: cell.target,
+        benchmark: cell.benchmark,
+        attemptIndex: 0,
+        createdAt: timestamp,
+      });
+      markDispatchStarted(runsDir, plan.runId);
+      if (cell.sentinel) opts.onEvent?.("dispatch:sentinel");
+
+      // The durable wire sink is the SOLE authoritative capture (C1-PAID-R4-F01): it
+      // finalizes the request fragment at send-time, the response fragment at
+      // receive-time, and the whole cost-lookup poll chain right after it settles.
+      // Each fragment's on-disk path is remembered so the raw observation is assembled
+      // by READING THE FRAGMENTS BACK — never from the adapter's returned object.
+      const sink: { request: string | null; response: string | null; cost_lookup: string | null } = { request: null, response: null, cost_lookup: null };
+      const onWire = (ev: PaidWireEvent) => {
+        const body =
+          ev.stage === "cost_lookup"
+            ? JSON.stringify({ runId: plan.runId, stage: "cost_lookup", costLookup: ev.costLookup }, null, 2)
+            : JSON.stringify({ runId: plan.runId, stage: ev.stage, url: ev.url, method: ev.method, httpStatus: ev.httpStatus ?? null, preimage: ev.preimage }, null, 2);
+        const ref = finalizeCA(runsDir, `paid-wirefrag-${plan.runId}-${ev.stage}`, body);
+        wireRefs.push({ file: ref.file, sha256: ref.sha256, bytes: ref.bytes, runId: plan.runId });
+        sink[ev.stage] = ref.path;
+      };
+
+      // Assemble + finalize the raw observation SOLELY from the persisted sink
+      // fragments (read back from disk). Used by BOTH the success and the terminal
+      // paths so a billed request/response is never lost.
+      const assembleRawObs = (): PaidManifestRef & { path: string } => {
+        const readFrag = (p: string | null): Record<string, unknown> | null => {
+          if (!p) return null;
+          try {
+            return JSON.parse(readFileSync(p, "utf-8")) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        };
+        const reqFrag = readFrag(sink.request);
+        const resFrag = readFrag(sink.response);
+        const costFrag = readFrag(sink.cost_lookup);
+        const rawObs: PaidRawObservation = {
+          runId: plan.runId,
+          requestUrl: (reqFrag?.url ?? null) as string | null,
+          requestMethod: (reqFrag?.method ?? null) as string | null,
+          requestBody: (reqFrag?.preimage ?? null) as WireBodyPreimage | null,
+          responseHttpStatus: (resFrag?.httpStatus ?? null) as number | null,
+          responseBody: (resFrag?.preimage ?? null) as WireBodyPreimage | null,
+          costLookup: (costFrag?.costLookup ?? null) as CostLookupWireEvidence | null,
+        };
+        const handle = finalizeCA(runsDir, `paid-rawobs-${plan.runId}`, JSON.stringify(rawObs, null, 2));
+        rawObsRefs.push({ file: handle.file, sha256: handle.sha256, bytes: handle.bytes, runId: plan.runId });
+        return handle;
+      };
+
+      let facts: GenerateFacts;
+      try {
+        facts = await opts.generate(cell, plan, plan.req, onWire);
+      } catch (err) {
+        // Terminal: assemble + bind the raw observation from the sink fragments (the
+        // request/response captured before the throw survive), write a failed record
+        // that binds it, then stop.
+        const message = err instanceof Error ? err.message : String(err);
+        const rawObsHandle = assembleRawObs();
+        const terminal = buildQualificationAttempt({
+          attemptIndex: 0, timestamp, backend: "openrouter", requestedSlug: plan.target.slug, endpoint: OR_BASE,
+          raw: null, text: null, rawFinish: null, transportError: { kind: "dispatch_exception", message },
+          usage: null, latencyMs: 0, cost: { costModel: "METERED", actualCostUsd: null },
+          routing: { providerRoutingSent: serializeProviderRouting(routing), dispatchException: message },
+        });
+        const rec = buildQualificationRunRecord({ ...plan.header, timestamp }, [terminal]);
+        const recBody = JSON.stringify({ ...rec, paidVerdict: { ok: false, validationReasons: ["dispatch_exception"], responseQualified: false }, billedCostUsd: null, rawObservationRef: { file: rawObsHandle.file, sha256: rawObsHandle.sha256, bytes: rawObsHandle.bytes } }, null, 2);
+        const rRes = finalizeArtifact(runsDir, `${plan.runId}.json`, recBody, lock);
+        recordRefs.push({ file: `runs/${plan.runId}.json`, sha256: rRes.sha256, bytes: rRes.bytes, runId: plan.runId });
+        dispatchedRunIds.push(plan.runId);
+        failed++;
+        stopped = `dispatch_exception:${plan.runId}`;
+        break;
+      }
+      // NOTE: `facts` is now consulted ONLY for non-authoritative timing (latencyMs).
+      // Every authoritative value below is re-derived from the durable sink on disk.
+
+      // (A) Assemble the raw observation from the durable sink fragments and finalize it.
+      const rawObsHandle = assembleRawObs();
+
+      // (B) READ BACK the raw observation FROM DISK and re-derive EVERYTHING from its
+      // bytes: canonical request/response integrity, request allowed-field-set,
+      // request identity/routing, the full received-response outcome, and the whole
+      // cost-lookup chain (billed cost only from the verified terminal poll).
+      const readBack = JSON.parse(readFileSync(rawObsHandle.path, "utf-8")) as PaidRawObservation;
+      const rederive = reDerivePaidFromRawObservation(readBack);
+
+      // (C) Truthful spend: add the billed cost whenever it is a real non-negative
+      // number — even when it will trip a cap — so the summary never understates.
+      const spentBefore = spentUsd;
+      const billed = rederive.billedCostUsd;
+      if (typeof billed === "number" && Number.isFinite(billed) && billed >= 0) spentUsd += billed;
+
+      // (D) VALIDATE against the DISK-derived observation, and build the received
+      // response headline FROM THE RESPONSE WIRE BYTES (deriveResponseOutcome inside
+      // buildQualificationAttempt) — never from the adapter's returned facts.
+      const dispatchCheck = verifyPaidDispatch(rederive.observed, {
+        requestUrl: `${OR_BASE}/chat/completions`, model: plan.target.slug, routing, maxTokens: plan.maxTokens,
+        temperature: plan.target.sampling.temperature, topP: plan.target.sampling.topP, seed: plan.target.sampling.seed,
+        messages: plan.messages, providerDisplay: opts.providerDisplay[plan.target.slug] ?? "",
+      });
+      const costCheck = validatePaidActualCost(billed, spentBefore, opts.pass.budget);
+      const respParse = readBack.responseBody ? parseWireJson(readBack.responseBody) : { ok: false as const, reason: "no_response_wire" };
+      const parsedResponse = respParse.ok ? respParse.value : null;
+      const wireUsage = parsedResponse != null && typeof parsedResponse === "object" ? (parsedResponse as Record<string, unknown>).usage ?? null : null;
+      const attempt = buildQualificationAttempt({
+        attemptIndex: 0, timestamp, backend: "openrouter", requestedSlug: plan.target.slug, endpoint: OR_BASE,
+        raw: parsedResponse, text: null, rawFinish: null,
+        transportError: parsedResponse == null ? { kind: "no_response_wire", message: "no durable response body was captured" } : null,
+        usage: wireUsage, latencyMs: typeof facts.latencyMs === "number" ? facts.latencyMs : 0,
+        cost: { costModel: "METERED", actualCostUsd: billed },
+        routing: { providerRoutingSent: serializeProviderRouting(routing), responseProvider: rederive.observed.responseProvider, lookupProvider: rederive.observed.lookupProvider },
+      });
+      const responseRecord = buildQualificationRunRecord({ ...plan.header, timestamp }, [attempt]);
+      const responseQualified = responseRecord.status.qualification === "pass";
+      const validationReasons = [
+        ...(rederive.ok ? [] : rederive.reasons.map((r) => `rederive:${r}`)),
+        ...(dispatchCheck.ok ? [] : dispatchCheck.reasons),
+        ...(costCheck.ok ? [] : costCheck.reasons.map((r) => `cost:${r}`)),
+      ];
+      const verdictOk = validationReasons.length === 0 && responseQualified;
+
+      // (E) OVERWRITE the record's qualification on ANY paid-verdict failure so EVERY
+      // consumer — not just a reader of the side-channel paidVerdict — sees a failed
+      // record (C1-PAID-R4-F03). The nested attempt status is overwritten too.
+      const failStatus = { ...responseRecord.status, qualification: "fail" as const, failureReasons: [...responseRecord.status.failureReasons, ...validationReasons.map((r) => `paid_verdict:${r}`)] };
+      const finalStatus = verdictOk ? responseRecord.status : failStatus;
+      const finalRecordBody = JSON.stringify(
+        {
+          ...responseRecord,
+          status: finalStatus,
+          attempts: responseRecord.attempts.map((a) => ({ ...a, status: verdictOk ? a.status : failStatus })),
+          paidVerdict: { ok: verdictOk, validationReasons, responseQualified },
+          billedCostUsd: billed,
+          rawObservationRef: { file: rawObsHandle.file, sha256: rawObsHandle.sha256, bytes: rawObsHandle.bytes },
+        },
+        null,
+        2,
+      );
+      const rRes = finalizeArtifact(runsDir, `${plan.runId}.json`, finalRecordBody, lock);
+      recordRefs.push({ file: `runs/${plan.runId}.json`, sha256: rRes.sha256, bytes: rRes.bytes, runId: plan.runId });
+      dispatchedRunIds.push(plan.runId);
+      if (verdictOk) passed++;
+      else failed++;
+
+      // (F) Stop decisions AFTER the verdict record is durable.
+      if (!rederive.ok) {
+        stopped = `wire_integrity_failed:${plan.runId}:${rederive.reasons.join(",")}`;
+        break;
+      }
+      if (!dispatchCheck.ok) {
+        stopped = `request_wire_mismatch:${plan.runId}:${dispatchCheck.reasons.join(",")}`;
+        break;
+      }
+      if (!costCheck.ok) {
+        stopped = `actual_cost_rejected:${plan.runId}:${costCheck.reasons.join(",")}`;
+        break;
+      }
+      if (cell.sentinel && !responseQualified) {
+        if (opts.pass.sentinelScope === "global") {
+          stopped = `campaign_sentinel_not_accepted:${cell.target}`;
+          break;
+        }
+        skippedGroups.add(cell.group); // per-model: skip this model's remaining cells only
+      }
+    }
+
+    const summary = {
+      campaignId: opts.pass.campaignId,
+      stageId: opts.pass.stageId,
+      mode: opts.pass.mode,
+      completedUtc: now(),
+      stopped,
+      totalCells: opts.cells.length,
+      dispatched: dispatchedRunIds.length,
+      skipped: skippedRunIds.length,
+      passed,
+      failed,
+      spentUsd,
+      budget: opts.pass.budget,
+      skippedGroups: [...skippedGroups],
+    };
+    const summaryHandle = finalizeCA(opts.outputRoot, `paid-pass-summary`, JSON.stringify(summary, null, 2));
+
+    // Intent refs with digest + bytes (not filename-only).
+    const intentRefs: PaidManifestRef[] = existsSync(runsDir)
+      ? readdirSync(runsDir)
+          .filter((f) => f.endsWith(".intent.json"))
+          .sort()
+          .map((f) => {
+            const b = readFileSync(join(runsDir, f), "utf-8");
+            return { file: `runs/${f}`, sha256: "sha256:" + fullSha(b), bytes: Buffer.byteLength(b, "utf-8") };
+          })
+      : [];
+
+    // (G) Strict binding manifest over the COMPLETE Evidence set — source manifest,
+    // its detached signature + authentication attestation, parent inputs, catalog,
+    // every raw observation, record, wire, intent, and the summary — each with digest
+    // + bytes. Finalized LAST, then READ BACK and VERIFIED against disk.
+    const binding: PaidBindingManifest = {
+      sourceManifest: opts.sourceManifestRef ?? null,
+      sourceSignature: opts.sourceSignatureRef ?? null,
+      sourceAttestation: opts.sourceAttestationRef ?? null,
+      parentInputs: opts.parentInputRefs ?? [],
+      catalogArtifact: opts.catalogArtifactRef ?? null,
+      rawObservations: rawObsRefs,
+      records: recordRefs,
+      wires: wireRefs,
+      intents: intentRefs,
+      summary: { file: summaryHandle.file, sha256: summaryHandle.sha256, bytes: summaryHandle.bytes },
+    };
+    const manifestHandle = finalizeCA(opts.outputRoot, `paid-pass-manifest`, JSON.stringify({ manifestSchemaVersion: 3, campaignId: opts.pass.campaignId, stageId: opts.pass.stageId, ...binding }, null, 2));
+    manifestFile = manifestHandle.file;
+
+    // (H) READ BACK the finalized manifest FROM DISK and verify THAT (never the
+    // pre-write object). The referenced output-root file set must EQUAL the disk set
+    // (no surplus unreferenced artifact, no shortfall), and every bound file's digest
+    // must match. The manifest itself and the lock are excluded from the disk set.
+    const persistedManifest = JSON.parse(readFileSync(manifestHandle.path, "utf-8")) as PaidBindingManifest;
+    const readForVerify = (file: string): Buffer | null => {
+      try {
+        return readFileSync(file.startsWith("/") ? file : join(opts.outputRoot, file));
+      } catch {
+        return null;
+      }
+    };
+    const diskFiles: string[] = [];
+    for (const e of readdirSync(opts.outputRoot, { withFileTypes: true })) {
+      if (e.isDirectory()) continue;
+      if (e.name === LOCK_FILENAME || e.name === manifestHandle.file) continue;
+      diskFiles.push(e.name);
+    }
+    if (existsSync(runsDir)) for (const f of readdirSync(runsDir)) diskFiles.push(`runs/${f}`);
+    const mv = verifyPaidManifest(persistedManifest, readForVerify, { diskFiles });
+    if (!mv.ok) throw new Error(`paid manifest verification failed: ${mv.reasons.join(",")}`);
+  } finally {
+    // Release the lock at the end of the run (whether acquired here or handed in by
+    // the bootstrap), last, after the manifest is durable.
+    void ownLock;
+    releaseInvocationLock(lock);
+  }
+
+  return {
+    campaignId: opts.pass.campaignId,
+    stageId: opts.pass.stageId,
+    stopped,
+    dispatchedRunIds,
+    skippedGroups: [...skippedGroups],
+    skippedRunIds,
+    spentUsd,
+    passed,
+    failed,
+    manifestFile,
+  };
+}
+
+/**
+ * Production entrypoint for a paid pass. Reuses the credential-last bootstrap and
+ * the dispatch loop; the actual OpenRouter calls happen only in `generate` and
+ * only after every gate passes. This never touches local runtime / Docker / GPU /
+ * Fable attestation.
+ */
+async function paidMain(mode: PaidPassDefinition["mode"]): Promise<void> {
+  const boot = await preparePaidBootstrap({
+    mode,
+    // Gate 1 — source/commit/tree: verify the RUNNING source against an authority
+    // source manifest (external, signed input): the git HEAD commit and tree, a
+    // clean worktree, and every pinned file's on-disk SHA-256. A dirty file or a
+    // different commit fails closed here, before any credential read.
+    verifySource: () => {
+      const manifestPath = process.env.PAID_SOURCE_MANIFEST_PATH;
+      if (!manifestPath) return { ok: false, reasons: ["PAID_SOURCE_MANIFEST_PATH missing"] };
+      let manifest: AuthoritySourceManifest;
+      let manifestStat: ReturnType<typeof lstatSync>;
+      try {
+        manifestStat = lstatSync(manifestPath);
+        manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as AuthoritySourceManifest;
+      } catch (e) {
+        return { ok: false, reasons: [`source_manifest_read_error:${(e as Error).message}`] };
+      }
+      // Detached-signature verification: the pinned authority key must have signed
+      // the manifest bytes. `<manifest>.sig` is the detached signature file, which is
+      // itself observed (regular non-symlink + digest) so it can be bound as Evidence.
+      const signaturePath = manifestPath + ".sig";
+      let signatureFilePresent = false;
+      let signatureIsRegularNonSymlink = false;
+      let signatureSha256: string | null = null;
+      try {
+        const sigStat = lstatSync(signaturePath);
+        signatureFilePresent = true;
+        signatureIsRegularNonSymlink = sigStat.isFile() && !sigStat.isSymbolicLink();
+        signatureSha256 = "sha256:" + createHash("sha256").update(readFileSync(signaturePath)).digest("hex");
+      } catch {
+        signatureFilePresent = false;
+      }
+      let signatureVerified = false;
+      let signerFingerprint: string | null = null;
+      let validsigLine: string | null = null;
+      try {
+        const out = execSync(`gpg --status-fd=1 --verify ${JSON.stringify(signaturePath)} ${JSON.stringify(manifestPath)}`, {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        const valid = out.split("\n").find((l) => l.includes("[GNUPG:] VALIDSIG"));
+        if (valid) {
+          signatureVerified = true;
+          validsigLine = valid.trim();
+          signerFingerprint = valid.trim().split(/\s+/)[2] ?? null; // VALIDSIG <fpr> ...
+        }
+      } catch {
+        signatureVerified = false;
+      }
+      const manifestSha256 = "sha256:" + createHash("sha256").update(readFileSync(manifestPath)).digest("hex");
+      const repo = dirname(fileURLToPath(import.meta.url));
+      let observed: ObservedSource;
+      try {
+        const git = (a: string) => execSync(`git -C ${JSON.stringify(repo)} ${a}`, { encoding: "utf-8" }).trim();
+        const fileDigests: Record<string, string> = {};
+        for (const f of manifest.files ?? []) {
+          try {
+            fileDigests[f.path] = createHash("sha256").update(readFileSync(join(repo, f.path))).digest("hex");
+          } catch {
+            /* missing file — left absent so the manifest check reports it */
+          }
+        }
+        // Clean INCLUDING untracked files — only the approved node_modules symlink
+        // is tolerated. Any stray untracked file fails the gate.
+        const status = git("status --porcelain=v1 --untracked-files=all")
+          .split("\n")
+          .filter((l) => l.length > 0 && l !== "?? node_modules");
+        observed = {
+          commit: git("rev-parse HEAD"),
+          tree: git("rev-parse HEAD^{tree}"),
+          worktreeCleanInclUntracked: status.length === 0,
+          fileDigests,
+          manifestIsRegularNonSymlink: manifestStat.isFile() && !manifestStat.isSymbolicLink(),
+          manifestOwnerUid: manifestStat.uid,
+          executingUid: typeof process.getuid === "function" ? process.getuid() : manifestStat.uid,
+          manifestMode: manifestStat.mode & 0o777,
+          signatureVerified,
+          signerFingerprint,
+          signatureFilePresent,
+          signatureIsRegularNonSymlink,
+        };
+      } catch (e) {
+        return { ok: false, reasons: [`git_observe_error:${(e as Error).message}`] };
+      }
+      const verdict = verifyAuthoritySourceManifest(manifest, observed);
+      return {
+        ...verdict,
+        attestation: {
+          manifestPath,
+          manifestSha256,
+          signaturePath,
+          signatureSha256,
+          signatureVerified,
+          signerFingerprint,
+          pinnedSigner: AUTHORITY_SOURCE_MANIFEST_SIGNER,
+          validsigLine,
+          commit: observed.commit,
+          tree: observed.tree,
+          worktreeCleanInclUntracked: observed.worktreeCleanInclUntracked,
+        },
+      };
+    },
+    // Gates 2-3 — parent Evidence bundle + frozen definition + historical run.
+    verifyParentEvidence: () => {
+      const parentRoot = process.env.PARENT_EVIDENCE_ROOT ?? "";
+      const bundlePath = process.env.PARENT_BUNDLE_PATH ?? "";
+      return verifyHistoricalDigestsFromFiles({
+        parentBundlePath: bundlePath,
+        parentBundleSha256: HISTORICAL_DIGESTS.parentBundleSha256,
+        frozenDefinitionPath: join(parentRoot, "campaign", "frozen-campaign-definition.json"),
+        frozenDefinitionSha256: HISTORICAL_DIGESTS.frozenDefinitionSha256,
+        historicalRunPath: join(parentRoot, "campaign", "runs", "run-d43bb9bcd2a03c20.json"),
+        historicalRunSha256: HISTORICAL_DIGESTS.historicalRunSha256,
+      });
+    },
+    // Gate 4 — campaign definition + benchmark content hashes.
+    verifyCampaignBenchmarks: async (_pass, cells) => {
+      const reasons: string[] = [];
+      for (const id of new Set(cells.map((c) => c.benchmark))) {
+        const bcfg = PAID_BENCHMARKS.find((b) => b.id === id);
+        if (!bcfg) {
+          reasons.push(`unknown_benchmark:${id}`);
+          continue;
+        }
+        const l = await loadBenchmarkById(id);
+        if (l.contentHash !== bcfg.contentHash) reasons.push(`benchmark_hash_mismatch:${id}`);
+      }
+      return { ok: reasons.length === 0, reasons };
+    },
+    // Gates 6-10 — anonymous public catalog fetch + verification. The RAW response
+    // preimages (byte-preserving), HTTP status, per-target verification, provider
+    // display names, and the per-cell budget are all folded into the durable
+    // artifact (gate 11). HTTP status 200 is a pass condition.
+    fetchCatalogAndVerify: async (pass, cells) => {
+      const { catalog, rawEvidence } = await fetchPaidCatalog(pass);
+      const promptTokensByBenchmark = new Map<string, number>();
+      for (const id of new Set(cells.map((c) => c.benchmark))) {
+        const l = await loadBenchmarkById(id);
+        promptTokensByBenchmark.set(id, tokenUpperBound(`${l.systemPrompt ?? ""}${l.userPrompt}`));
+      }
+      const httpReasons = rawEvidence.filter((e) => e.httpStatus !== 200).map((e) => `catalog_http_${e.httpStatus}:${e.endpoint}`);
+      const verified = verifyPaidCatalog(pass, cells, catalog, promptTokensByBenchmark);
+      const reasons = [...httpReasons, ...verified.reasons];
+      const ok = reasons.length === 0;
+      const body = JSON.stringify(
+        {
+          campaignId: pass.campaignId,
+          stageId: pass.stageId,
+          catalogEvidence: rawEvidence,
+          verification: verified.perTarget,
+          providerDisplay: verified.providerDisplay,
+          budget: pass.budget,
+          ok,
+          reasons,
+        },
+        null,
+        2,
+      );
+      return { ok, reasons, catalogArtifactBody: body, perTarget: verified.perTarget, providerDisplay: verified.providerDisplay };
+    },
+  });
+
+  // Bind the authenticated source manifest and the parent inputs into the final
+  // manifest by absolute-path ref + digest + bytes.
+  const refOf = (absPath: string): PaidManifestRef | null => {
+    try {
+      const b = readFileSync(absPath);
+      return { file: absPath, sha256: "sha256:" + createHash("sha256").update(b).digest("hex"), bytes: b.length };
+    } catch {
+      return null;
+    }
+  };
+  const parentRoot = process.env.PARENT_EVIDENCE_ROOT ?? "";
+  const manifestPath = process.env.PAID_SOURCE_MANIFEST_PATH;
+  const sourceManifestRef = manifestPath ? refOf(manifestPath) : null;
+  const sourceSignatureRef = manifestPath ? refOf(manifestPath + ".sig") : null;
+  const parentInputRefs = [
+    process.env.PARENT_BUNDLE_PATH ? refOf(process.env.PARENT_BUNDLE_PATH) : null,
+    refOf(join(parentRoot, "campaign", "frozen-campaign-definition.json")),
+    refOf(join(parentRoot, "campaign", "runs", "run-d43bb9bcd2a03c20.json")),
+  ].filter((r): r is PaidManifestRef => r != null);
+
+  const result = await runPaidPass({
+    pass: boot.pass,
+    cells: boot.cells,
+    outputRoot: boot.outputRoot,
+    lock: boot.lock,
+    providerDisplay: boot.preflight.providerDisplay,
+    catalogArtifactRef: boot.catalogArtifactRef,
+    sourceManifestRef,
+    sourceSignatureRef,
+    sourceAttestationRef: boot.sourceAttestationRef,
+    parentInputRefs,
+    planCell: (cell, orderIndex) => paidPlanCell(boot.pass, cell, orderIndex),
+    generate: (_cell, plan, req, onWire) =>
+      dispatchViaBackend({
+        backendId: "openrouter",
+        onWire,
+        baseUrl: OR_BASE,
+        apiKey: boot.orKey,
+        timeoutMs: PAID_TIMEOUT_MS,
+        isHosted: true,
+        req,
+        messages: plan.messages,
+        fetchFn: globalThis.fetch as FetchFn,
+        costLookup: (id) => generationCost(id, boot.orKey),
+      }),
+  });
+  console.log(
+    `PAID ${boot.pass.mode} dispatched=${result.dispatchedRunIds.length} passed=${result.passed} ` +
+      `failed=${result.failed} skipped=${result.skippedRunIds.length} spent=$${result.spentUsd.toFixed(4)} ` +
+      `stopped=${result.stopped ?? "no"}`,
+  );
+}
+
+/** Byte-preserving evidence of one anonymous catalog / endpoints fetch. */
+interface CatalogRawEvidence {
+  endpoint: string;
+  fetchedAtUtc: string;
+  httpStatus: number;
+  /** Base64 of the RAW response bytes, so the catalog decision is re-derivable. */
+  rawBodyBase64: string;
+  rawBodySha256: string;
+  byteLength: number;
+  /** Populated when the fetch itself failed (transport error / timeout). */
+  transportError?: string | null;
+}
+
+const PAID_CATALOG_TIMEOUT_MS = 30_000;
+
+/**
+ * Fetch the PUBLIC OpenRouter model catalog + per-target endpoints anonymously
+ * (no credential). Each fetch's HTTP status, raw byte length, and SHA-256 over the
+ * raw bytes are captured as evidence; `isAlias` (id != canonical slug) and
+ * `isFree` (zero-priced endpoint) are derived here so the verifier never trusts
+ * an unbuilt flag.
+ */
+async function fetchPaidCatalog(pass: PaidPassDefinition): Promise<{ catalog: Map<string, CatalogModelInfo>; rawEvidence: CatalogRawEvidence[] }> {
+  const out = new Map<string, CatalogModelInfo>();
+  const rawEvidence: CatalogRawEvidence[] = [];
+  const fetchRaw = async (url: string): Promise<{ status: number; bytes: Uint8Array; json: unknown; transportError: string | null }> => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PAID_CATALOG_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: controller.signal });
+    } catch (e) {
+      // Transport error / timeout: record byte-empty negative evidence with the
+      // failure captured, so a failed catalog fetch is re-derivable and never
+      // throws past the gate (the catalog verifier then rejects on empty data).
+      clearTimeout(timer);
+      const transportError = controller.signal.aborted ? `timeout_after_${PAID_CATALOG_TIMEOUT_MS}ms` : (e as Error).message;
+      rawEvidence.push({
+        endpoint: url,
+        fetchedAtUtc: new Date().toISOString(),
+        httpStatus: 0,
+        rawBodyBase64: "",
+        rawBodySha256: "sha256:" + createHash("sha256").update(new Uint8Array(0)).digest("hex"),
+        byteLength: 0,
+        transportError,
+      });
+      return { status: 0, bytes: new Uint8Array(0), json: null, transportError };
+    } finally {
+      clearTimeout(timer);
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    rawEvidence.push({
+      endpoint: url,
+      fetchedAtUtc: new Date().toISOString(),
+      httpStatus: res.status,
+      rawBodyBase64: Buffer.from(bytes).toString("base64"),
+      rawBodySha256: "sha256:" + createHash("sha256").update(bytes).digest("hex"),
+      byteLength: bytes.byteLength,
+      transportError: null,
+    });
+    let json: unknown = null;
+    try {
+      json = JSON.parse(Buffer.from(bytes).toString("utf-8"));
+    } catch {
+      json = null;
+    }
+    return { status: res.status, bytes, json, transportError: null };
+  };
+
+  const models = ((await fetchRaw(`${OR_BASE}/models`)).json ?? {}) as { data?: Array<{ id?: string; canonical_slug?: string }> };
+  const byId = new Map((models.data ?? []).filter((m): m is { id: string; canonical_slug?: string } => typeof m.id === "string").map((m) => [m.id, m]));
+  for (const target of pass.targets) {
+    const model = byId.get(target.slug);
+    if (!model) {
+      out.set(target.slug, { id: target.slug, endpoints: [] });
+      continue;
+    }
+    const epJson = ((await fetchRaw(`${OR_BASE}/models/${target.slug}/endpoints`)).json ?? {}) as {
+      data?: { endpoints?: Array<Record<string, unknown>> };
+    };
+    const endpoints = (epJson.data?.endpoints ?? []).map((e) => {
+      const pricing = (e.pricing as { prompt?: number | string; completion?: number | string }) ?? {};
+      const prompt = pricing.prompt ?? null;
+      const completion = pricing.completion ?? null;
+      const isFree = Number(prompt) === 0 && Number(completion) === 0;
+      return {
+        tag: String((e.tag as string) ?? ""),
+        providerName: typeof e.provider_name === "string" ? (e.provider_name as string) : typeof e.name === "string" ? (e.name as string) : null,
+        pricing: { prompt, completion },
+        contextLength: (e.context_length as number) ?? null,
+        maxCompletionTokens: (e.max_completion_tokens as number) ?? null,
+        supportedParameters: (e.supported_parameters as string[]) ?? [],
+        isFree,
+      };
+    });
+    out.set(target.slug, {
+      id: model.id,
+      isAlias: typeof model.canonical_slug === "string" && model.canonical_slug !== model.id,
+      endpoints,
+    });
+  }
+  return { catalog: out, rawEvidence };
+}
+
 /**
  * Resolve the driver mode. Fail-closed BEFORE any network or credential access:
- * an absent or unknown mode is rejected. The old continuation mode is retired;
- * the bounded diagnostic run is available only as "diagnostic-one-shot-r1".
+ * an absent or unknown mode is rejected. The old continuation mode is retired; the
+ * bounded diagnostic run is "diagnostic-one-shot-r1"; the two partitioned paid
+ * passes are "diagnostic-hosted-paid-r1" and "diagnostic-candidate-paid-r1".
  */
-export function resolveDriverMode(raw: string | undefined): "default" | "diagnostic-one-shot-r1" {
+export function resolveDriverMode(
+  raw: string | undefined,
+): "default" | "diagnostic-one-shot-r1" | "diagnostic-hosted-paid-r1" | "diagnostic-candidate-paid-r1" {
   if (raw === "default") return "default";
   if (raw === "diagnostic-continuation-r1") {
     throw new Error("diagnostic-continuation-r1 is retired; automatic continuation/resume is prohibited");
   }
   if (raw === "diagnostic-one-shot-r1") return "diagnostic-one-shot-r1";
+  if (raw === "diagnostic-hosted-paid-r1") return "diagnostic-hosted-paid-r1";
+  if (raw === "diagnostic-candidate-paid-r1") return "diagnostic-candidate-paid-r1";
   throw new Error(
-    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default or diagnostic-one-shot-r1`,
+    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default, diagnostic-one-shot-r1, diagnostic-hosted-paid-r1 or diagnostic-candidate-paid-r1`,
   );
 }
 
@@ -2437,7 +3531,12 @@ function invokedDirectly(): boolean {
 
 if (invokedDirectly()) {
   const mode = resolveDriverMode(process.env.PLINIUS_DRIVER_MODE);
-  const entry = mode === "diagnostic-one-shot-r1" ? oneShotMain : main;
+  const entry =
+    mode === "diagnostic-one-shot-r1"
+      ? oneShotMain
+      : mode === "diagnostic-hosted-paid-r1" || mode === "diagnostic-candidate-paid-r1"
+        ? () => paidMain(mode)
+        : main;
   entry().catch((e) => {
     console.error("DRIVER ERROR:", e);
     process.exit(1);
