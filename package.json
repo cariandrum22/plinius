@@ -17,6 +17,7 @@
 		"evaluate": "tsx src/cli.ts evaluate",
 		"compare": "tsx src/cli.ts compare",
 		"dev": "tsx src/cli.ts",
+		"paid:preload": "tsx qualification-paid-preload.mts",
 		"start": "node dist/index.js",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
