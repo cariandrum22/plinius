@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "outDir": "./build/paid-typecheck",
+    "rootDir": "."
+  },
+  "include": [
+    "qualification-driver.mts",
+    "qualification-paid-launch.mjs",
+    "qualification-paid-verify.mjs",
+    "scripts/build-paid-artifacts.mjs",
+    "src/**/*.ts"
+  ],
+  "exclude": ["node_modules", "dist", "build", "test"]
+}

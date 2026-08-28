@@ -1,15 +1,14 @@
 /**
- * Partitioned hosted paid passes — production-path tests (Paid Pass r8).
+ * Partitioned hosted paid passes — production-path tests (Paid Pass v2).
  *
- * r8 adds: a self-contained external preloader (decidePreload, unit-tested) that gates
- * loading the driver on a verified closure; anchor copy-in + digest-verify moved BEFORE the
- * credential read (a TOCTOU throws with the key unread); a post-transfer SEAL cross-check of
- * each sealed anchor envelope's inner digest against the attestation / historical digests;
- * and pinned-absolute gpg/git. (r7 kept: cost-persist-not-transport, fs-metadata, schema.)
+ * v2 packages a dependency-free launcher, one bundled driver, benchmark assets and an
+ * independent Mac verifier under one signed execution manifest. Ubuntu never loads the
+ * source tree, package manager, tsx or node_modules. Anchor copy remains before the key,
+ * while all seal checks now precede creation of the final Evidence manifest.
  *
  * Drives the real production code: the pure paid-campaign module (routing, catalog
  * verification, budget, actual-cost, from-bytes re-derivation with the EXACT request
- * key set / stream / HTTP-200 / cost-endpoint binding, authenticated source manifest,
+ * key set / stream / HTTP-200 / cost-endpoint binding, authenticated execution manifest,
  * attestation-content + content-addressed-name checks, and a fail-closed portable
  * binding manifest), the dispatch adapter, the credential-ordering bootstrap, and the
  * paid orchestrator: a durable sink that persists request/response AND EACH cost poll
@@ -26,8 +25,14 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { acquireInvocationLock, finalizeArtifact } from "../src/continuation/journal.js";
-import { decidePreload, PAID_PRELOAD_PINNED_SIGNER } from "../src/qualification/paid-preloader.js";
-import type { PreloadObservation } from "../src/qualification/paid-preloader.js";
+import {
+  verifyPaidLaunchGrant,
+  PAID_ARTIFACT_PINNED_SIGNER,
+  PAID_ARTIFACT_TYPE,
+} from "../src/qualification/paid-artifact.js";
+import type { PaidExecutionManifest, PaidLaunchGrant, PaidLaunchObservation } from "../src/qualification/paid-artifact.js";
+import { createLaunchGrant, loadVerifiedRunner, verifyExecutionPackage } from "../qualification-paid-launch.mjs";
+import { verifyPaidEvidence } from "../qualification-paid-verify.mjs";
 
 import {
   HOSTED_PAID_PASS,
@@ -44,11 +49,10 @@ import {
   verifyPaidTargetAgainstCatalog,
   verifyPaidDispatch,
   validatePaidActualCost,
-  verifyAuthoritySourceManifest,
-  AUTHORITY_SOURCE_MANIFEST_SIGNER,
+  PAID_EXECUTION_MANIFEST_SIGNER,
   reDerivePaidFromRawObservation,
   verifyPaidManifest,
-  verifyPaidSourceAttestation,
+  verifyPaidExecutionAttestation,
   verifyContentAddressedName,
   tokenUpperBound,
   estimateCellCeilingUsd,
@@ -61,7 +65,6 @@ import type {
   ProviderRouting,
   ObservedDispatch,
   ExpectedDispatch,
-  ObservedSource,
   PaidRawObservation,
   PaidBindingManifest,
   PaidManifestRef,
@@ -234,7 +237,7 @@ function bootDeps(mode: any, values: Record<string, string | undefined>, over: R
   const deps = {
     mode,
     readEnv,
-    verifySource: () => ({ ok: true, reasons: [] }),
+    verifyExecution: () => ({ ok: true, reasons: [] }),
     verifyParentEvidence: () => ({ ok: true, details: [] }),
     verifyCampaignBenchmarks: async () => ({ ok: true, reasons: [] }),
     fetchCatalogAndVerify: async () => ({ ok: true, reasons: [], catalogArtifactBody: "{}", perTarget: [], providerDisplay: {} }),
@@ -248,12 +251,14 @@ function bootDeps(mode: any, values: Record<string, string | undefined>, over: R
 
 let outRoot: string;
 let anchorDir: string;
-// The source manifest, its detached signature, and the THREE parent inputs are external
+// The execution manifest, its detached signature, and the THREE parent inputs are external
 // files whose CONTENT runPaidPass copies INTO the output root as content-addressed
 // envelopes. The catalog + source attestation are finalized in-root by the bootstrap in
 // production; each test's setup pre-finalizes them under a held lock, exactly mirroring
 // that flow, so runPaidPass exercises the real strict (relative-only, portable) verifier.
-let anchorPaths: { sourceManifestPath: string; sourceSignaturePath: string; parentInputPaths: string[] };
+let anchorPaths: { executionManifestPath: string; executionSignaturePath: string; parentInputPaths: string[] };
+const launcherSha = "sha256:" + "1".repeat(64);
+const runnerSha = "sha256:" + "2".repeat(64);
 beforeAll(async () => {
   outRoot = await mkdtemp(join(tmpdir(), "plinius-paid-"));
   anchorDir = await mkdtemp(join(tmpdir(), "plinius-anchors-"));
@@ -262,9 +267,25 @@ beforeAll(async () => {
     await writeFile(p, body, { mode: 0o600 });
     return p;
   };
+  const executionManifest = {
+    schemaVersion: 1,
+    artifactType: "plinius-paid-pass-v2",
+    createdAtUtc: "2026-08-28T00:00:00Z",
+    source: { commit: "a".repeat(40), tree: "b".repeat(40) },
+    requiredSignerFingerprint: PAID_ARTIFACT_PINNED_SIGNER,
+    allowedModes: ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1"],
+    launcher: "qualification-paid-launch.mjs",
+    runner: "qualification-driver.mjs",
+    verifier: "qualification-paid-verify.mjs",
+    files: [
+      { path: "qualification-paid-launch.mjs", sha256: launcherSha, bytes: 1, role: "launcher" },
+      { path: "qualification-driver.mjs", sha256: runnerSha, bytes: 1, role: "runner" },
+      { path: "qualification-paid-verify.mjs", sha256: "sha256:" + "3".repeat(64), bytes: 1, role: "verifier" },
+    ],
+  };
   anchorPaths = {
-    sourceManifestPath: await w("source-manifest.json", JSON.stringify({ commit: "c", tree: "t", files: [] })),
-    sourceSignaturePath: await w("source-manifest.json.sig", "-----BEGIN PGP SIGNATURE-----\nx\n-----END PGP SIGNATURE-----\n"),
+    executionManifestPath: await w("qualification-paid-execution-manifest.json", JSON.stringify(executionManifest)),
+    executionSignaturePath: await w("qualification-paid-execution-manifest.json.sig", "detached-signature-bytes"),
     parentInputPaths: [await w("parent-bundle.tar", "bundle-bytes"), await w("frozen-definition.json", '{"frozen":true}'), await w("historical-run.json", '{"run":true}')],
   };
 });
@@ -285,26 +306,83 @@ async function setupPaidRun(pass: any, cells: any[], root: string, gen: any) {
   await mkdir(root, { recursive: true });
   await chmod(root, 0o700); // the hardened journal requires a 0700 output root
   const lock = acquireInvocationLock(root, { stageId: pass.stageId, invocationId: `${pass.stageId}#test`, startedAt: "2026-08-28T00:00:00Z" });
-  const catalogBody = JSON.stringify({ ok: true, campaignId: pass.campaignId });
+  const catalogEvidence: Array<Record<string, unknown>> = [];
+  const addCatalogEvidence = (endpoint: string, value: unknown) => {
+    const raw = Buffer.from(JSON.stringify(value), "utf-8");
+    catalogEvidence.push({
+      endpoint,
+      fetchedAtUtc: "2026-08-28T00:00:00Z",
+      httpStatus: 200,
+      rawBodyBase64: raw.toString("base64"),
+      rawBodySha256: "sha256:" + createHash("sha256").update(raw).digest("hex"),
+      byteLength: raw.length,
+      transportError: null,
+    });
+  };
+  addCatalogEvidence(`${OR_BASE}/models`, { data: pass.targets.map((target: PaidTarget) => ({ id: target.slug, canonical_slug: target.slug })) });
+  for (const target of pass.targets as PaidTarget[]) {
+    addCatalogEvidence(`${OR_BASE}/models/${target.slug}/endpoints`, {
+      data: {
+        endpoints: [{
+          tag: target.providerRoute,
+          provider_name: DISPLAY,
+          pricing: {
+            prompt: target.priceCeiling.inputPerMTokens / 1_000_000,
+            completion: target.priceCeiling.outputPerMTokens / 1_000_000,
+          },
+          context_length: 200_000,
+          max_completion_tokens: 64_000,
+          supported_parameters: ["max_tokens", "temperature", "top_p", "seed"],
+        }],
+      },
+    });
+  }
+  const promptBounds = new Map([
+    ["se-concurrency-atomic-stats-012", 6858],
+    ["arch-exactly-once-003", 5541],
+    ["sec-oidc-id-token-validation-001", 4298],
+    ["formal-spec-idempotent-api-003", 4835],
+  ]);
+  const totalCeilingUsd = cells.reduce((sum, cell) => {
+    const target = pass.targets.find((item: PaidTarget) => item.slug === cell.target) as PaidTarget;
+    const maxTokens = cell.benchmark === "arch-exactly-once-003" ? 28672 : 24576;
+    return sum + ((promptBounds.get(cell.benchmark) ?? Number.POSITIVE_INFINITY) * target.priceCeiling.inputPerMTokens + maxTokens * target.priceCeiling.outputPerMTokens) / 1_000_000;
+  }, 0);
+  const catalogBody = JSON.stringify({
+    ok: true,
+    reasons: [],
+    campaignId: pass.campaignId,
+    stageId: pass.stageId,
+    providerDisplay: displayMap(pass.targets),
+    catalogEvidence,
+    verification: pass.targets.map((target: PaidTarget) => ({ slug: target.slug, ok: true, reasons: [], providerDisplay: DISPLAY })),
+    budget: pass.budget,
+    totalCeilingUsd,
+  });
   const catalog = finalizeArtifact(root, `paid-catalog-preflight-${sha256Hex(catalogBody)}.json`, catalogBody, lock);
   const attBody = JSON.stringify({
     schemaVersion: 1,
     campaignId: pass.campaignId,
     stageId: pass.stageId,
     signatureVerified: true,
-    signerFingerprint: AUTHORITY_SOURCE_MANIFEST_SIGNER,
-    manifestSha256: await fileSha(anchorPaths.sourceManifestPath),
-    signatureSha256: await fileSha(anchorPaths.sourceSignaturePath),
+    signerFingerprint: PAID_EXECUTION_MANIFEST_SIGNER,
+    pinnedSigner: PAID_EXECUTION_MANIFEST_SIGNER,
+    manifestSha256: await fileSha(anchorPaths.executionManifestPath),
+    signatureSha256: await fileSha(anchorPaths.executionSignaturePath),
+    artifactType: "plinius-paid-pass-v2",
+    artifactSchemaVersion: 1,
+    launcherSha256: launcherSha,
+    runnerSha256: runnerSha,
   });
-  const att = finalizeArtifact(root, `paid-source-attestation-${sha256Hex(attBody)}.json`, attBody, lock);
+  const att = finalizeArtifact(root, `paid-execution-attestation-${sha256Hex(attBody)}.json`, attBody, lock);
   const parentInputExpectedSha256 = await Promise.all(anchorPaths.parentInputPaths.map(fileSha));
   // Mirror the bootstrap: COPY + digest-verify the anchors into the root before the run.
   const anchors = copyPaidAnchorsIntoRoot(lock, root, {
-    sourceManifestPath: anchorPaths.sourceManifestPath,
-    sourceSignaturePath: anchorPaths.sourceSignaturePath,
+    executionManifestPath: anchorPaths.executionManifestPath,
+    executionSignaturePath: anchorPaths.executionSignaturePath,
     parentInputPaths: anchorPaths.parentInputPaths,
-    expectedManifestSha256: await fileSha(anchorPaths.sourceManifestPath),
-    expectedSignatureSha256: await fileSha(anchorPaths.sourceSignaturePath),
+    expectedManifestSha256: await fileSha(anchorPaths.executionManifestPath),
+    expectedSignatureSha256: await fileSha(anchorPaths.executionSignaturePath),
     parentExpectedSha256: parentInputExpectedSha256,
   });
   return {
@@ -314,7 +392,7 @@ async function setupPaidRun(pass: any, cells: any[], root: string, gen: any) {
     lock,
     providerDisplay: displayMap(pass.targets),
     catalogArtifactRef: { file: catalog.file, sha256: catalog.sha256, bytes: catalog.bytes },
-    sourceAttestationRef: { file: att.file, sha256: att.sha256, bytes: att.bytes },
+    executionAttestationRef: { file: att.file, sha256: att.sha256, bytes: att.bytes },
     anchors,
     parentInputExpectedSha256,
     planCell: (cell: any, i: number) => paidPlanCell(pass, cell, i),
@@ -431,9 +509,9 @@ describe("full request/response re-derivation and provider provenance", () => {
   });
 });
 
-// --- 4. catalog + budget + source manifest + token bound --------------------
+// --- 4. catalog + budget + token bound ---------------------------------------
 
-describe("catalog, budget, source manifest, token bound", () => {
+describe("catalog, budget, token bound", () => {
   const target = HOSTED_PAID_TARGETS[0];
   const need = { maxTokens: 1024, promptTokens: 2048, usedParams: ["max_tokens", "seed"] };
   it("catalog: blocks missing model/endpoint/ceiling/price/param/alias/free and a missing provider display", () => {
@@ -469,40 +547,6 @@ describe("catalog, budget, source manifest, token bound", () => {
     expect(tokenUpperBound("abc", 0)).toBe(3);
     expect(tokenUpperBound("héllo", 0)).toBe(Buffer.byteLength("héllo", "utf-8"));
     expect(tokenUpperBound("x", 2048)).toBe(2049);
-  });
-  it("AUTHENTICATED source manifest verifies signature file/owner/mode/FULL signer + commit/tree/clean/digests", () => {
-    const manifest = { commit: "c1", tree: "t1", files: [{ path: "a.ts", sha256: "d1" }] };
-    const base: ObservedSource = {
-      commit: "c1",
-      tree: "t1",
-      worktreeCleanInclUntracked: true,
-      fileDigests: { "a.ts": "d1" },
-      manifestIsRegularNonSymlink: true,
-      manifestOwnerUid: 1000,
-      executingUid: 1000,
-      manifestMode: 0o600,
-      signatureVerified: true,
-      signerFingerprint: AUTHORITY_SOURCE_MANIFEST_SIGNER,
-      signatureFilePresent: true,
-      signatureIsRegularNonSymlink: true,
-    };
-    expect(verifyAuthoritySourceManifest(manifest, base).ok).toBe(true);
-    // git identity + worktree + file digests
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, commit: "OTHER" }).reasons.some((r) => r.startsWith("commit_mismatch"))).toBe(true);
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, tree: "OTHER" }).reasons.some((r) => r.startsWith("tree_mismatch"))).toBe(true);
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, worktreeCleanInclUntracked: false }).reasons).toContain("worktree_dirty_or_untracked");
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, fileDigests: { "a.ts": "TAMPERED" } }).reasons.some((r) => r.startsWith("source_file_digest_mismatch"))).toBe(true);
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, fileDigests: {} }).reasons.some((r) => r.startsWith("source_file_missing"))).toBe(true);
-    // file security posture — manifest AND signature file
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, manifestIsRegularNonSymlink: false }).reasons).toContain("manifest_not_regular_file");
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, manifestOwnerUid: 0 }).reasons).toContain("manifest_owner_mismatch");
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, manifestMode: 0o644 }).reasons).toContain("manifest_mode_insecure");
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, signatureFilePresent: false }).reasons).toContain("manifest_signature_file_absent");
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, signatureIsRegularNonSymlink: false }).reasons).toContain("manifest_signature_file_absent");
-    // signature + EXACT full-fingerprint pin (a 16-hex suffix is NO LONGER accepted)
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, signatureVerified: false }).reasons).toContain("manifest_signature_invalid");
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, signerFingerprint: "7E622B43290C285E" }).reasons.some((r) => r.startsWith("manifest_signer_unpinned"))).toBe(true);
-    expect(verifyAuthoritySourceManifest(manifest, { ...base, signerFingerprint: null }).reasons.some((r) => r.startsWith("manifest_signer_unpinned"))).toBe(true);
   });
 });
 
@@ -608,9 +652,9 @@ describe("verifyPaidManifest is fail-closed", () => {
     // Every ref is RELATIVE (Evidence is a self-contained portable tree); exactly 3
     // parent inputs.
     const manifest: PaidBindingManifest = {
-      sourceManifest: put(disk, "paid-source-manifest.json", "{}"),
-      sourceSignature: put(disk, "paid-source-signature.json", "sig"),
-      sourceAttestation: put(disk, "paid-source-attestation.json", '{"a":1}'),
+      executionManifest: put(disk, "paid-execution-manifest.json", "{}"),
+      executionSignature: put(disk, "paid-execution-signature.json", "sig"),
+      executionAttestation: put(disk, "paid-execution-attestation.json", '{"a":1}'),
       parentInputs: [put(disk, "p0.json", "[]"), put(disk, "p1.json", "[]"), put(disk, "p2.json", "[]")],
       catalogArtifact: put(disk, "cat.json", '{"c":1}'),
       rawObservations: [put(disk, "runs/raw.json", '{"r":1}')],
@@ -621,13 +665,13 @@ describe("verifyPaidManifest is fail-closed", () => {
     };
     return { disk, manifest, read: (f: string) => disk.get(f) ?? null };
   };
-  const allBound = ["paid-source-manifest.json", "paid-source-signature.json", "paid-source-attestation.json", "p0.json", "p1.json", "p2.json", "cat.json", "runs/raw.json", "runs/rec.json", "runs/w.json", "runs/i.intent.json", "sum.json"];
+  const allBound = ["paid-execution-manifest.json", "paid-execution-signature.json", "paid-execution-attestation.json", "p0.json", "p1.json", "p2.json", "cat.json", "runs/raw.json", "runs/rec.json", "runs/w.json", "runs/i.intent.json", "sum.json"];
   it("accepts a complete, digest-matching manifest", () => {
     const { manifest, read } = build();
     expect(verifyPaidManifest(manifest, read).ok).toBe(true);
   });
-  it("rejects a null source manifest / signature / attestation / catalog", () => {
-    for (const key of ["sourceManifest", "sourceSignature", "sourceAttestation", "catalogArtifact"] as const) {
+  it("rejects a null execution manifest / signature / attestation / catalog", () => {
+    for (const key of ["executionManifest", "executionSignature", "executionAttestation", "catalogArtifact"] as const) {
       const { manifest, read } = build();
       (manifest as any)[key] = null;
       expect(verifyPaidManifest(manifest, read).ok).toBe(false);
@@ -670,16 +714,16 @@ describe("verifyPaidManifest is fail-closed", () => {
   });
 });
 
-describe("verifyPaidSourceAttestation + content-addressed name", () => {
-  const good = { campaignId: "camp", stageId: "stage", signatureVerified: true, signerFingerprint: AUTHORITY_SOURCE_MANIFEST_SIGNER, manifestSha256: "sha256:" + "a".repeat(64), signatureSha256: "sha256:" + "b".repeat(64) };
+describe("verifyPaidExecutionAttestation + content-addressed name", () => {
+  const good = { campaignId: "camp", stageId: "stage", signatureVerified: true, signerFingerprint: PAID_EXECUTION_MANIFEST_SIGNER, manifestSha256: "sha256:" + "a".repeat(64), signatureSha256: "sha256:" + "b".repeat(64) };
   it("accepts a fully-authenticated attestation for the right campaign/stage", () => {
-    expect(verifyPaidSourceAttestation(good, { campaignId: "camp", stageId: "stage" }).ok).toBe(true);
+    expect(verifyPaidExecutionAttestation(good, { campaignId: "camp", stageId: "stage" }).ok).toBe(true);
   });
   it("rejects a wrong campaign/stage, an unverified signature, or an unpinned signer", () => {
-    expect(verifyPaidSourceAttestation(good, { campaignId: "OTHER", stageId: "stage" }).reasons.some((r) => r.startsWith("attestation_campaign_mismatch"))).toBe(true);
-    expect(verifyPaidSourceAttestation({ ...good, signatureVerified: false }, { campaignId: "camp", stageId: "stage" }).reasons).toContain("attestation_signature_not_verified");
-    expect(verifyPaidSourceAttestation({ ...good, signerFingerprint: "7E622B43290C285E" }, { campaignId: "camp", stageId: "stage" }).reasons.some((r) => r.startsWith("attestation_signer_unpinned"))).toBe(true);
-    expect(verifyPaidSourceAttestation(null, { campaignId: "camp", stageId: "stage" }).ok).toBe(false);
+    expect(verifyPaidExecutionAttestation(good, { campaignId: "OTHER", stageId: "stage" }).reasons.some((r) => r.startsWith("attestation_campaign_mismatch"))).toBe(true);
+    expect(verifyPaidExecutionAttestation({ ...good, signatureVerified: false }, { campaignId: "camp", stageId: "stage" }).reasons).toContain("attestation_signature_not_verified");
+    expect(verifyPaidExecutionAttestation({ ...good, signerFingerprint: "7E622B43290C285E" }, { campaignId: "camp", stageId: "stage" }).reasons.some((r) => r.startsWith("attestation_signer_unpinned"))).toBe(true);
+    expect(verifyPaidExecutionAttestation(null, { campaignId: "camp", stageId: "stage" }).ok).toBe(false);
   });
   it("verifyContentAddressedName ties a filename to its own bytes", () => {
     const body = Buffer.from("hello", "utf-8");
@@ -699,12 +743,12 @@ describe("verifyPaidManifest filesystem-metadata + self-identity checks (F04)", 
   const build = () => {
     const disk = new Map<string, Buffer>();
     const manifest = {
-      manifestSchemaVersion: 4,
+      manifestSchemaVersion: 5,
       campaignId: "camp",
       stageId: "stage",
-      sourceManifest: put(disk, "sm.json", "{}"),
-      sourceSignature: put(disk, "sig.json", "s"),
-      sourceAttestation: put(disk, "att.json", "{}"),
+      executionManifest: put(disk, "sm.json", "{}"),
+      executionSignature: put(disk, "sig.json", "s"),
+      executionAttestation: put(disk, "att.json", "{}"),
       parentInputs: [put(disk, "p0", "0"), put(disk, "p1", "1"), put(disk, "p2", "2")],
       catalogArtifact: put(disk, "cat.json", "{}"),
       rawObservations: [put(disk, "runs/raw.json", "{}")],
@@ -718,7 +762,7 @@ describe("verifyPaidManifest filesystem-metadata + self-identity checks (F04)", 
   const okStat = { isRegularFile: true, isSymbolicLink: false, ownerUid: 1000, mode: 0o600, nlink: 1 };
   it("accepts regular, single-link, owner-matched, 0600 artifacts with the right schema/campaign/stage", () => {
     const { manifest, read } = build();
-    const r = verifyPaidManifest(manifest, read, { statFile: () => ({ ...okStat }), executingUid: 1000, expectedSchemaVersion: 4, expectedCampaignId: "camp", expectedStageId: "stage" });
+    const r = verifyPaidManifest(manifest, read, { statFile: () => ({ ...okStat }), executingUid: 1000, expectedSchemaVersion: 5, expectedCampaignId: "camp", expectedStageId: "stage" });
     expect(r.ok).toBe(true);
   });
   it("rejects a symlink / hardlink / wrong-owner / group-readable artifact", () => {
@@ -774,8 +818,8 @@ describe("copyPaidAnchorsIntoRoot TOCTOU digest check (F02/F04)", () => {
     try {
       expect(() =>
         copyPaidAnchorsIntoRoot(lock, root, {
-          sourceManifestPath: anchorPaths.sourceManifestPath,
-          sourceSignaturePath: anchorPaths.sourceSignaturePath,
+          executionManifestPath: anchorPaths.executionManifestPath,
+          executionSignaturePath: anchorPaths.executionSignaturePath,
           parentInputPaths: anchorPaths.parentInputPaths,
           expectedManifestSha256: "sha256:" + "0".repeat(64), // WRONG
           expectedSignatureSha256: null,
@@ -789,33 +833,92 @@ describe("copyPaidAnchorsIntoRoot TOCTOU digest check (F02/F04)", () => {
   });
 });
 
-describe("decidePreload (external minimal preloader, F01)", () => {
-  const base: PreloadObservation = {
-    signatureVerified: true,
-    signerFingerprint: PAID_PRELOAD_PINNED_SIGNER,
-    nodeModulesIsSymlink: true,
-    nodeModulesRealpathIsDirectory: true,
-    observedCommit: "c1",
-    expectedCommit: "c1",
-    observedTree: "t1",
-    expectedTree: "t1",
-    worktreeCleanInclUntracked: true,
-    files: [{ path: "a.ts", expectedSha256: "d1", actualSha256: "d1" }],
+describe("Paid Pass v2 artifact boundary", () => {
+  const manifest: PaidExecutionManifest = {
+    schemaVersion: 1,
+    artifactType: PAID_ARTIFACT_TYPE,
+    createdAtUtc: "2026-08-28T00:00:00Z",
+    source: { commit: "a".repeat(40), tree: "b".repeat(40) },
+    requiredSignerFingerprint: PAID_ARTIFACT_PINNED_SIGNER,
+    allowedModes: ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1"],
+    launcher: "qualification-paid-launch.mjs",
+    runner: "qualification-driver.mjs",
+    verifier: "qualification-paid-verify.mjs",
+    files: [
+      { path: "qualification-paid-launch.mjs", sha256: launcherSha, bytes: 1, role: "launcher" },
+      { path: "qualification-driver.mjs", sha256: runnerSha, bytes: 1, role: "runner" },
+      { path: "qualification-paid-verify.mjs", sha256: "sha256:" + "3".repeat(64), bytes: 1, role: "verifier" },
+    ],
   };
-  it("passes a fully-verified closure", () => {
-    expect(decidePreload(base).ok).toBe(true);
+  const observation: PaidLaunchObservation = {
+    artifactRoot: "/artifact",
+    executionManifestPath: "/artifact/qualification-paid-execution-manifest.json",
+    executionManifestSha256: "sha256:" + "4".repeat(64),
+    executionSignaturePath: "/artifact/qualification-paid-execution-manifest.json.sig",
+    executionSignatureSha256: "sha256:" + "5".repeat(64),
+    launcherPath: "/artifact/qualification-paid-launch.mjs",
+    launcherSha256: launcherSha,
+    runnerPath: "/artifact/qualification-driver.mjs",
+    runnerSha256: runnerSha,
+    processEntryPath: "/artifact/qualification-paid-launch.mjs",
+    manifest,
+  };
+  const grant: PaidLaunchGrant = {
+    schemaVersion: 1,
+    artifactType: PAID_ARTIFACT_TYPE,
+    artifactRoot: observation.artifactRoot,
+    executionManifestPath: observation.executionManifestPath,
+    executionManifestSha256: observation.executionManifestSha256,
+    executionSignaturePath: observation.executionSignaturePath,
+    executionSignatureSha256: observation.executionSignatureSha256,
+    launcherPath: observation.launcherPath,
+    launcherSha256: launcherSha,
+    runnerPath: observation.runnerPath,
+    runnerSha256: runnerSha,
+    signerFingerprint: PAID_ARTIFACT_PINNED_SIGNER,
+    mode: "diagnostic-hosted-paid-r1",
+    nonce: "6".repeat(64),
+    verifiedAtUtc: "2026-08-28T00:00:00Z",
+  };
+
+  it("binds the grant to the externally verified launcher, runner and manifest", () => {
+    expect(verifyPaidLaunchGrant(grant, observation).ok).toBe(true);
   });
-  it("fails on bad signature / unpinned signer / rogue node_modules / dirty tree / drift / tampered file", () => {
-    expect(decidePreload({ ...base, signatureVerified: false }).reasons).toContain("signature_invalid");
-    expect(decidePreload({ ...base, signerFingerprint: "7E622B43290C285E" }).reasons.some((r) => r.startsWith("signer_unpinned"))).toBe(true);
-    expect(decidePreload({ ...base, nodeModulesIsSymlink: false }).reasons).toContain("node_modules_unapproved");
-    expect(decidePreload({ ...base, nodeModulesRealpathIsDirectory: false }).reasons).toContain("node_modules_unapproved");
-    expect(decidePreload({ ...base, worktreeCleanInclUntracked: false }).reasons).toContain("worktree_dirty_or_untracked");
-    expect(decidePreload({ ...base, observedCommit: "OTHER" }).reasons.some((r) => r.startsWith("commit_mismatch"))).toBe(true);
-    expect(decidePreload({ ...base, observedTree: "OTHER" }).reasons.some((r) => r.startsWith("tree_mismatch"))).toBe(true);
-    expect(decidePreload({ ...base, files: [] }).reasons).toContain("no_pinned_files");
-    expect(decidePreload({ ...base, files: [{ path: "a.ts", expectedSha256: "d1", actualSha256: null }] }).reasons.some((r) => r.startsWith("file_missing"))).toBe(true);
-    expect(decidePreload({ ...base, files: [{ path: "a.ts", expectedSha256: "d1", actualSha256: "TAMPERED" }] }).reasons.some((r) => r.startsWith("file_digest_mismatch"))).toBe(true);
+
+  it("rejects a forged field, direct process entry, signer drift and runner drift", () => {
+    expect(verifyPaidLaunchGrant({ ...grant, extra: true } as any, observation).reasons).toContain("launch_grant_shape");
+    expect(verifyPaidLaunchGrant(grant, { ...observation, processEntryPath: observation.runnerPath }).reasons).toContain("launch_process_entry_not_launcher");
+    expect(verifyPaidLaunchGrant({ ...grant, signerFingerprint: "7E622B43290C285E" }, observation).reasons).toContain("launch_grant_signer");
+    expect(verifyPaidLaunchGrant(grant, { ...observation, runnerSha256: "sha256:" + "0".repeat(64) }).ok).toBe(false);
+  });
+
+  it("the dependency-free launcher verifies the exact package before importing the bundle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "plinius-paid-package-"));
+    await chmod(root, 0o700);
+    try {
+      const entries = [
+        ["qualification-paid-launch.mjs", "launcher", "launcher-bytes"],
+        ["qualification-driver.mjs", "runner", 'export const marker = "verified"; export async function paidArtifactMain() {}'],
+        ["qualification-paid-verify.mjs", "verifier", "verifier-bytes"],
+      ] as const;
+      const files = [];
+      for (const [path, role, body] of entries) {
+        await writeFile(join(root, path), body, { mode: 0o600 });
+        files.push({ path, role, bytes: Buffer.byteLength(body), sha256: "sha256:" + createHash("sha256").update(body).digest("hex") });
+      }
+      const packageManifest = { ...manifest, files };
+      await writeFile(join(root, "qualification-paid-execution-manifest.json"), JSON.stringify(packageManifest), { mode: 0o600 });
+      await writeFile(join(root, "qualification-paid-execution-manifest.json.sig"), "signature", { mode: 0o600 });
+      const verified = verifyExecutionPackage(root, { verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER });
+      expect(verified.manifest.files).toHaveLength(3);
+      const launchGrant = createLaunchGrant(verified, "diagnostic-hosted-paid-r1");
+      await writeFile(join(root, "qualification-driver.mjs"), 'export const marker = "tampered";', { mode: 0o600 });
+      const loaded = await loadVerifiedRunner(verified, launchGrant);
+      expect(loaded.marker).toBe("verified");
+      expect(() => verifyExecutionPackage(root, { verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER })).toThrow(/digest mismatch/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -856,7 +959,7 @@ describe("credential ordering — key read last, gates required", () => {
   });
   it("does NOT read the key when source / parent Evidence / campaign benchmarks fail", async () => {
     for (const over of [
-      { verifySource: () => ({ ok: false, reasons: ["commit_mismatch"] }) },
+      { verifyExecution: () => ({ ok: false, reasons: ["artifact_mismatch"] }) },
       { verifyParentEvidence: () => ({ ok: false, details: [] }) },
       { verifyCampaignBenchmarks: async () => ({ ok: false, reasons: ["benchmark_hash_mismatch"] }) },
     ]) {
@@ -879,16 +982,16 @@ describe("credential ordering — key read last, gates required", () => {
     const root = freshRoot("boot-copy-before-key");
     await mkdir(root, { recursive: true });
     await chmod(root, 0o700);
-    const attManifestSha = await fileSha(anchorPaths.sourceManifestPath);
-    const attSignatureSha = await fileSha(anchorPaths.sourceSignaturePath);
+    const attManifestSha = await fileSha(anchorPaths.executionManifestPath);
+    const attSignatureSha = await fileSha(anchorPaths.executionSignaturePath);
     const { deps, reads } = bootDeps("diagnostic-hosted-paid-r1", { CONTINUATION_OUTPUT_ROOT: root, OPENROUTER_API_KEY: "sk-secret" }, {
       // A real lock so the bootstrap actually finalizes + copies into the root.
       acquireLock: () => acquireInvocationLock(root, { stageId: "s", invocationId: "s#bootcopy", startedAt: "2026-08-28T00:00:00Z" }),
       finalizeCatalogArtifact: (l: any, r: string, body: string) => finalizeArtifact(r, `paid-catalog-preflight-${sha256Hex(body)}.json`, body, l),
-      verifySource: () => ({ ok: true, reasons: [], attestation: { manifestSha256: attManifestSha, signatureSha256: attSignatureSha } }),
+      verifyExecution: () => ({ ok: true, reasons: [], attestation: { manifestSha256: attManifestSha, signatureSha256: attSignatureSha } }),
       // Anchor inputs + a WRONG pinned parent digest → the copy TOCTOU fires before the key.
-      sourceManifestPath: anchorPaths.sourceManifestPath,
-      sourceSignaturePath: anchorPaths.sourceSignaturePath,
+      executionManifestPath: anchorPaths.executionManifestPath,
+      executionSignaturePath: anchorPaths.executionSignaturePath,
       parentInputPaths: anchorPaths.parentInputPaths,
       parentInputExpectedSha256: ["sha256:" + "0".repeat(64), "sha256:" + "0".repeat(64), "sha256:" + "0".repeat(64)],
     });
@@ -1009,6 +1112,7 @@ describe("runPaidPass orchestration", () => {
     // post-transfer cross-check (step J) no longer matches the sealed envelope.
     opts.parentInputExpectedSha256 = [opts.parentInputExpectedSha256[0], "sha256:" + "f".repeat(64), opts.parentInputExpectedSha256[2]];
     await expect(runPaidPass(opts)).rejects.toThrow(/cross-check failed/);
+    expect((await readdir(root)).some((file) => file.startsWith("paid-pass-manifest-"))).toBe(false);
   });
 
   it("stops (and saves the raw observation) when the actual cost exceeds the per-run cap", async () => {
@@ -1029,6 +1133,13 @@ describe("runPaidPass orchestration", () => {
     const result = await runPaidPass(await setupPaidRun(HOSTED_PAID_PASS, cells, freshRoot("cost-unknown"), withWire((cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: null }))));
     expect(result.stopped).toMatch(/actual_cost_rejected.*cost_unknown_or_not_finite/);
     expect(result.spentUsd).toBe(0);
+    expect(result.costCoverage).toEqual({
+      settledRunIds: [],
+      unknownCostRunIds: [result.dispatchedRunIds[0]],
+      invalidCostRunIds: [],
+      settledTotalUsd: 0,
+      complete: false,
+    });
     expect(result.dispatchedRunIds.length).toBe(1);
   });
 
@@ -1052,6 +1163,9 @@ describe("runPaidPass orchestration", () => {
     const result = await runPaidPass(await setupPaidRun(CANDIDATE_PAID_PASS, cells, root, withWire((cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 0.02 }))));
     expect(result.stopped).toBeNull();
     expect(result.dispatchedRunIds.length).toBe(16);
+    expect(result.costCoverage.complete).toBe(true);
+    expect(result.costCoverage.settledRunIds).toEqual(result.dispatchedRunIds);
+    expect(result.costCoverage.unknownCostRunIds).toEqual([]);
     const runFiles = (await readdir(join(root, "runs"))).filter((f) => f.endsWith(".json") && !f.includes("intent"));
     const records = runFiles.filter((f) => !f.startsWith("paid-"));
     const rawObs = runFiles.filter((f) => f.startsWith("paid-rawobs-"));
@@ -1070,14 +1184,99 @@ describe("runPaidPass orchestration", () => {
     const rootFiles = await readdir(root);
     const manifestName = rootFiles.find((f) => /^paid-pass-manifest-[0-9a-f]{64}\.json$/.test(f));
     expect(manifestName).toBeTruthy();
-    const manifest = JSON.parse(await readFile(join(root, manifestName!), "utf-8"));
+    const originalManifestBody = await readFile(join(root, manifestName!), "utf-8");
+    const manifest = JSON.parse(originalManifestBody);
+    expect(manifest.manifestSchemaVersion).toBe(5);
     expect(manifest.records.length).toBe(16);
     expect(manifest.rawObservations.length).toBe(16);
     expect(manifest.wires.length).toBe(48);
-    expect(manifest.sourceManifest).toBeTruthy();
-    expect(manifest.sourceSignature).toBeTruthy();
-    expect(manifest.sourceAttestation).toBeTruthy();
+    expect(manifest.executionManifest).toBeTruthy();
+    expect(manifest.executionSignature).toBeTruthy();
+    expect(manifest.executionAttestation).toBeTruthy();
     expect(manifest.catalogArtifact).toBeTruthy();
     expect(manifest.summary.sha256).toMatch(/^sha256:[0-9a-f]{64}$/);
-  });
+
+    const parentDigests = await Promise.all(anchorPaths.parentInputPaths.map(fileSha));
+    const independent = verifyPaidEvidence(root, {
+      verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER,
+      parentDigests,
+    });
+    expect(independent.ok, independent.reasons.join("\n")).toBe(true);
+
+    // Rebuild the catalog artifact and final manifest with an over-ceiling raw
+    // endpoint price. Digest and file-set integrity remain internally consistent;
+    // only an independent raw-catalog policy check can reject it.
+    const originalCatalogRef = { ...manifest.catalogArtifact };
+    const originalCatalogBody = await readFile(join(root, originalCatalogRef.file), "utf-8");
+    const hostileCatalog = JSON.parse(originalCatalogBody);
+    const catalogVictim = CANDIDATE_PAID_TARGETS[0];
+    const endpointEvidence = hostileCatalog.catalogEvidence.find((entry: any) => entry.endpoint === `${OR_BASE}/models/${catalogVictim.slug}/endpoints`);
+    const endpointPayload = JSON.parse(Buffer.from(endpointEvidence.rawBodyBase64, "base64").toString("utf-8"));
+    endpointPayload.data.endpoints[0].pricing.prompt = 1;
+    const hostileEndpointRaw = Buffer.from(JSON.stringify(endpointPayload), "utf-8");
+    endpointEvidence.rawBodyBase64 = hostileEndpointRaw.toString("base64");
+    endpointEvidence.rawBodySha256 = "sha256:" + createHash("sha256").update(hostileEndpointRaw).digest("hex");
+    endpointEvidence.byteLength = hostileEndpointRaw.length;
+    const hostileCatalogBody = JSON.stringify(hostileCatalog);
+    const hostileCatalogSha = sha256Hex(hostileCatalogBody);
+    const hostileCatalogFile = originalCatalogRef.file.replace(/[0-9a-f]{64}\.json$/, `${hostileCatalogSha}.json`);
+    await writeFile(join(root, hostileCatalogFile), hostileCatalogBody, { mode: 0o600 });
+    await rm(join(root, originalCatalogRef.file));
+    manifest.catalogArtifact = { file: hostileCatalogFile, sha256: `sha256:${hostileCatalogSha}`, bytes: Buffer.byteLength(hostileCatalogBody) };
+    await rm(join(root, manifestName!));
+    const hostileManifestBody = JSON.stringify(manifest, null, 2);
+    const hostileManifestFile = `paid-pass-manifest-${sha256Hex(hostileManifestBody)}.json`;
+    await writeFile(join(root, hostileManifestFile), hostileManifestBody, { mode: 0o600 });
+    const hostileCatalogResult = verifyPaidEvidence(root, {
+      manifestFile: hostileManifestFile,
+      verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER,
+      parentDigests,
+    });
+    expect(hostileCatalogResult.ok).toBe(false);
+    expect(hostileCatalogResult.reasons).toContain(`catalog_price:${catalogVictim.slug}`);
+
+    // Restore the valid catalog/manifest before exercising a different semantic
+    // tamper below.
+    await rm(join(root, hostileCatalogFile));
+    await rm(join(root, hostileManifestFile));
+    await writeFile(join(root, originalCatalogRef.file), originalCatalogBody, { mode: 0o600 });
+    manifest.catalogArtifact = originalCatalogRef;
+    await writeFile(join(root, manifestName!), originalManifestBody, { mode: 0o600 });
+
+    // ADVERSARIAL: rebuild every affected digest and the final manifest after changing
+    // one raw observation. Content-address checks all pass, but the independent
+    // verifier must still reject the semantic mismatch against the durable request
+    // fragment. This proves it does not trust either the driver's verdict or refs.
+    const victimRawRef = manifest.rawObservations[0];
+    const victimRunId = victimRawRef.runId;
+    const victimRaw = JSON.parse(await readFile(join(root, victimRawRef.file), "utf-8"));
+    victimRaw.requestUrl = "https://evil.example/chat/completions";
+    const rebuiltRawBody = JSON.stringify(victimRaw, null, 2);
+    const rebuiltRawSha = sha256Hex(rebuiltRawBody);
+    const rebuiltRawFile = victimRawRef.file.replace(/[0-9a-f]{64}\.json$/, `${rebuiltRawSha}.json`);
+    await writeFile(join(root, rebuiltRawFile), rebuiltRawBody, { mode: 0o600 });
+    await rm(join(root, victimRawRef.file));
+    const rebuiltRawRef = { ...victimRawRef, file: rebuiltRawFile, sha256: `sha256:${rebuiltRawSha}`, bytes: Buffer.byteLength(rebuiltRawBody) };
+    manifest.rawObservations[0] = rebuiltRawRef;
+
+    const victimRecordRef = manifest.records.find((ref: any) => ref.runId === victimRunId);
+    const victimRecord = JSON.parse(await readFile(join(root, victimRecordRef.file), "utf-8"));
+    victimRecord.rawObservationRef = { file: rebuiltRawRef.file, sha256: rebuiltRawRef.sha256, bytes: rebuiltRawRef.bytes };
+    const rebuiltRecordBody = JSON.stringify(victimRecord, null, 2);
+    await writeFile(join(root, victimRecordRef.file), rebuiltRecordBody, { mode: 0o600 });
+    victimRecordRef.sha256 = `sha256:${sha256Hex(rebuiltRecordBody)}`;
+    victimRecordRef.bytes = Buffer.byteLength(rebuiltRecordBody);
+
+    await rm(join(root, manifestName!));
+    const rebuiltManifestBody = JSON.stringify(manifest, null, 2);
+    const rebuiltManifestFile = `paid-pass-manifest-${sha256Hex(rebuiltManifestBody)}.json`;
+    await writeFile(join(root, rebuiltManifestFile), rebuiltManifestBody, { mode: 0o600 });
+    const adversarial = verifyPaidEvidence(root, {
+      manifestFile: rebuiltManifestFile,
+      verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER,
+      parentDigests,
+    });
+    expect(adversarial.ok).toBe(false);
+    expect(adversarial.reasons).toContain(`raw_request_fragment:${victimRunId}`);
+  }, 20_000);
 });

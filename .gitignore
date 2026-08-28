@@ -53,3 +53,6 @@ Thumbs.db
 
 # Test coverage
 coverage/
+
+# Operational authority material is intentionally versioned.
+!docs/qualification-paid-v2-ubuntu-runbook.md

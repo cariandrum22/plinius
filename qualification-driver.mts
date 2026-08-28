@@ -12,10 +12,9 @@
  * make a run pass.
  */
 import { mkdir, writeFile } from "fs/promises";
-import { readFileSync, readdirSync, existsSync, lstatSync, mkdirSync, realpathSync } from "fs";
-import { join, resolve, dirname, basename } from "path";
+import { readFileSync, readdirSync, existsSync, lstatSync, mkdirSync } from "fs";
+import { join, resolve, basename } from "path";
 import { createHash } from "crypto";
-import { execSync, execFileSync } from "child_process";
 import { fileURLToPath } from "url";
 
 import { loadBenchmarkById } from "./src/framework/loader.js";
@@ -23,8 +22,6 @@ import { buildPromptSnapshot } from "./src/prompt/snapshot.js";
 import { captureRubric, captureReferenceAsset, hashRawResponse } from "./src/completeness/assets.js";
 import { mapFinishReason, finishReasonTable } from "./src/completeness/finish-reason.js";
 import type { CanonicalFinishReason, FinishReasonMapping } from "./src/completeness/finish-reason.js";
-import { normalizeCompletion } from "./src/completeness/normalize.js";
-import type { NormalizedCompletion } from "./src/completeness/normalize.js";
 import { classifyRun } from "./src/completeness/status.js";
 import type { RunStatuses } from "./src/completeness/status.js";
 import { OpenAICompatibleBackend } from "./src/backends/openai-compatible.js";
@@ -40,7 +37,6 @@ import {
   deepEqual,
   summarizeContinuation,
   planConsistency,
-  validateRecordComplete,
   computeContinuationValidation,
   recordTerminalBlocker,
   resumeWireConsistency,
@@ -109,7 +105,6 @@ import type {
 import {
   serializeProviderRouting,
   parseProviderRoutingWire,
-  providerRoutingEqual,
   buildProviderRouting,
   paidPassFor,
   paidUsedParams,
@@ -119,18 +114,23 @@ import {
   validatePaidActualCost,
   verifyPaidDispatch,
   verifyPaidTargetAgainstCatalog,
-  verifyAuthoritySourceManifest,
-  AUTHORITY_SOURCE_MANIFEST_SIGNER,
   reDerivePaidFromRawObservation,
   verifyPaidManifest,
-  verifyPaidSourceAttestation,
+  verifyPaidExecutionAttestation,
   verifyContentAddressedName,
-  PAID_PARENT_INPUT_COUNT,
   tokenUpperBound,
   PAID_BENCHMARKS,
   PAID_REASONING_BUDGET,
 } from "./src/qualification/paid-campaign.js";
-import { PAID_PRELOAD_MARKER } from "./src/qualification/paid-preloader.js";
+import {
+  verifyPaidLaunchGrant,
+  PAID_ARTIFACT_PINNED_SIGNER,
+} from "./src/qualification/paid-artifact.js";
+import type {
+  PaidExecutionManifest,
+  PaidLaunchGrant,
+  PaidLaunchObservation,
+} from "./src/qualification/paid-artifact.js";
 import type {
   ProviderRouting,
   PaidPassDefinition,
@@ -138,9 +138,6 @@ import type {
   PaidTarget,
   CatalogModelInfo,
   CatalogVerifyNeed,
-  ObservedDispatch,
-  AuthoritySourceManifest,
-  ObservedSource,
   PaidRawObservation,
   PaidManifestRef,
   PaidBindingManifest,
@@ -149,6 +146,13 @@ import type {
 
 const CAMPAIGN_ID = "plinius-qualification-2026-08-22-v1";
 const OR_BASE = "https://openrouter.ai/api/v1";
+
+/** Replaced with `true` only in the isolated paid bundle. */
+declare const __PLINIUS_PAID_BUNDLE__: boolean;
+
+function compiledAsPaidBundle(): boolean {
+  return typeof __PLINIUS_PAID_BUNDLE__ !== "undefined" && __PLINIUS_PAID_BUNDLE__;
+}
 
 /**
  * Attempts allowed per logical run. This campaign runs a single attempt per
@@ -861,25 +865,6 @@ export interface RunContinuationResult {
   /** Per-invocation immutable runtime manifest binding catalog/records/summary/journal/priors. */
   runtimeManifestFile: string;
 }
-
-/**
- * Resolve a trusted ABSOLUTE binary path (C1-PAID-R7-F02): never rely on `$PATH`, which
- * an attacker could point at a rogue `gpg`/`git`. Returns the first candidate that exists
- * as a regular non-symlink file; throws if none do.
- */
-function pinnedBinary(candidates: string[]): string {
-  for (const c of candidates) {
-    try {
-      const st = lstatSync(c);
-      if (st.isFile() && !st.isSymbolicLink()) return c;
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  throw new Error(`no pinned absolute binary found among: ${candidates.join(", ")}`);
-}
-const PINNED_GPG_CANDIDATES = ["/usr/bin/gpg", "/bin/gpg", "/usr/local/bin/gpg"];
-const PINNED_GIT_CANDIDATES = ["/usr/bin/git", "/bin/git", "/usr/local/bin/git"];
 
 function fullSha(s: string): string {
   return createHash("sha256").update(Buffer.from(s, "utf-8")).digest("hex");
@@ -2197,7 +2182,7 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
 }
 
 /** Dispatch one continuation cell against its live backend (Stage C2). */
-async function liveGenerate(cell: Cell, plan: CellPlan, req: RequestBody, orKey: string, fetchFn?: FetchFn): Promise<GenerateFacts> {
+async function liveGenerate(cell: Cell, _plan: CellPlan, req: RequestBody, orKey: string, fetchFn?: FetchFn): Promise<GenerateFacts> {
   const t = TARGETS.find((x) => x.slug === cell.target);
   if (!t) throw new Error(`unknown target ${cell.target}`);
   const l = await loadBenchmarkById(cell.benchmark);
@@ -2658,6 +2643,8 @@ export interface PaidPreflightOutcome {
   perTarget: Array<{ slug: string; ok: boolean; reasons: string[]; providerDisplay?: string }>;
   /** The verified provider DISPLAY name for each target slug (from the catalog). */
   providerDisplay: Record<string, string>;
+  /** Independently reproducible all-cell ceiling under the pinned price limits. */
+  totalCeilingUsd: number;
 }
 
 /**
@@ -2715,18 +2702,18 @@ export function verifyPaidCatalog(
     null,
     2,
   );
-  return { ok: reasons.length === 0, reasons, catalogArtifactBody, perTarget, providerDisplay };
+  return { ok: reasons.length === 0, reasons, catalogArtifactBody, perTarget, providerDisplay, totalCeilingUsd: totalCeiling };
 }
 
 /** The content-addressed refs of the anchors copied into the output root. */
 export interface CopiedAnchorRefs {
-  sourceManifestRef: PaidManifestRef | null;
-  sourceSignatureRef: PaidManifestRef | null;
+  executionManifestRef: PaidManifestRef | null;
+  executionSignatureRef: PaidManifestRef | null;
   parentInputRefs: PaidManifestRef[];
 }
 
 /**
- * COPY the external anchors (source manifest, detached signature, parent inputs) INTO
+ * Copy the signed execution manifest, detached signature and parent inputs into
  * the output root as content-addressed base64 envelopes — BEFORE any credential read or
  * dispatch (C1-PAID-R7-F04) — verifying each copy's re-hashed bytes against its pinned
  * expected digest (from the verified attestation / the frozen historical digests), so a
@@ -2737,8 +2724,8 @@ export function copyPaidAnchorsIntoRoot(
   lock: InvocationLock,
   outputRoot: string,
   spec: {
-    sourceManifestPath?: string;
-    sourceSignaturePath?: string;
+    executionManifestPath?: string;
+    executionSignaturePath?: string;
     parentInputPaths?: string[];
     expectedManifestSha256: string | null;
     expectedSignatureSha256: string | null;
@@ -2757,8 +2744,8 @@ export function copyPaidAnchorsIntoRoot(
     return { file: filename, sha256: res.sha256, bytes: res.bytes };
   };
   return {
-    sourceManifestRef: spec.sourceManifestPath ? copy("paid-source-manifest", spec.sourceManifestPath, spec.expectedManifestSha256) : null,
-    sourceSignatureRef: spec.sourceSignaturePath ? copy("paid-source-signature", spec.sourceSignaturePath, spec.expectedSignatureSha256) : null,
+    executionManifestRef: spec.executionManifestPath ? copy("paid-execution-manifest", spec.executionManifestPath, spec.expectedManifestSha256) : null,
+    executionSignatureRef: spec.executionSignaturePath ? copy("paid-execution-signature", spec.executionSignaturePath, spec.expectedSignatureSha256) : null,
     parentInputRefs: (spec.parentInputPaths ?? []).map((p, i) => copy(`paid-parent-input-${i}`, p, spec.parentExpectedSha256?.[i] ?? null)),
   };
 }
@@ -2766,17 +2753,17 @@ export function copyPaidAnchorsIntoRoot(
 /**
  * Injectable dependencies for the paid credential-ordering bootstrap. Every
  * verification gate is REQUIRED — there is no default-success gate — so a
- * production caller MUST wire real source, parent-Evidence, campaign/benchmark,
+ * production caller MUST wire real execution-package, parent-Evidence, campaign/benchmark,
  * catalog, empty-root, lock and catalog-finalize implementations, and a missing
  * one fails closed. Tests supply lightweight (fs-free) stubs.
  */
 export interface PaidBootstrapDeps {
   mode: PaidPassDefinition["mode"];
   readEnv?: (name: string) => string | undefined;
-  /** Gate 1 — source/commit/tree authority anchor. Required. Returns the source
-   * authentication attestation (VALIDSIG fingerprint + manifest/signature digests) so
+  /** Gate 1 — Fable/launcher-verified execution package. Returns the execution
+   * attestation (VALIDSIG fingerprint + manifest/signature/runner digests) so
    * the bootstrap can bind it durably into the final Evidence. */
-  verifySource: () => { ok: boolean; reasons: string[]; attestation?: Record<string, unknown> };
+  verifyExecution: () => { ok: boolean; reasons: string[]; attestation?: Record<string, unknown> };
   /** Gates 2-3 — parent Evidence bundle + frozen definition + historical run. Required. */
   verifyParentEvidence: () => DigestVerifyResult;
   /** Gate 4 — campaign definition + benchmark content hashes. Required. */
@@ -2790,8 +2777,8 @@ export interface PaidBootstrapDeps {
   /** Gate 11 — durable catalog artifact finalize (via the lock), BEFORE the key read. */
   finalizeCatalogArtifact?: (lock: InvocationLock | null, outputRoot: string, body: string) => { file: string; sha256: string; bytes: number } | null | void;
   /** External anchor paths, COPIED into the root before the credential read (F04). */
-  sourceManifestPath?: string;
-  sourceSignaturePath?: string;
+  executionManifestPath?: string;
+  executionSignaturePath?: string;
   parentInputPaths?: string[];
   /** Pinned expected SHA-256 of each parent input, same order as parentInputPaths. */
   parentInputExpectedSha256?: string[];
@@ -2807,8 +2794,8 @@ export interface PaidBootstrap {
   lock: InvocationLock | null;
   /** Content-addressed ref of the durable catalog-preflight artifact, for the manifest. */
   catalogArtifactRef: { file: string; sha256: string; bytes: number } | null;
-  /** Content-addressed ref of the durable source-authentication attestation (F05). */
-  sourceAttestationRef: { file: string; sha256: string; bytes: number } | null;
+  /** Content-addressed ref of the durable execution-package attestation. */
+  executionAttestationRef: { file: string; sha256: string; bytes: number } | null;
   /** Anchors ALREADY copied into the root (before the credential read) (F04). */
   anchors: CopiedAnchorRefs;
   /** The pinned expected parent digests, forwarded for the seal-time cross-check (F03). */
@@ -2820,7 +2807,7 @@ let paidInvocationCounter = 0;
 
 /**
  * Ordered credential gate: the OPENROUTER_API_KEY is read LAST, only after ALL of
- * — source/commit/tree, parent Evidence + historical run, campaign+benchmark
+ * — signed isolated execution package, parent Evidence + historical run, campaign+benchmark
  * hashes, the fresh empty output root, the anonymous public catalog + exact
  * resolution + provider endpoint + parameter capability + price ceiling + budget
  * upper bound, and the DURABLE catalog artifact finalize — have succeeded. The
@@ -2843,11 +2830,11 @@ export async function preparePaidBootstrap(deps: PaidBootstrapDeps): Promise<Pai
   const { pass, cells } = paidPassFor(deps.mode);
   const outputRoot = required("CONTINUATION_OUTPUT_ROOT");
 
-  const src = deps.verifySource();
-  if (!src.ok) throw new Error(`source verification failed: ${src.reasons.join(",")}`);
+  const src = deps.verifyExecution();
+  if (!src.ok) throw new Error(`execution package verification failed: ${src.reasons.join(",")}`);
   // The attestation binds THIS campaign+stage so a manifest can never bind an
   // attestation issued for a different pass (C1-PAID-R5-F04).
-  const sourceAttestationBody = JSON.stringify({ schemaVersion: 1, campaignId: pass.campaignId, stageId: pass.stageId, ...(src.attestation ?? {}) }, null, 2);
+  const executionAttestationBody = JSON.stringify({ schemaVersion: 1, campaignId: pass.campaignId, stageId: pass.stageId, ...(src.attestation ?? {}) }, null, 2);
 
   const pe = deps.verifyParentEvidence();
   if (!pe.ok) throw new Error("parent evidence / historical digest mismatch");
@@ -2875,11 +2862,11 @@ export async function preparePaidBootstrap(deps: PaidBootstrapDeps): Promise<Pai
       l ? finalizeArtifact(root, `paid-catalog-preflight-${fullSha(body)}.json`, body, l) : null);
   const catalogArtifactRef = finalizeCatalog(lock, outputRoot, preflight.catalogArtifactBody) ?? null;
 
-  // Bind the source authentication attestation durably (F05) — the VALIDSIG
+  // Bind the execution-package authentication attestation durably — the VALIDSIG
   // fingerprint and the manifest/signature digests, so the trust anchor's proof is
   // part of the final Evidence, not just an ephemeral gpg exit code.
-  const sourceAttestationRef = lock
-    ? finalizeArtifact(outputRoot, `paid-source-attestation-${fullSha(sourceAttestationBody)}.json`, sourceAttestationBody, lock)
+  const executionAttestationRef = lock
+    ? finalizeArtifact(outputRoot, `paid-execution-attestation-${fullSha(executionAttestationBody)}.json`, executionAttestationBody, lock)
     : null;
 
   // COPY + digest-verify the anchors into the root NOW — BEFORE the credential read and
@@ -2889,19 +2876,19 @@ export async function preparePaidBootstrap(deps: PaidBootstrapDeps): Promise<Pai
   const parentInputExpectedSha256 = deps.parentInputExpectedSha256 ?? [];
   const anchors: CopiedAnchorRefs = lock
     ? copyPaidAnchorsIntoRoot(lock, outputRoot, {
-        sourceManifestPath: deps.sourceManifestPath,
-        sourceSignaturePath: deps.sourceSignaturePath,
+        executionManifestPath: deps.executionManifestPath,
+        executionSignaturePath: deps.executionSignaturePath,
         parentInputPaths: deps.parentInputPaths,
         expectedManifestSha256: typeof att.manifestSha256 === "string" ? (att.manifestSha256 as string) : null,
         expectedSignatureSha256: typeof att.signatureSha256 === "string" ? (att.signatureSha256 as string) : null,
         parentExpectedSha256: parentInputExpectedSha256,
       })
-    : { sourceManifestRef: null, sourceSignatureRef: null, parentInputRefs: [] };
+    : { executionManifestRef: null, executionSignatureRef: null, parentInputRefs: [] };
   if (!preflight.ok) throw new Error(`catalog preflight failed: ${preflight.reasons.join(",")}`);
 
   // Deliberately last: an invalid gate above cannot reach this credential read.
   const orKey = required("OPENROUTER_API_KEY");
-  return { pass, cells, outputRoot, preflight, lock, catalogArtifactRef, sourceAttestationRef, anchors, parentInputExpectedSha256, orKey };
+  return { pass, cells, outputRoot, preflight, lock, catalogArtifactRef, executionAttestationRef, anchors, parentInputExpectedSha256, orKey };
 }
 
 export interface RunPaidPassOptions {
@@ -2921,9 +2908,9 @@ export interface RunPaidPassOptions {
   /** Content-addressed reference of the durable catalog-preflight artifact (already
    * finalized in-root by the bootstrap), bound by the final manifest. */
   catalogArtifactRef?: PaidManifestRef | null;
-  /** The source-authentication attestation ref (already finalized in-root by the
-   * bootstrap: VALIDSIG full fingerprint + manifest/signature digests + campaign/stage). */
-  sourceAttestationRef?: PaidManifestRef | null;
+  /** The execution attestation ref (already finalized in-root by the bootstrap:
+   * VALIDSIG fingerprint + manifest/signature/runner digests + campaign/stage). */
+  executionAttestationRef?: PaidManifestRef | null;
   /** The anchor envelopes ALREADY copied into the root by the bootstrap BEFORE the
    * credential read (C1-PAID-R7-F04); runPaidPass only BINDS + seal-verifies them. */
   anchors?: CopiedAnchorRefs;
@@ -2942,10 +2929,19 @@ export interface RunPaidPassResult {
   skippedGroups: string[];
   skippedRunIds: string[];
   spentUsd: number;
+  costCoverage: PaidCostCoverage;
   passed: number;
   failed: number;
   /** The strict binding manifest that content-addresses every artifact. */
   manifestFile: string | null;
+}
+
+export interface PaidCostCoverage {
+  settledRunIds: string[];
+  unknownCostRunIds: string[];
+  invalidCostRunIds: string[];
+  settledTotalUsd: number;
+  complete: boolean;
 }
 
 /**
@@ -2984,6 +2980,9 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
   const recordRefs: PaidManifestRef[] = [];
   const wireRefs: PaidManifestRef[] = [];
   const rawObsRefs: PaidManifestRef[] = [];
+  const settledCostRunIds: string[] = [];
+  const unknownCostRunIds: string[] = [];
+  const invalidCostRunIds: string[] = [];
   let spentUsd = 0;
   let passed = 0;
   let failed = 0;
@@ -3109,10 +3108,13 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
           routing: { providerRoutingSent: serializeProviderRouting(routing), dispatchException: message },
         });
         const rec = buildQualificationRunRecord({ ...plan.header, timestamp }, [terminal]);
-        const recBody = JSON.stringify({ ...rec, paidVerdict: { ok: false, validationReasons: ["dispatch_exception"], responseQualified: false }, billedCostUsd: null, rawObservationRef: { file: rawObsHandle.file, sha256: rawObsHandle.sha256, bytes: rawObsHandle.bytes } }, null, 2);
+        const recBody = JSON.stringify({ ...rec, campaignId: opts.pass.campaignId, paidVerdict: { ok: false, validationReasons: ["dispatch_exception"], responseQualified: false }, billedCostUsd: null, rawObservationRef: { file: rawObsHandle.file, sha256: rawObsHandle.sha256, bytes: rawObsHandle.bytes } }, null, 2);
         const rRes = finalizeArtifact(runsDir, `${plan.runId}.json`, recBody, lock);
         recordRefs.push({ file: `runs/${plan.runId}.json`, sha256: rRes.sha256, bytes: rRes.bytes, runId: plan.runId });
         dispatchedRunIds.push(plan.runId);
+        // Dispatch crossed the provider boundary, but no verified terminal cost poll
+        // exists. Never present this as a settled zero-cost request.
+        unknownCostRunIds.push(plan.runId);
         failed++;
         stopped = `dispatch_exception:${plan.runId}`;
         break;
@@ -3134,7 +3136,14 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       // number — even when it will trip a cap — so the summary never understates.
       const spentBefore = spentUsd;
       const billed = rederive.billedCostUsd;
-      if (typeof billed === "number" && Number.isFinite(billed) && billed >= 0) spentUsd += billed;
+      if (typeof billed === "number" && Number.isFinite(billed) && billed >= 0) {
+        spentUsd += billed;
+        settledCostRunIds.push(plan.runId);
+      } else if (billed == null) {
+        unknownCostRunIds.push(plan.runId);
+      } else {
+        invalidCostRunIds.push(plan.runId);
+      }
 
       // (D) VALIDATE against the DISK-derived observation, and build the received
       // response headline FROM THE RESPONSE WIRE BYTES (deriveResponseOutcome inside
@@ -3173,6 +3182,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       const finalRecordBody = JSON.stringify(
         {
           ...responseRecord,
+          campaignId: opts.pass.campaignId,
           status: finalStatus,
           attempts: responseRecord.attempts.map((a) => ({ ...a, status: verdictOk ? a.status : failStatus })),
           paidVerdict: { ok: verdictOk, validationReasons, responseQualified },
@@ -3210,6 +3220,13 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       }
     }
 
+    const costCoverage: PaidCostCoverage = {
+      settledRunIds: settledCostRunIds,
+      unknownCostRunIds,
+      invalidCostRunIds,
+      settledTotalUsd: spentUsd,
+      complete: unknownCostRunIds.length === 0 && invalidCostRunIds.length === 0,
+    };
     const summary = {
       campaignId: opts.pass.campaignId,
       stageId: opts.pass.stageId,
@@ -3222,6 +3239,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       passed,
       failed,
       spentUsd,
+      costCoverage,
       budget: opts.pass.budget,
       skippedGroups: [...skippedGroups],
     };
@@ -3241,11 +3259,11 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
     // (G) BIND the anchors the bootstrap ALREADY copied into the root BEFORE the credential
     // read (C1-PAID-R7-F04) — no copy (and therefore no TOCTOU discovery) happens here,
     // after the billed dispatch. Each ref is RELATIVE to the output root.
-    const anchors = opts.anchors ?? { sourceManifestRef: null, sourceSignatureRef: null, parentInputRefs: [] };
+    const anchors = opts.anchors ?? { executionManifestRef: null, executionSignatureRef: null, parentInputRefs: [] };
     const binding: PaidBindingManifest = {
-      sourceManifest: anchors.sourceManifestRef,
-      sourceSignature: anchors.sourceSignatureRef,
-      sourceAttestation: opts.sourceAttestationRef ?? null,
+      executionManifest: anchors.executionManifestRef,
+      executionSignature: anchors.executionSignatureRef,
+      executionAttestation: opts.executionAttestationRef ?? null,
       parentInputs: anchors.parentInputRefs,
       catalogArtifact: opts.catalogArtifactRef ?? null,
       rawObservations: rawObsRefs,
@@ -3254,20 +3272,17 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       intents: intentRefs,
       summary: { file: summaryHandle.file, sha256: summaryHandle.sha256, bytes: summaryHandle.bytes },
     };
-    const manifestHandle = finalizeCA(opts.outputRoot, `paid-pass-manifest`, JSON.stringify({ manifestSchemaVersion: 4, campaignId: opts.pass.campaignId, stageId: opts.pass.stageId, ...binding }, null, 2));
-    manifestFile = manifestHandle.file;
+    const candidateManifest = {
+      manifestSchemaVersion: 5,
+      campaignId: opts.pass.campaignId,
+      stageId: opts.pass.stageId,
+      ...binding,
+    };
 
-    // (H) READ BACK the finalized manifest FROM DISK and verify THAT (never the
-    // pre-write object). Checks: (a) the manifest FILENAME embeds the SHA-256 of its own
-    // bytes (content-address self-consistency); (b) every bound file's digest matches;
-    // (c) the referenced set EQUALS the RECURSIVE disk set (a stray file in ANY subdir is
-    // caught); (d) the bound source attestation's CONTENT authenticates this campaign+stage
-    // by a VERIFIED, pinned-full-fingerprint signature.
-    const manifestBytes = readFileSync(manifestHandle.path);
-    if (!verifyContentAddressedName(basename(manifestHandle.path), manifestBytes)) {
-      throw new Error(`paid manifest filename is not content-addressed to its bytes: ${manifestHandle.file}`);
-    }
-    const persistedManifest = JSON.parse(manifestBytes.toString("utf-8")) as PaidBindingManifest;
+    // (H) Verify the complete candidate binding BEFORE a final manifest exists. A seal,
+    // filesystem, execution-attestation, or anchor failure therefore cannot leave a
+    // valid-looking `paid-pass-manifest-*` behind. The standalone Mac verifier repeats
+    // these checks independently after transfer.
     const readForVerify = (file: string): Buffer | null => {
       try {
         return file.startsWith("/") ? null : readFileSync(join(opts.outputRoot, file));
@@ -3284,9 +3299,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
         return null;
       }
     };
-    // Recursive disk walk. The ONLY directory permitted under the root is the top-level
-    // `runs/`; ANY other directory (an orphan-dir, even an EMPTY one) is a fatal surplus,
-    // so an empty orphan directory can never slip past the file-set completeness check (F04).
+    // Recursive disk walk. The only permitted directory is top-level `runs/`.
     const diskFilesAcc: string[] = [];
     const walk = (dir: string, rel: string): void => {
       for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -3294,34 +3307,31 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
         if (e.isDirectory()) {
           if (childRel !== "runs") throw new Error(`unexpected directory in paid Evidence root: ${childRel}`);
           walk(join(dir, e.name), childRel);
-        } else if (childRel !== LOCK_FILENAME && childRel !== manifestHandle.file) {
+        } else if (childRel !== LOCK_FILENAME) {
           diskFilesAcc.push(childRel);
         }
       }
     };
     walk(opts.outputRoot, "");
-    const mv = verifyPaidManifest(persistedManifest, readForVerify, {
+    const mv = verifyPaidManifest(candidateManifest, readForVerify, {
       diskFiles: diskFilesAcc,
       statFile: statForVerify,
       executingUid: typeof process.getuid === "function" ? process.getuid() : undefined,
-      expectedSchemaVersion: 4,
+      expectedSchemaVersion: 5,
       expectedCampaignId: opts.pass.campaignId,
       expectedStageId: opts.pass.stageId,
     });
-    if (!mv.ok) throw new Error(`paid manifest verification failed: ${mv.reasons.join(",")}`);
+    if (!mv.ok) throw new Error(`paid pre-seal binding verification failed: ${mv.reasons.join(",")}`);
 
-    // (I) The bound source attestation must AUTHENTICATE this campaign+stage.
-    const attRef = persistedManifest.sourceAttestation;
+    // (I) The bound execution-manifest attestation must authenticate this pass.
+    const attRef = candidateManifest.executionAttestation;
     const attBuf = attRef ? readForVerify(attRef.file) : null;
     const attObj = (attBuf ? JSON.parse(attBuf.toString("utf-8")) : null) as Record<string, unknown> | null;
-    const av = verifyPaidSourceAttestation(attObj, { campaignId: opts.pass.campaignId, stageId: opts.pass.stageId });
+    const av = verifyPaidExecutionAttestation(attObj, { campaignId: opts.pass.campaignId, stageId: opts.pass.stageId });
     if (!av.ok) throw new Error(`paid source attestation invalid: ${av.reasons.join(",")}`);
 
-    // (J) POST-TRANSFER cross-check (C1-PAID-R7-F03): re-derive each SEALED anchor
-    // envelope's inner digest from disk and require it to equal the pinned expected value —
-    // the source manifest / signature against the ATTESTATION's recorded digests, and each
-    // parent input against the frozen HISTORICAL digest. This re-checks the sealed Evidence
-    // itself (not merely the copy step), so a mismatched envelope cannot certify as valid.
+    // (J) PRE-MANIFEST seal cross-check: re-derive every anchor envelope's inner digest
+    // from disk. This must succeed before the final manifest is atomically created.
     const innerShaOfEnvelope = (ref: PaidManifestRef | null): string | null => {
       if (!ref) return null;
       const buf = readForVerify(ref.file);
@@ -3339,15 +3349,25 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
     const crossReasons: string[] = [];
     const expManifestSha = typeof attObj?.manifestSha256 === "string" ? (attObj.manifestSha256 as string) : null;
     const expSignatureSha = typeof attObj?.signatureSha256 === "string" ? (attObj.signatureSha256 as string) : null;
-    if (innerShaOfEnvelope(persistedManifest.sourceManifest) !== expManifestSha) crossReasons.push("source_manifest_inner_digest");
-    if (innerShaOfEnvelope(persistedManifest.sourceSignature) !== expSignatureSha) crossReasons.push("source_signature_inner_digest");
+    if (innerShaOfEnvelope(candidateManifest.executionManifest) !== expManifestSha) crossReasons.push("execution_manifest_inner_digest");
+    if (innerShaOfEnvelope(candidateManifest.executionSignature) !== expSignatureSha) crossReasons.push("execution_signature_inner_digest");
     const parentExpected = opts.parentInputExpectedSha256 ?? [];
-    const parentRefs = persistedManifest.parentInputs ?? [];
+    const parentRefs = candidateManifest.parentInputs ?? [];
     if (parentRefs.length !== parentExpected.length) crossReasons.push(`parent_input_count_vs_expected:${parentRefs.length}/${parentExpected.length}`);
     for (let i = 0; i < parentRefs.length; i++) {
       if (innerShaOfEnvelope(parentRefs[i]) !== (parentExpected[i] ?? null)) crossReasons.push(`parent_input_inner_digest:${i}`);
     }
     if (crossReasons.length > 0) throw new Error(`paid anchor cross-check failed: ${crossReasons.join(",")}`);
+
+    // (K) Only a fully verified candidate can become a final manifest. Read back its exact
+    // bytes and verify its content-addressed filename; semantic post-transfer validation is
+    // performed by qualification-paid-verify.mjs on the Mac authority.
+    const manifestHandle = finalizeCA(opts.outputRoot, `paid-pass-manifest`, JSON.stringify(candidateManifest, null, 2));
+    const manifestBytes = readFileSync(manifestHandle.path);
+    if (!verifyContentAddressedName(basename(manifestHandle.path), manifestBytes)) {
+      throw new Error(`paid manifest filename is not content-addressed to its bytes: ${manifestHandle.file}`);
+    }
+    manifestFile = manifestHandle.file;
   } finally {
     // Release the lock at the end of the run (whether acquired here or handed in by
     // the bootstrap), last, after the manifest is durable.
@@ -3363,6 +3383,13 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
     skippedGroups: [...skippedGroups],
     skippedRunIds,
     spentUsd,
+    costCoverage: {
+      settledRunIds: settledCostRunIds,
+      unknownCostRunIds,
+      invalidCostRunIds,
+      settledTotalUsd: spentUsd,
+      complete: unknownCostRunIds.length === 0 && invalidCostRunIds.length === 0,
+    },
     passed,
     failed,
     manifestFile,
@@ -3370,23 +3397,32 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
 }
 
 /**
- * Production entrypoint for a paid pass. Reuses the credential-last bootstrap and
- * the dispatch loop; the actual OpenRouter calls happen only in `generate` and
- * only after every gate passes. This never touches local runtime / Docker / GPU /
- * Fable attestation.
+ * The bundled driver's only paid entrypoint. The signed package has already been
+ * authenticated by Fable and the dependency-free launcher; the launcher imports
+ * the exact runner bytes retained during verification and supplies its observation
+ * to bind the grant to the runner, launcher, manifest and process entry.
+ * It is defense in depth, not a claim of self-authenticating application code.
  */
-export async function paidMain(mode: PaidPassDefinition["mode"]): Promise<void> {
-  // Refuse to run unless the external minimal preloader has verified the executable
-  // artifact + the pinned dependency closure + the node_modules symlink and set this
-  // marker (C1-PAID-R6-F01). Paid dispatch can never happen on a driver that was loaded
-  // without preloading.
-  if (process.env[PAID_PRELOAD_MARKER] !== "1") {
-    throw new Error(`paid pass must be launched through the preloader (${PAID_PRELOAD_MARKER} not set); run qualification-paid-preload.mjs`);
-  }
-  // Anchor paths + pinned parent digests, resolved once and handed to the bootstrap so it
-  // copies + digest-verifies them BEFORE the credential read (C1-PAID-R7-F04).
+export async function paidArtifactMain(grant: PaidLaunchGrant, observed: PaidLaunchObservation): Promise<void> {
+  const verified = verifyPaidLaunchGrant(grant, observed);
+  if (!verified.ok) throw new Error(`paid artifact launch grant rejected: ${verified.reasons.join(",")}`);
+  await paidMain(grant.mode, grant, observed.manifest);
+}
+
+/**
+ * Production implementation reached only through {@link paidArtifactMain}. Reuses
+ * the credential-last bootstrap and dispatch loop. It never touches local runtime,
+ * Docker, GPU, Fable attestation, a source tree, package manager, or node_modules.
+ */
+async function paidMain(
+  mode: PaidPassDefinition["mode"],
+  launchGrant: PaidLaunchGrant,
+  executionManifest: PaidExecutionManifest,
+): Promise<void> {
+  // Anchor paths + pinned parent digests are handed to the bootstrap so it copies and
+  // digest-verifies them before the credential read.
   const parentRoot = process.env.PARENT_EVIDENCE_ROOT ?? "";
-  const manifestPath = process.env.PAID_SOURCE_MANIFEST_PATH;
+  const manifestPath = launchGrant.executionManifestPath;
   const parentInputPaths = [
     process.env.PARENT_BUNDLE_PATH ?? "",
     join(parentRoot, "campaign", "frozen-campaign-definition.json"),
@@ -3399,136 +3435,32 @@ export async function paidMain(mode: PaidPassDefinition["mode"]): Promise<void> 
   ];
   const boot = await preparePaidBootstrap({
     mode,
-    sourceManifestPath: manifestPath,
-    sourceSignaturePath: manifestPath ? manifestPath + ".sig" : undefined,
+    executionManifestPath: manifestPath,
+    executionSignaturePath: launchGrant.executionSignaturePath,
     parentInputPaths,
     parentInputExpectedSha256,
-    // Gate 1 — source/commit/tree: verify the RUNNING source against an authority
-    // source manifest (external, signed input): the git HEAD commit and tree, a
-    // clean worktree, and every pinned file's on-disk SHA-256. A dirty file or a
-    // different commit fails closed here, before any credential read.
-    verifySource: () => {
-      const manifestPath = process.env.PAID_SOURCE_MANIFEST_PATH;
-      if (!manifestPath) return { ok: false, reasons: ["PAID_SOURCE_MANIFEST_PATH missing"] };
-      let manifest: AuthoritySourceManifest;
-      let manifestStat: ReturnType<typeof lstatSync>;
-      try {
-        manifestStat = lstatSync(manifestPath);
-        manifest = JSON.parse(readFileSync(manifestPath, "utf-8")) as AuthoritySourceManifest;
-      } catch (e) {
-        return { ok: false, reasons: [`source_manifest_read_error:${(e as Error).message}`] };
-      }
-      // Detached-signature verification: the pinned authority key must have signed
-      // the manifest bytes. `<manifest>.sig` is the detached signature file, which is
-      // itself observed (regular non-symlink + digest) so it can be bound as Evidence.
-      const signaturePath = manifestPath + ".sig";
-      let signatureFilePresent = false;
-      let signatureIsRegularNonSymlink = false;
-      let signatureSha256: string | null = null;
-      try {
-        const sigStat = lstatSync(signaturePath);
-        signatureFilePresent = true;
-        signatureIsRegularNonSymlink = sigStat.isFile() && !sigStat.isSymbolicLink();
-        signatureSha256 = "sha256:" + createHash("sha256").update(readFileSync(signaturePath)).digest("hex");
-      } catch {
-        signatureFilePresent = false;
-      }
-      let signatureVerified = false;
-      let signerFingerprint: string | null = null;
-      let validsigLine: string | null = null;
-      try {
-        // execFileSync with an ARGUMENT VECTOR + a PINNED ABSOLUTE binary — no shell, and no
-        // reliance on $PATH, so neither a crafted path nor a rogue gpg on PATH can run (F02/F06).
-        const out = execFileSync(pinnedBinary(PINNED_GPG_CANDIDATES), ["--status-fd=1", "--verify", signaturePath, manifestPath], {
-          encoding: "utf-8",
-          stdio: ["ignore", "pipe", "ignore"],
-        });
-        const valid = out.split("\n").find((l) => l.includes("[GNUPG:] VALIDSIG"));
-        if (valid) {
-          signatureVerified = true;
-          validsigLine = valid.trim();
-          signerFingerprint = valid.trim().split(/\s+/)[2] ?? null; // VALIDSIG <fpr> ...
-        }
-      } catch {
-        signatureVerified = false;
-      }
-      const manifestSha256 = "sha256:" + createHash("sha256").update(readFileSync(manifestPath)).digest("hex");
-      const repo = dirname(fileURLToPath(import.meta.url));
-      // The ONLY tolerated untracked entry is `node_modules`, and ONLY when it is a
-      // symlink whose realpath resolves to a directory (the approved shared install).
-      // Its resolved target is recorded in the attestation so the exclusion is pinned to
-      // an observed fact, not a bare name — an attacker cannot smuggle a rogue target by
-      // naming it `node_modules` (C1-PAID-R5-F06).
-      let nodeModulesRealpath: string | null = null;
-      let nodeModulesApproved = false;
-      try {
-        const nm = join(repo, "node_modules");
-        const nmStat = lstatSync(nm);
-        if (nmStat.isSymbolicLink()) {
-          const rp = realpathSync(nm);
-          nodeModulesRealpath = rp;
-          nodeModulesApproved = lstatSync(rp).isDirectory();
-        }
-      } catch {
-        nodeModulesApproved = false;
-      }
-      let observed: ObservedSource;
-      try {
-        const git = (args: string[]) => execFileSync(pinnedBinary(PINNED_GIT_CANDIDATES), ["-C", repo, ...args], { encoding: "utf-8" }).trim();
-        const fileDigests: Record<string, string> = {};
-        for (const f of manifest.files ?? []) {
-          try {
-            fileDigests[f.path] = createHash("sha256").update(readFileSync(join(repo, f.path))).digest("hex");
-          } catch {
-            /* missing file — left absent so the manifest check reports it */
-          }
-        }
-        // Clean INCLUDING untracked files — only the APPROVED node_modules symlink (a
-        // real symlink to a directory, verified above) is tolerated; any stray untracked
-        // file, or a `node_modules` that is not an approved symlink, fails the gate.
-        const status = git(["status", "--porcelain=v1", "--untracked-files=all"])
-          .split("\n")
-          .filter((l) => l.length > 0 && !(l === "?? node_modules" && nodeModulesApproved));
-        observed = {
-          commit: git(["rev-parse", "HEAD"]),
-          tree: git(["rev-parse", "HEAD^{tree}"]),
-          worktreeCleanInclUntracked: status.length === 0,
-          fileDigests,
-          manifestIsRegularNonSymlink: manifestStat.isFile() && !manifestStat.isSymbolicLink(),
-          manifestOwnerUid: manifestStat.uid,
-          executingUid: typeof process.getuid === "function" ? process.getuid() : manifestStat.uid,
-          manifestMode: manifestStat.mode & 0o777,
-          signatureVerified,
-          signerFingerprint,
-          signatureFilePresent,
-          signatureIsRegularNonSymlink,
-        };
-      } catch (e) {
-        return { ok: false, reasons: [`git_observe_error:${(e as Error).message}`] };
-      }
-      const verdict = verifyAuthoritySourceManifest(manifest, observed);
-      // NO absolute host paths in the Evidence (C1-PAID-R6-F05): only basenames + digests
-      // + booleans are recorded, so the attestation is portable and reveals no Ubuntu
-      // filesystem layout.
-      return {
-        ...verdict,
-        attestation: {
-          manifestBasename: basename(manifestPath),
-          manifestSha256,
-          signatureBasename: basename(signaturePath),
-          signatureSha256,
-          signatureVerified,
-          signerFingerprint,
-          pinnedSigner: AUTHORITY_SOURCE_MANIFEST_SIGNER,
-          validsigLine,
-          commit: observed.commit,
-          tree: observed.tree,
-          worktreeCleanInclUntracked: observed.worktreeCleanInclUntracked,
-          nodeModulesTargetBasename: nodeModulesRealpath ? basename(nodeModulesRealpath) : null,
-          nodeModulesApproved,
-        },
-      };
-    },
+    // Gate 1 — the Fable-verified launcher and fresh in-bundle observation already
+    // authenticated this exact isolated artifact. Record only portable identities.
+    verifyExecution: () => ({
+      ok: true,
+      reasons: [],
+      attestation: {
+        artifactType: executionManifest.artifactType,
+        artifactSchemaVersion: executionManifest.schemaVersion,
+        manifestBasename: basename(launchGrant.executionManifestPath),
+        manifestSha256: launchGrant.executionManifestSha256,
+        signatureBasename: basename(launchGrant.executionSignaturePath),
+        signatureSha256: launchGrant.executionSignatureSha256,
+        signatureVerified: true,
+        signerFingerprint: launchGrant.signerFingerprint,
+        pinnedSigner: PAID_ARTIFACT_PINNED_SIGNER,
+        commit: executionManifest.source.commit,
+        tree: executionManifest.source.tree,
+        launcherSha256: launchGrant.launcherSha256,
+        runnerSha256: launchGrant.runnerSha256,
+        launchGrantSchemaVersion: launchGrant.schemaVersion,
+      },
+    }),
     // Gates 2-3 — parent Evidence bundle + frozen definition + historical run.
     verifyParentEvidence: () => {
       const parentRoot = process.env.PARENT_EVIDENCE_ROOT ?? "";
@@ -3579,13 +3511,14 @@ export async function paidMain(mode: PaidPassDefinition["mode"]): Promise<void> 
           verification: verified.perTarget,
           providerDisplay: verified.providerDisplay,
           budget: pass.budget,
+          totalCeilingUsd: verified.totalCeilingUsd,
           ok,
           reasons,
         },
         null,
         2,
       );
-      return { ok, reasons, catalogArtifactBody: body, perTarget: verified.perTarget, providerDisplay: verified.providerDisplay };
+      return { ok, reasons, catalogArtifactBody: body, perTarget: verified.perTarget, providerDisplay: verified.providerDisplay, totalCeilingUsd: verified.totalCeilingUsd };
     },
   });
 
@@ -3598,7 +3531,7 @@ export async function paidMain(mode: PaidPassDefinition["mode"]): Promise<void> 
     lock: boot.lock,
     providerDisplay: boot.preflight.providerDisplay,
     catalogArtifactRef: boot.catalogArtifactRef,
-    sourceAttestationRef: boot.sourceAttestationRef,
+    executionAttestationRef: boot.executionAttestationRef,
     anchors: boot.anchors,
     parentInputExpectedSha256: boot.parentInputExpectedSha256,
     planCell: (cell, orderIndex) => paidPlanCell(boot.pass, cell, orderIndex),
@@ -3762,14 +3695,12 @@ function invokedDirectly(): boolean {
   }
 }
 
-if (invokedDirectly()) {
+if (!compiledAsPaidBundle() && invokedDirectly()) {
   const mode = resolveDriverMode(process.env.PLINIUS_DRIVER_MODE);
-  // A paid mode MUST be launched via the external preloader, never by running the driver
-  // directly — the closure would already have executed before any verification (F01), and
-  // the preload marker is NOT accepted as an escape here even if set, so a forged marker
-  // cannot turn a direct driver run into a paid dispatch (C1-PAID-R7-F02).
+  // A paid bundle is imported by the externally verified artifact launcher. Executing
+  // the source or bundle directly never reaches the paid entrypoint.
   if (mode === "diagnostic-hosted-paid-r1" || mode === "diagnostic-candidate-paid-r1") {
-    console.error(`DRIVER ERROR: paid mode ${mode} must be launched through qualification-paid-preload.mjs, not the driver directly`);
+    console.error(`DRIVER ERROR: paid mode ${mode} must be launched through qualification-paid-launch.mjs, not the driver directly`);
     process.exit(1);
   }
   const entry = mode === "diagnostic-one-shot-r1" ? oneShotMain : main;

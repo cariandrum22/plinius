@@ -647,92 +647,6 @@ export function verifyPaidDispatch(observed: ObservedDispatch, expected: Expecte
   return { ok: reasons.length === 0, reasons };
 }
 
-// --- authority source manifest (commit / tree / file digests) ----------------
-
-export interface SourceFileDigest {
-  path: string;
-  sha256: string;
-}
-
-/**
- * An authority-SIGNED manifest pinning the exact commit, tree, and per-file
- * SHA-256 of the paid-pass source. It is an external trust anchor: its file is a
- * regular non-symlink owned by the executing uid with mode 0400/0600, and it
- * carries a detached signature by the pinned authority key. Gate 1 verifies the
- * running source/commit/tree against it (INCLUDING untracked files) — a dirty
- * file, an untracked stray, a different commit, or a bad signature fails closed.
- */
-export interface AuthoritySourceManifest {
-  commit: string;
-  tree: string;
-  files: SourceFileDigest[];
-}
-
-/**
- * The FULL 40-hex authority key fingerprint whose detached signature authenticates
- * the source manifest (C1-PAID-R4-F05: a 16-hex suffix is NOT accepted — a colliding
- * long-id or a subkey of a different primary would slip through, so the observed
- * signing fingerprint must equal this exactly).
- */
-export const AUTHORITY_SOURCE_MANIFEST_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
-
-/** What the running host observed for the manifest file, git state, and signature. */
-export interface ObservedSource {
-  commit: string;
-  tree: string;
-  /** True only when NOTHING (tracked OR untracked, except the approved node_modules
-   * symlink) differs from HEAD. */
-  worktreeCleanInclUntracked: boolean;
-  fileDigests: Record<string, string>;
-  /** The manifest file's own security posture. */
-  manifestIsRegularNonSymlink: boolean;
-  manifestOwnerUid: number;
-  executingUid: number;
-  /** The manifest file's permission bits (e.g. 0o600). */
-  manifestMode: number;
-  /** Detached-signature verification result over the manifest bytes. */
-  signatureVerified: boolean;
-  /** The signing key fingerprint observed (a full 40-hex OpenPGP fingerprint from a
-   * `[GNUPG:] VALIDSIG` line), for the pinned-signer check. */
-  signerFingerprint: string | null;
-  /** The detached-signature file must exist as a regular non-symlink so its bytes
-   * (and their digest) can be bound into the final Evidence (F05). */
-  signatureFilePresent: boolean;
-  signatureIsRegularNonSymlink: boolean;
-}
-
-/**
- * Gate 1: verify the running source against the AUTHENTICATED authority manifest.
- * The manifest file must be a regular non-symlink owned by the executing uid with
- * no group/other permission, its detached signature file must exist as a regular
- * file and verify to the pinned authority key by its FULL fingerprint, the git HEAD
- * commit and tree must match, the worktree must be clean including untracked files,
- * and every pinned file's on-disk SHA-256 must match with none missing. Any
- * deviation is a reason and no credential is read.
- */
-export function verifyAuthoritySourceManifest(manifest: AuthoritySourceManifest, observed: ObservedSource): { ok: boolean; reasons: string[] } {
-  const reasons: string[] = [];
-  if (!observed.manifestIsRegularNonSymlink) reasons.push("manifest_not_regular_file");
-  if (observed.manifestOwnerUid !== observed.executingUid) reasons.push("manifest_owner_mismatch");
-  if ((observed.manifestMode & 0o177) !== 0 || (observed.manifestMode & 0o400) === 0) reasons.push("manifest_mode_insecure");
-  if (!observed.signatureFilePresent || !observed.signatureIsRegularNonSymlink) reasons.push("manifest_signature_file_absent");
-  if (!observed.signatureVerified) reasons.push("manifest_signature_invalid");
-  // Exact FULL-fingerprint pin — never a suffix match.
-  if (observed.signerFingerprint == null || observed.signerFingerprint.toUpperCase() !== AUTHORITY_SOURCE_MANIFEST_SIGNER) {
-    reasons.push(`manifest_signer_unpinned:${observed.signerFingerprint}`);
-  }
-  if (!manifest.commit || observed.commit !== manifest.commit) reasons.push(`commit_mismatch:${observed.commit}`);
-  if (!manifest.tree || observed.tree !== manifest.tree) reasons.push(`tree_mismatch:${observed.tree}`);
-  if (!observed.worktreeCleanInclUntracked) reasons.push("worktree_dirty_or_untracked");
-  if (!Array.isArray(manifest.files) || manifest.files.length === 0) reasons.push("manifest_no_files");
-  for (const f of manifest.files ?? []) {
-    const got = observed.fileDigests[f.path];
-    if (got == null) reasons.push(`source_file_missing:${f.path}`);
-    else if (got !== f.sha256) reasons.push(`source_file_digest_mismatch:${f.path}`);
-  }
-  return { ok: reasons.length === 0, reasons };
-}
-
 /**
  * A guaranteed upper bound on the token count of a string: every token encodes at
  * least one byte, so the token count never exceeds the UTF-8 byte length. Adding a
@@ -865,11 +779,11 @@ export interface PaidManifestRef {
 }
 
 export interface PaidBindingManifest {
-  sourceManifest: PaidManifestRef | null;
-  /** The detached signature file over the source manifest (F05). */
-  sourceSignature: PaidManifestRef | null;
-  /** The source authentication attestation (VALIDSIG fingerprint + digests) (F05). */
-  sourceAttestation: PaidManifestRef | null;
+  executionManifest: PaidManifestRef | null;
+  /** Detached signature over the isolated execution manifest. */
+  executionSignature: PaidManifestRef | null;
+  /** Launcher observation binding signature, manifest, runner and campaign. */
+  executionAttestation: PaidManifestRef | null;
   parentInputs: PaidManifestRef[];
   catalogArtifact: PaidManifestRef | null;
   rawObservations: PaidManifestRef[];
@@ -878,6 +792,9 @@ export interface PaidBindingManifest {
   intents: PaidManifestRef[];
   summary: PaidManifestRef;
 }
+
+/** Full signing-subkey fingerprint pinned by the Paid Pass v2 execution manifest. */
+export const PAID_EXECUTION_MANIFEST_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 
 /** The exact number of parent-input anchors a paid pass binds (bundle + frozen
  * campaign definition + historical run). */
@@ -912,7 +829,7 @@ export interface PaidManifestVerifyOptions {
 
 /**
  * A ref path is safe ONLY as a clean RELATIVE path under the output root — no absolute
- * path, no traversal, no backslash, no leading-dot. The whole source-authentication
+ * path, no traversal, no backslash, no leading-dot. The whole execution-package authentication
  * trail and the parent inputs are COPIED INTO the output root as content-addressed
  * artifacts (C1-PAID-R5-F04/F06), so the Evidence is self-contained and portable — an
  * absolute Ubuntu path is never a valid bound ref.
@@ -929,7 +846,7 @@ function isSafeRefPath(file: string): boolean {
  * Verify a strict binding manifest against the artifacts on disk, FAIL-CLOSED
  * (C1-PAID-R4-F04 / C1-PAID-R5-F04). Beyond the per-ref digest+bytes match this rejects:
  *
- *  - a null source manifest / signature / attestation / catalog artifact / summary;
+ *  - a null execution manifest / signature / attestation / catalog artifact / summary;
  *  - empty records / wires / raw observations / intents (a paid pass that dispatched
  *    nothing must not certify as complete);
  *  - a parent-input count other than exactly PAID_PARENT_INPUT_COUNT;
@@ -939,7 +856,7 @@ function isSafeRefPath(file: string): boolean {
  *    in ANY subdirectory — left unbound) — the referenced set must EQUAL the disk set.
  *
  * `readFile` returns a bound file's bytes or null when absent. The driver calls this
- * on the manifest PARSED BACK FROM DISK, never on the pre-write in-memory object.
+ * on the complete pre-seal candidate before a final manifest filename exists.
  */
 export function verifyPaidManifest(
   manifest: PaidBindingManifest,
@@ -995,10 +912,10 @@ export function verifyPaidManifest(
     for (const r of list) check(label, r, true);
   };
 
-  // Source authentication trail — all three are mandatory (F05).
-  check("source_manifest", manifest.sourceManifest, true);
-  check("source_signature", manifest.sourceSignature, true);
-  check("source_attestation", manifest.sourceAttestation, true);
+  // Isolated execution-package authentication trail — all three are mandatory.
+  check("execution_manifest", manifest.executionManifest, true);
+  check("execution_signature", manifest.executionSignature, true);
+  check("execution_attestation", manifest.executionAttestation, true);
   if ((manifest.parentInputs ?? []).length !== PAID_PARENT_INPUT_COUNT) reasons.push(`parent_input_count:${(manifest.parentInputs ?? []).length}`);
   checkList("parent_input", manifest.parentInputs, true);
   check("catalog", manifest.catalogArtifact, true);
@@ -1019,12 +936,11 @@ export function verifyPaidManifest(
 }
 
 /**
- * Verify the CONTENT of the source-authentication attestation (C1-PAID-R5-F04): it must
- * bind this campaign+stage, record a VERIFIED detached signature by the EXACT pinned
- * full-fingerprint signer, and carry the manifest + signature digests. A manifest that
- * merely references an attestation file whose content is inert is rejected.
+ * Verify the execution attestation: it binds campaign+stage, a verified detached
+ * signature by the exact pinned fingerprint, and the execution manifest/signature
+ * digests. A manifest cannot pass by referencing an inert attestation file.
  */
-export function verifyPaidSourceAttestation(
+export function verifyPaidExecutionAttestation(
   attestation: unknown,
   expected: { campaignId: string; stageId: string },
 ): { ok: boolean; reasons: string[] } {
@@ -1034,7 +950,7 @@ export function verifyPaidSourceAttestation(
   if (a.campaignId !== expected.campaignId) reasons.push(`attestation_campaign_mismatch:${String(a.campaignId)}`);
   if (a.stageId !== expected.stageId) reasons.push(`attestation_stage_mismatch:${String(a.stageId)}`);
   if (a.signatureVerified !== true) reasons.push("attestation_signature_not_verified");
-  if (typeof a.signerFingerprint !== "string" || a.signerFingerprint.toUpperCase() !== AUTHORITY_SOURCE_MANIFEST_SIGNER) {
+  if (typeof a.signerFingerprint !== "string" || a.signerFingerprint.toUpperCase() !== PAID_EXECUTION_MANIFEST_SIGNER) {
     reasons.push(`attestation_signer_unpinned:${String(a.signerFingerprint)}`);
   }
   if (typeof a.manifestSha256 !== "string" || !/^sha256:[0-9a-f]{64}$/.test(a.manifestSha256)) reasons.push("attestation_manifest_digest_missing");
