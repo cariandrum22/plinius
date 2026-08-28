@@ -12,7 +12,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 export const ARTIFACT_SCHEMA_VERSION = 1;
@@ -25,7 +25,7 @@ export const LAUNCHER_NAME = "qualification-paid-launch.mjs";
 export const RUNNER_NAME = "qualification-driver.mjs";
 export const VERIFIER_NAME = "qualification-paid-verify.mjs";
 const MODES = new Set(["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1"]);
-const GPG_CANDIDATES = ["/usr/bin/gpg", "/bin/gpg", "/opt/homebrew/bin/gpg", "/usr/local/bin/gpg"];
+const GPG_CANDIDATES = ["/usr/bin/gpg", "/bin/gpg", "/opt/homebrew/bin/gpg", "/usr/local/bin/gpg", join(homedir(), ".nix-profile/bin/gpg")];
 
 /** @param {Buffer | Uint8Array | string} bytes */
 const sha256 = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -39,8 +39,10 @@ function safeRelativePath(value) {
 function pinnedBinary(candidates) {
   for (const candidate of candidates) {
     try {
-      const st = lstatSync(candidate);
-      if (st.isFile() && !st.isSymbolicLink()) return candidate;
+      const resolved = realpathSync(candidate);
+      const st = lstatSync(resolved);
+      const immutableNixTarget = resolved.startsWith("/nix/store/");
+      if (st.isFile() && !st.isSymbolicLink() && (resolved === candidate || immutableNixTarget)) return resolved;
     } catch {
       // Continue to the next authority-approved absolute path.
     }

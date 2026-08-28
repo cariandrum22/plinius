@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 export const EVIDENCE_SCHEMA_VERSION = 5;
@@ -17,7 +17,7 @@ export const HISTORICAL_PARENT_DIGESTS = [
   "sha256:eba5485902b6fa8307dc4cf1e3ff4c4bf99175f9e63eaedd0c81102332fae86d",
   "sha256:05390908e2dcadc2f029292a98be21ccc13b7e39ee8ce3b8d3660d455a1ff026",
 ];
-const GPG_CANDIDATES = ["/opt/homebrew/bin/gpg", "/usr/local/bin/gpg", "/usr/bin/gpg", "/bin/gpg"];
+const GPG_CANDIDATES = ["/opt/homebrew/bin/gpg", "/usr/local/bin/gpg", "/usr/bin/gpg", "/bin/gpg", join(homedir(), ".nix-profile/bin/gpg")];
 const PASS_IDENTITIES = new Map([
   ["plinius-qualification-2026-08-22-diagnostic-hosted-paid-r1", { campaignId: "plinius-qualification-2026-08-22-v1", mode: "diagnostic-hosted-paid-r1", totalCells: 15, totalCapUsd: 5, perRunCapUsd: 1 }],
   ["plinius-qualification-2026-08-26-diagnostic-candidate-paid-r1", { campaignId: "plinius-qualification-2026-08-26-candidate-r1", mode: "diagnostic-candidate-paid-r1", totalCells: 16, totalCapUsd: 6, perRunCapUsd: 0.75 }],
@@ -120,8 +120,10 @@ function safeRelative(value) {
 function pinnedBinary(candidates) {
   for (const candidate of candidates) {
     try {
-      const st = lstatSync(candidate);
-      if (st.isFile() && !st.isSymbolicLink()) return candidate;
+      const resolved = realpathSync(candidate);
+      const st = lstatSync(resolved);
+      const immutableNixTarget = resolved.startsWith("/nix/store/");
+      if (st.isFile() && !st.isSymbolicLink() && (resolved === candidate || immutableNixTarget)) return resolved;
     } catch {
       // Continue.
     }

@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, cpSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,7 +18,7 @@ const BENCHMARK_IDS = [
   "security/sec-oidc-id-token-validation-001",
   "formal-reasoning/formal-spec-idempotent-api-003",
 ];
-const GPG_CANDIDATES = ["/opt/homebrew/bin/gpg", "/usr/local/bin/gpg", "/usr/bin/gpg"];
+const GPG_CANDIDATES = ["/opt/homebrew/bin/gpg", "/usr/local/bin/gpg", "/usr/bin/gpg", join(homedir(), ".nix-profile/bin/gpg")];
 
 /** @param {Buffer | string} body */
 const sha256 = (body) => `sha256:${createHash("sha256").update(body).digest("hex")}`;
@@ -42,8 +43,10 @@ function walk(root) {
 function pinnedBinary(candidates) {
   for (const path of candidates) {
     try {
-      const st = lstatSync(path);
-      if (st.isFile() && !st.isSymbolicLink()) return path;
+      const resolved = realpathSync(path);
+      const st = lstatSync(resolved);
+      const immutableNixTarget = resolved.startsWith("/nix/store/");
+      if (st.isFile() && !st.isSymbolicLink() && (resolved === path || immutableNixTarget)) return resolved;
     } catch {
       // Continue.
     }
