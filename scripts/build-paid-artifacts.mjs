@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-/** Build a source-tree-independent Paid Pass v3 engine package on the Mac authority. */
+/** Build a source-tree-independent Paid Pass v3.2 engine package on the Mac authority. */
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 const MANIFEST = "qualification-paid-execution-manifest.json";
-const DEFAULT_POLICY = join(REPO, "policy", "qualification-hosted-paid-2026-08-29-r1.json");
+const DEFAULT_POLICY = join(REPO, "policy", "qualification-hosted-paid-2026-08-30-r2.json");
 const BENCHMARK_IDS = [
   "software-engineering/se-concurrency-atomic-stats-012",
   "architecture/arch-exactly-once-003",
@@ -62,7 +62,7 @@ function git(args) {
 
 /** @param {string[]} argv */
 function parseArgs(argv) {
-  let output = join(REPO, "build", "qualification-paid-v3-release");
+  let output = join(REPO, "build", "qualification-paid-v3.2-release");
   let policy = DEFAULT_POLICY;
   let sign = true;
   for (let i = 0; i < argv.length; i++) {
@@ -89,7 +89,7 @@ async function main() {
   const policyBytes = readFileSync(policyPath);
   const policyDocument = JSON.parse(policyBytes.toString("utf-8"));
   if (!Buffer.from(`${JSON.stringify(policyDocument, null, 2)}\n`, "utf-8").equals(policyBytes)) throw new Error("policy must be canonical pretty JSON");
-  if (policyDocument.schemaVersion !== 1 || policyDocument.policyType !== "plinius-paid-campaign-policy-v1" || policyDocument.requiredSignerFingerprint !== PINNED_SIGNER) {
+  if (policyDocument.schemaVersion !== 2 || policyDocument.policyType !== "plinius-paid-campaign-policy-v2" || policyDocument.requiredSignerFingerprint !== PINNED_SIGNER) {
     throw new Error("policy identity or signer mismatch");
   }
 
@@ -128,7 +128,7 @@ async function main() {
     define: { __PLINIUS_PAID_BUNDLE__: "true" },
     banner: {
       js: [
-        "// Plinius Paid Pass v3 isolated driver bundle.",
+        "// Plinius Paid Pass v3.2 isolated driver bundle.",
         'import { createRequire as __pliniusCreateRequire } from "node:module";',
         'const require = __pliniusCreateRequire(process.cwd() + "/qualification-driver.mjs");',
       ].join("\n"),
@@ -137,7 +137,7 @@ async function main() {
   const runnerPath = join(engineOutput, "qualification-driver.mjs");
   const runnerText = readFileSync(runnerPath, "utf-8");
   const policyTargets = Array.isArray(policyDocument.pass?.targets) ? policyDocument.pass.targets : [];
-  const policyModelIdentifiers = new Set(policyTargets.flatMap((/** @type {any} */ target) => [target.slug, target.catalogModelId, target.responseModelId]));
+  const policyModelIdentifiers = new Set(policyTargets.flatMap((/** @type {any} */ target) => [target.slug, target.catalogModelId, target.responseModelId, target.lookupModelId]));
   for (const identifier of policyModelIdentifiers) {
     if (typeof identifier !== "string" || identifier.length === 0) throw new Error("policy contains an invalid model identifier");
     if (runnerText.includes(identifier)) throw new Error(`policy model identifier leaked into stable engine bundle: ${identifier}`);

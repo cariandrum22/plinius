@@ -3180,7 +3180,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       // response headline FROM THE RESPONSE WIRE BYTES (deriveResponseOutcome inside
       // buildQualificationAttempt) — never from the adapter's returned facts.
       const dispatchCheck = verifyPaidDispatch(rederive.observed, {
-        requestUrl: `${OR_BASE}/chat/completions`, model: plan.target.slug, responseModelId: plan.target.responseModelId, routing, maxTokens: plan.maxTokens,
+        requestUrl: `${OR_BASE}/chat/completions`, model: plan.target.slug, responseModelId: plan.target.responseModelId, lookupModelId: plan.target.lookupModelId, routing, maxTokens: plan.maxTokens,
         temperature: plan.target.sampling.temperature, topP: plan.target.sampling.topP, seed: plan.target.sampling.seed,
         messages: plan.messages, providerDisplay: opts.providerDisplay[plan.target.slug] ?? "", costLookupBaseUrl: OR_BASE,
       });

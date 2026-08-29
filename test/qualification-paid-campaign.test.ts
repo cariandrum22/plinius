@@ -137,12 +137,13 @@ function mockFetch(model: string): { fn: FetchFn; calls: Array<{ url: string; bo
  * validation reads only the wire. */
 function factsFor(
   plan: PaidCellPlan,
-  opts: { ok?: boolean; costUsd?: number | null; routing?: ProviderRouting | null; model?: string; url?: string; display?: string; genId?: string; costUrl?: string } = {},
+  opts: { ok?: boolean; costUsd?: number | null; routing?: ProviderRouting | null; model?: string; responseModel?: string; lookupModel?: string; url?: string; display?: string; genId?: string; costUrl?: string } = {},
 ): any {
   const ok = opts.ok ?? true;
   const routing = opts.routing === undefined ? buildProviderRouting(plan.target) : opts.routing;
   const model = opts.model ?? plan.target.slug;
-  const responseModel = opts.model ?? plan.target.responseModelId;
+  const responseModel = opts.responseModel ?? plan.target.responseModelId;
+  const lookupModel = opts.lookupModel ?? plan.target.lookupModelId;
   const display = opts.display ?? plan.target.providerDisplay;
   const cost = opts.costUsd === undefined ? 0.01 : opts.costUsd;
   const s = plan.target.sampling;
@@ -160,7 +161,7 @@ function factsFor(
   };
   const genId = opts.genId ?? "gen-x";
   const responseBody = { id: genId, model: responseModel, provider: display, choices: [{ finish_reason: ok ? "stop" : "content_filter", message: { role: "assistant", content: ok ? "FINAL ANSWER" : "" } }], usage: {} };
-  const lookupBody = { data: { id: genId, model: responseModel, provider_name: display, total_cost: cost } };
+  const lookupBody = { data: { id: genId, model: lookupModel, provider_name: display, total_cost: cost } };
   const reqPre = wirePreimage(sentBody);
   const resPre = wirePreimage(responseBody);
   const lookupPre = wirePreimage(lookupBody);
@@ -184,7 +185,7 @@ function factsFor(
     responseModelId: responseModel,
     responseGenerationId: "gen-x",
     responseProvider: display,
-    generationLookupModelId: responseModel,
+    generationLookupModelId: lookupModel,
     generationLookupGenerationId: "gen-x",
     generationLookupProvider: display,
     wire: {
@@ -313,8 +314,8 @@ const fileSha = async (p: string) => "sha256:" + createHash("sha256").update(awa
 function policyBodyFor(pass: any): string {
   const { policyId, ...unsignedPass } = pass;
   return `${JSON.stringify({
-    schemaVersion: 1,
-    policyType: "plinius-paid-campaign-policy-v1",
+    schemaVersion: 2,
+    policyType: "plinius-paid-campaign-policy-v2",
     policyId,
     issuedAtUtc: "2026-08-28T00:00:00Z",
     catalogObservedAtUtc: "2026-08-28T00:00:00Z",
@@ -502,6 +503,12 @@ describe("detached-signature campaign policy", () => {
     const duplicateResponse = structuredClone(original);
     duplicateResponse.pass.targets[1].responseModelId = duplicateResponse.pass.targets[0].responseModelId;
     expect(() => parsePaidCampaignPolicy(encoded(duplicateResponse), "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/duplicate target responseModelId/);
+    const missingLookup = structuredClone(original);
+    delete missingLookup.pass.targets[0].lookupModelId;
+    expect(() => parsePaidCampaignPolicy(encoded(missingLookup), "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/field set/);
+    const duplicateLookup = structuredClone(original);
+    duplicateLookup.pass.targets[1].lookupModelId = duplicateLookup.pass.targets[0].lookupModelId;
+    expect(() => parsePaidCampaignPolicy(encoded(duplicateLookup), "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/duplicate target lookupModelId/);
     const sharedProvider = structuredClone(original);
     sharedProvider.pass.targets[1].providerRoute = sharedProvider.pass.targets[0].providerRoute;
     expect(parsePaidCampaignPolicy(encoded(sharedProvider), "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z").pass.targets).toHaveLength(4);
@@ -509,10 +516,15 @@ describe("detached-signature campaign policy", () => {
   });
 
   it("loads the checked-in short-lived Hosted policy as canonical policy bytes", async () => {
-    const checkedIn = await readFile(join(process.cwd(), "policy", "qualification-hosted-paid-2026-08-29-r1.json"));
-    const loaded = parsePaidCampaignPolicy(checkedIn, "diagnostic-hosted-paid-r1", "2026-08-29T03:00:00Z");
-    expect(loaded.pass.stageId).toBe("plinius-qualification-2026-08-29-diagnostic-hosted-paid-r2");
+    const checkedIn = await readFile(join(process.cwd(), "policy", "qualification-hosted-paid-2026-08-30-r2.json"));
+    const loaded = parsePaidCampaignPolicy(checkedIn, "diagnostic-hosted-paid-r1", "2026-08-29T16:00:00Z");
+    expect(loaded.pass.stageId).toBe("plinius-qualification-2026-08-30-diagnostic-hosted-paid-r3");
     expect(loaded.pass.targets.map((target) => target.slug)).toEqual(HOSTED_PAID_TARGETS.map((target) => target.slug));
+    expect(loaded.pass.targets[0].responseModelId).toBe("openai/gpt-5.6-sol-pro");
+    expect(loaded.pass.targets[0].lookupModelId).toBe("openai/gpt-5.6-sol-pro-20260709");
+
+    const legacy = await readFile(join(process.cwd(), "policy", "qualification-hosted-paid-2026-08-29-r1.json"));
+    expect(() => parsePaidCampaignPolicy(legacy, "diagnostic-hosted-paid-r1", "2026-08-29T16:00:00Z")).toThrow(/identity mismatch/);
   });
 });
 
@@ -547,15 +559,26 @@ describe("full request/response re-derivation and provider provenance", () => {
   const messages = [{ role: "user", content: "hi" }];
   const costUrl = `${OR_BASE}/generation?id=g1`;
   const fullKeys = ["max_tokens", "messages", "model", "provider", "seed", "stream", "temperature", "top_p"].sort();
-  const expected: ExpectedDispatch = { requestUrl: CHAT_URL, model: target.slug, responseModelId: target.responseModelId, routing, maxTokens: 24576, temperature: 0, topP: 1, seed: 1, messages, providerDisplay: "DeepInfra", costLookupBaseUrl: OR_BASE };
+  const expected: ExpectedDispatch = { requestUrl: CHAT_URL, model: target.slug, responseModelId: target.responseModelId, lookupModelId: target.lookupModelId, routing, maxTokens: 24576, temperature: 0, topP: 1, seed: 1, messages, providerDisplay: "DeepInfra", costLookupBaseUrl: OR_BASE };
   const base: ObservedDispatch = {
     requestUrl: CHAT_URL, requestMethod: "POST", model: target.slug, routing, maxTokens: 24576, temperature: 0, topP: 1, seed: 1, messages,
     requestKeys: fullKeys, stream: false, responseHttpStatus: 200,
-    responseModelId: target.responseModelId, responseProvider: "DeepInfra", responseGenerationId: "g1", lookupModelId: target.responseModelId, lookupGenerationId: "g1", lookupProvider: "DeepInfra",
+    responseModelId: target.responseModelId, responseProvider: "DeepInfra", responseGenerationId: "g1", lookupModelId: target.lookupModelId, lookupGenerationId: "g1", lookupProvider: "DeepInfra",
     costPollUrls: [costUrl],
   };
   it("passes a fully-consistent dispatch", () => {
     expect(verifyPaidDispatch(base, expected).ok).toBe(true);
+  });
+  it("passes an independently pinned base response and versioned lookup identity", () => {
+    expect(target.responseModelId).not.toBe(target.lookupModelId);
+    expect(verifyPaidDispatch(base, expected).ok).toBe(true);
+  });
+  it("rejects swapped or unpinned response and lookup identities", () => {
+    const swapped = verifyPaidDispatch({ ...base, responseModelId: target.lookupModelId, lookupModelId: target.responseModelId }, expected);
+    expect(swapped.reasons.some((reason) => reason.startsWith("response_model_mismatch"))).toBe(true);
+    expect(swapped.reasons.some((reason) => reason.startsWith("lookup_model_mismatch"))).toBe(true);
+    expect(verifyPaidDispatch({ ...base, responseModelId: `${target.responseModelId}-alternate` }, expected).ok).toBe(false);
+    expect(verifyPaidDispatch({ ...base, lookupModelId: `${target.lookupModelId}-alternate` }, expected).ok).toBe(false);
   });
   it("blocks stream:true, an extra/missing field, a non-200 response, and a wrong cost URL", () => {
     expect(verifyPaidDispatch({ ...base, stream: true }, expected).reasons.some((r) => r.startsWith("request_stream_not_false"))).toBe(true);
@@ -656,7 +679,7 @@ describe("raw-observation re-derivation from disk bytes (canonical + full chain)
   const rawFor = (over: Partial<PaidRawObservation> = {}, reqOver: Record<string, unknown> = {}): PaidRawObservation => {
     const reqBody = { model: target.slug, messages: [{ role: "user", content: "hi" }], stream: false, max_tokens: 1024, temperature: 0, top_p: 1, seed: 1, provider: serializeProviderRouting(routing), ...reqOver };
     const resBody = { id: "g1", model: target.responseModelId, provider: target.providerDisplay, choices: [{ finish_reason: "stop", message: { content: "ok" } }] };
-    const lookupBody = { data: { id: "g1", model: target.responseModelId, provider_name: target.providerDisplay, total_cost: 0.0731 } };
+    const lookupBody = { data: { id: "g1", model: target.lookupModelId, provider_name: target.providerDisplay, total_cost: 0.0731 } };
     return {
       runId: "r1",
       requestUrl: CHAT_URL,
@@ -1163,6 +1186,39 @@ describe("credential ordering — key read last, gates required", () => {
 // --- 7. orchestrator ---------------------------------------------------------
 
 describe("runPaidPass orchestration", () => {
+  it("accepts policy-pinned base responses with versioned lookup identities end-to-end", async () => {
+    const root = freshRoot("hosted-split-provenance");
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
+    const result = await runPaidPass(await setupPaidRun(HOSTED_PAID_PASS, cells, root, withWire((_cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 0.01 }))));
+    expect(result.stopped).toBeNull();
+    expect(result.dispatchedRunIds).toHaveLength(15);
+    expect(result.passed).toBe(15);
+    const independent = verifyPaidEvidence(root, {
+      verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER,
+      parentDigests: await Promise.all(anchorPaths.parentInputPaths.map(fileSha)),
+    });
+    expect(independent.ok, independent.reasons.join("\n")).toBe(true);
+  }, 20_000);
+
+  it("rejects response/lookup identities swapped on the durable wire", async () => {
+    const root = freshRoot("hosted-swapped-provenance");
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
+    const result = await runPaidPass(await setupPaidRun(HOSTED_PAID_PASS, cells, root, withWire((_cell: any, plan: any) => factsFor(plan, {
+      ok: true,
+      costUsd: 0.01,
+      responseModel: plan.target.lookupModelId,
+      lookupModel: plan.target.responseModelId,
+    }))));
+    expect(result.stopped).toMatch(/request_wire_mismatch/);
+    expect(result.dispatchedRunIds).toHaveLength(1);
+    expect(result.passed).toBe(0);
+    const files = await readdir(join(root, "runs"));
+    const recordName = files.find((file) => file.endsWith(".json") && !file.startsWith("paid-") && !file.includes("intent"));
+    const record = JSON.parse(await readFile(join(root, "runs", recordName!), "utf-8"));
+    expect(record.paidVerdict.validationReasons.some((reason: string) => reason.startsWith("response_model_mismatch"))).toBe(true);
+    expect(record.paidVerdict.validationReasons.some((reason: string) => reason.startsWith("lookup_model_mismatch"))).toBe(true);
+  });
+
   it("candidate per-model sentinel failure skips only that model's remaining 3 cells", async () => {
     const failModel = "moonshotai/kimi-k3";
     const cells = buildCandidatePaidCells(CANDIDATE_PAID_TARGETS);

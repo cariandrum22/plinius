@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 /**
- * Dependency-free Paid Pass v3 launcher.
+ * Dependency-free Paid Pass v3.2 launcher.
  *
  * Fable must verify the signed execution manifest and launcher digest before
  * invoking `/usr/bin/node qualification-paid-launch.mjs`. This launcher then
@@ -19,8 +19,8 @@ export const ARTIFACT_SCHEMA_VERSION = 1;
 export const GRANT_SCHEMA_VERSION = 2;
 export const ARTIFACT_TYPE = "plinius-paid-pass-v3";
 export const PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
-export const CAMPAIGN_POLICY_SCHEMA_VERSION = 1;
-export const CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v1";
+export const CAMPAIGN_POLICY_SCHEMA_VERSION = 2;
+export const CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v2";
 export const MANIFEST_NAME = "qualification-paid-execution-manifest.json";
 export const SIGNATURE_NAME = `${MANIFEST_NAME}.sig`;
 export const LAUNCHER_NAME = "qualification-paid-launch.mjs";

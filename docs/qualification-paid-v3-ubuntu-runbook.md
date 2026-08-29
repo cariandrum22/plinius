@@ -1,12 +1,12 @@
-# Paid Pass v3 Ubuntu execution runbook
+# Paid Pass v3.2 Ubuntu execution runbook
 
 ## 0. Authority and stop condition
 
-This runbook is not a Paid GO. Paid Pass v3 separates a stable signed engine
+This runbook is not a Paid GO. Paid Pass v3.2 separates a stable signed engine
 from a separately signed, short-lived campaign policy. Do not execute a provider
 request until the Mac authority has separately issued all of the following:
 
-- an approved, signed v3 source commit and release tag;
+- an approved, signed v3.2 source commit and release tag;
 - the signed `plinius-paid-pass-v3` engine package;
 - a signed, unexpired campaign policy for exactly one mode;
 - the release archive SHA-256 and exact signing fingerprint;
@@ -27,17 +27,17 @@ The issued Hosted policy is:
 
 ```text
 MODE=diagnostic-hosted-paid-r1
-POLICY_ID=plinius-hosted-paid-2026-08-29-r1
-STAGE=plinius-qualification-2026-08-29-diagnostic-hosted-paid-r2
+POLICY_ID=plinius-hosted-paid-2026-08-30-r2
+STAGE=plinius-qualification-2026-08-30-diagnostic-hosted-paid-r3
 CELLS=15
 MAX_TOTAL_USD=5.00
 MAX_PER_RUN_USD=1.00
 ONE_SHOT=true
-EXPIRES_AT_UTC=2026-09-05T02:30:00Z
+EXPIRES_AT_UTC=2026-09-05T15:10:00Z
 ```
 
-The policy sends canonical, versioned model slugs. Catalog aliases and expected
-response model IDs are pinned separately. The engine requires exactly one
+The policy sends canonical, versioned model slugs. Catalog, response and cost-lookup
+model IDs are pinned separately and checked exactly. The engine requires exactly one
 provider route, `allow_fallbacks:false`, `require_parameters:true`, and the
 policy price ceilings.
 
@@ -53,7 +53,7 @@ policy and do not reuse a Hosted GO for Candidate Pass.
 - Do not set `CONTINUATION_RESUME` or `PLINIUS_LOCAL_BINDING_DIR`.
 - Do not print, paste, log, hash, or include `OPENROUTER_API_KEY` in Evidence.
 - Do not run `qualification-driver.mjs` directly.
-- Do not use the consumed v2 GO, v2 failed output root, or v2 policy values.
+- Do not use any consumed prior GO, prior output root, or superseded policy values.
 
 ## 3. Acquire the release package
 
@@ -67,7 +67,7 @@ RELEASE_TAG='<AUTHORITY_ISSUED_TAG>'
 ARCHIVE_NAME='<AUTHORITY_ISSUED_ARCHIVE_NAME>'
 ARCHIVE_SHA256='<AUTHORITY_ISSUED_ARCHIVE_SHA256>'
 BASE_URL="https://github.com/cariandrum22/plinius/releases/download/${RELEASE_TAG}"
-DOWNLOAD_ROOT='/home/ubuntu/plinius-paid-v3/download'
+DOWNLOAD_ROOT='/home/ubuntu/plinius-paid-v3.2/download'
 
 install -d -m 0700 "$DOWNLOAD_ROOT"
 test ! -e "$DOWNLOAD_ROOT/$ARCHIVE_NAME"
@@ -81,8 +81,8 @@ test "$(sha256sum "$DOWNLOAD_ROOT/$ARCHIVE_NAME" | awk '{print $1}')" = \
 Extract once into a new directory:
 
 ```bash
-PACKAGE_PARENT='/home/ubuntu/plinius-paid-v3/packages'
-PACKAGE_ROOT="$PACKAGE_PARENT/qualification-paid-v3-release"
+PACKAGE_PARENT='/home/ubuntu/plinius-paid-v3.2/packages'
+PACKAGE_ROOT="$PACKAGE_PARENT/qualification-paid-v3.2-release"
 install -d -m 0700 "$PACKAGE_PARENT"
 test ! -e "$PACKAGE_ROOT"
 tar -C "$PACKAGE_PARENT" -xzf "$DOWNLOAD_ROOT/$ARCHIVE_NAME"
@@ -91,7 +91,7 @@ test ! -L "$PACKAGE_ROOT"
 (cd "$PACKAGE_ROOT" && sha256sum --check SHA256SUMS)
 
 ARTIFACT_ROOT="$PACKAGE_ROOT/engine"
-POLICY_PATH="$PACKAGE_ROOT/policy/qualification-hosted-paid-2026-08-29-r1.json"
+POLICY_PATH="$PACKAGE_ROOT/policy/qualification-hosted-paid-2026-08-30-r2.json"
 POLICY_SIGNATURE_PATH="${POLICY_PATH}.sig"
 MODE='diagnostic-hosted-paid-r1'
 ```
@@ -179,7 +179,7 @@ Never reuse a path, including one left by a failed catalog preflight.
 ```bash
 SECRET_FILE='/home/ubuntu/.secrets/openrouter-api-key'
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
-CONTINUATION_OUTPUT_ROOT="/home/ubuntu/plinius-paid-v3/runs/${RUN_ID}/${MODE}"
+CONTINUATION_OUTPUT_ROOT="/home/ubuntu/plinius-paid-v3.2/runs/${RUN_ID}/${MODE}"
 
 test ! -e "$CONTINUATION_OUTPUT_ROOT"
 install -d -m 0700 "$CONTINUATION_OUTPUT_ROOT"

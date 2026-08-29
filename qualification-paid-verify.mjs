@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-/** Independent post-transfer verifier for policy-driven Paid Pass v3 Evidence. */
+/** Independent post-transfer verifier for policy-driven Paid Pass v3.2 Evidence. */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -12,8 +12,8 @@ export const EVIDENCE_SCHEMA_VERSION = 6;
 export const EXECUTION_SCHEMA_VERSION = 1;
 export const EXECUTION_ARTIFACT_TYPE = "plinius-paid-pass-v3";
 export const PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
-export const CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v1";
-export const CAMPAIGN_POLICY_SCHEMA_VERSION = 1;
+export const CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v2";
+export const CAMPAIGN_POLICY_SCHEMA_VERSION = 2;
 export const HISTORICAL_PARENT_DIGESTS = [
   "sha256:5464aac6862ee2b001cae40ac861d43b64abb9b0cd705bfa539252104963c66e",
   "sha256:eba5485902b6fa8307dc4cf1e3ff4c4bf99175f9e63eaedd0c81102332fae86d",
@@ -211,9 +211,9 @@ function parseCampaignPolicy(body) {
   if (!Array.isArray(pass.targets) || pass.targets.length !== 4) throw new Error("policy_targets");
   const targets = new Map();
   for (const target of pass.targets) {
-    if (!exactKeys(target, ["slug", "catalogModelId", "responseModelId", "providerRoute", "providerDisplay", "priceCeiling", "sampling"])) throw new Error("policy_target_fields");
-    if (![target.slug, target.catalogModelId, target.responseModelId, target.providerRoute, target.providerDisplay].every((value) => typeof value === "string" && value.length > 0 && value.length <= 160)) throw new Error("policy_target_identity");
-    for (const value of [target.slug, target.catalogModelId, target.responseModelId, target.providerRoute]) {
+    if (!exactKeys(target, ["slug", "catalogModelId", "responseModelId", "lookupModelId", "providerRoute", "providerDisplay", "priceCeiling", "sampling"])) throw new Error("policy_target_fields");
+    if (![target.slug, target.catalogModelId, target.responseModelId, target.lookupModelId, target.providerRoute, target.providerDisplay].every((value) => typeof value === "string" && value.length > 0 && value.length <= 160)) throw new Error("policy_target_identity");
+    for (const value of [target.slug, target.catalogModelId, target.responseModelId, target.lookupModelId, target.providerRoute]) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) || value.split("/").some((/** @type {string} */ part) => part === "" || part === "." || part === "..")) throw new Error("policy_target_unsafe");
     }
     if (/[^\x20-\x7e]/.test(target.providerDisplay)) throw new Error("policy_provider_display_unsafe");
@@ -223,6 +223,7 @@ function parseCampaignPolicy(body) {
     targets.set(target.slug, {
       catalogModelId: target.catalogModelId,
       responseModelId: target.responseModelId,
+      lookupModelId: target.lookupModelId,
       route: target.providerRoute,
       providerDisplay: target.providerDisplay,
       prompt: target.priceCeiling.inputPerMTokens,
@@ -232,7 +233,7 @@ function parseCampaignPolicy(body) {
       seed: target.sampling.seed,
     });
   }
-  for (const field of ["catalogModelId", "responseModelId"]) {
+  for (const field of ["catalogModelId", "responseModelId", "lookupModelId"]) {
     if (new Set(pass.targets.map((/** @type {any} */ target) => target[field])).size !== pass.targets.length) throw new Error(`policy_target_duplicate_${field}`);
   }
   const cells = cellsForPolicy(policy);
@@ -593,7 +594,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
         if (finalData != null) {
           billed = finalData.total_cost;
           require(`cost_value:${runId}`, finiteNonnegative(billed));
-          require(`cost_identity:${runId}`, response != null && finalData.id === response.id && finalData.model === response.model && finalData.provider_name === response.provider);
+          require(`cost_identity:${runId}`, response != null && target != null && finalData.id === response.id && finalData.model === target.lookupModelId && finalData.provider_name === response.provider);
           require(`cost_url:${runId}`, rawPolls.every((/** @type {any} */ poll) => poll.url === `https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(response?.id ?? "")}`));
         }
         require(`record_billed_cost:${runId}`, Object.is(record.billedCostUsd, billed));

@@ -154,8 +154,10 @@ export interface PaidTarget {
   slug: string;
   /** Catalog list id whose canonical_slug must resolve exactly to slug. */
   catalogModelId: string;
-  /** Exact model id expected in response and cost lookup evidence. */
+  /** Exact model id expected in the chat-completions response. */
   responseModelId: string;
+  /** Exact model id expected in the generation cost-lookup response. */
+  lookupModelId: string;
   /** Exact OpenRouter provider route (endpoint tag). Never inferred from the slug. */
   providerRoute: string;
   /** Exact provider display name expected from catalog, response and cost lookup. */
@@ -196,14 +198,14 @@ export interface PaidPassDefinition {
   policyId: string;
 }
 
-export const PAID_CAMPAIGN_POLICY_SCHEMA_VERSION = 1;
-export const PAID_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v1";
+export const PAID_CAMPAIGN_POLICY_SCHEMA_VERSION = 2;
+export const PAID_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v2";
 export const PAID_CAMPAIGN_POLICY_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 const PAID_POLICY_MAX_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
 const PAID_POLICY_MAX_CATALOG_AGE_AT_ISSUE_MS = 24 * 60 * 60 * 1000;
 
 export interface PaidCampaignPolicyDocument {
-  schemaVersion: 1;
+  schemaVersion: 2;
   policyType: typeof PAID_CAMPAIGN_POLICY_TYPE;
   policyId: string;
   issuedAtUtc: string;
@@ -296,13 +298,13 @@ export function parsePaidCampaignPolicy(
 
   if (!Array.isArray(passValue.targets) || passValue.targets.length !== 4) throw new Error("paid campaign must define exactly four targets");
   const targets: PaidTarget[] = passValue.targets.map((raw, index) => {
-    if (!exactObjectKeys(raw, ["slug", "catalogModelId", "responseModelId", "providerRoute", "providerDisplay", "priceCeiling", "sampling"])) {
+    if (!exactObjectKeys(raw, ["slug", "catalogModelId", "responseModelId", "lookupModelId", "providerRoute", "providerDisplay", "priceCeiling", "sampling"])) {
       throw new Error(`paid campaign target ${index} field set mismatch`);
     }
-    for (const field of ["slug", "catalogModelId", "responseModelId", "providerRoute", "providerDisplay"] as const) {
+    for (const field of ["slug", "catalogModelId", "responseModelId", "lookupModelId", "providerRoute", "providerDisplay"] as const) {
       if (typeof raw[field] !== "string" || raw[field].length === 0 || raw[field].length > 160) throw new Error(`paid campaign target ${index} ${field} invalid`);
     }
-    for (const field of ["slug", "catalogModelId", "responseModelId", "providerRoute"] as const) {
+    for (const field of ["slug", "catalogModelId", "responseModelId", "lookupModelId", "providerRoute"] as const) {
       const identifier = raw[field] as string;
       if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(identifier) || identifier.split("/").some((part) => part === "" || part === "." || part === "..")) {
         throw new Error(`paid campaign target ${index} ${field} unsafe`);
@@ -324,13 +326,14 @@ export function parsePaidCampaignPolicy(
       slug: raw.slug as string,
       catalogModelId: raw.catalogModelId as string,
       responseModelId: raw.responseModelId as string,
+      lookupModelId: raw.lookupModelId as string,
       providerRoute: raw.providerRoute as string,
       providerDisplay: raw.providerDisplay as string,
       priceCeiling: raw.priceCeiling as unknown as PriceCeiling,
       sampling: raw.sampling as unknown as PaidSampling,
     };
   });
-  for (const field of ["slug", "catalogModelId", "responseModelId"] as const) {
+  for (const field of ["slug", "catalogModelId", "responseModelId", "lookupModelId"] as const) {
     if (new Set(targets.map((target) => target[field])).size !== targets.length) throw new Error(`paid campaign duplicate target ${field}`);
   }
   const pass: PaidPassDefinition = {
@@ -381,10 +384,10 @@ export const HOSTED_PAID_STAGE_ID = "plinius-qualification-2026-08-22-diagnostic
 // provider route SUPPORTS: an unsupported field is null (never sent), so the request
 // carries no capability-invalid parameter.
 export const HOSTED_PAID_TARGETS: PaidTarget[] = [
-  { slug: "openai/gpt-5.6-sol-pro-20260709", catalogModelId: "openai/gpt-5.6-sol-pro", responseModelId: "openai/gpt-5.6-sol-pro", providerRoute: "openai", providerDisplay: "OpenAI", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 10.0 }, sampling: { temperature: null, topP: null, seed: 1 } },
-  { slug: "anthropic/claude-opus-5-20260723", catalogModelId: "anthropic/claude-opus-5", responseModelId: "anthropic/claude-opus-5", providerRoute: "claude-on-aws", providerDisplay: "Claude Platform on AWS", priceCeiling: { inputPerMTokens: 5.0, outputPerMTokens: 25.0 }, sampling: { temperature: null, topP: null, seed: null } },
-  { slug: "google/gemini-3.7-flash-20260813", catalogModelId: "google/gemini-3.7-flash", responseModelId: "google/gemini-3.7-flash", providerRoute: "google-vertex/global", providerDisplay: "Google", priceCeiling: { inputPerMTokens: 0.75, outputPerMTokens: 3.75 }, sampling: { temperature: null, topP: null, seed: 1 } },
-  { slug: "deepseek/deepseek-v4-flash-20260731", catalogModelId: "deepseek/deepseek-v4-flash-0731", responseModelId: "deepseek/deepseek-v4-flash-0731", providerRoute: "deepinfra/fp8", providerDisplay: "DeepInfra", priceCeiling: { inputPerMTokens: 0.08, outputPerMTokens: 0.18 }, sampling: { temperature: 0, topP: 1, seed: 1 } },
+  { slug: "openai/gpt-5.6-sol-pro-20260709", catalogModelId: "openai/gpt-5.6-sol-pro", responseModelId: "openai/gpt-5.6-sol-pro", lookupModelId: "openai/gpt-5.6-sol-pro-20260709", providerRoute: "openai", providerDisplay: "OpenAI", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 10.0 }, sampling: { temperature: null, topP: null, seed: 1 } },
+  { slug: "anthropic/claude-opus-5-20260723", catalogModelId: "anthropic/claude-opus-5", responseModelId: "anthropic/claude-opus-5", lookupModelId: "anthropic/claude-opus-5-20260723", providerRoute: "claude-on-aws", providerDisplay: "Claude Platform on AWS", priceCeiling: { inputPerMTokens: 5.0, outputPerMTokens: 25.0 }, sampling: { temperature: null, topP: null, seed: null } },
+  { slug: "google/gemini-3.7-flash-20260813", catalogModelId: "google/gemini-3.7-flash", responseModelId: "google/gemini-3.7-flash", lookupModelId: "google/gemini-3.7-flash-20260813", providerRoute: "google-vertex/global", providerDisplay: "Google", priceCeiling: { inputPerMTokens: 0.75, outputPerMTokens: 3.75 }, sampling: { temperature: null, topP: null, seed: 1 } },
+  { slug: "deepseek/deepseek-v4-flash-20260731", catalogModelId: "deepseek/deepseek-v4-flash-0731", responseModelId: "deepseek/deepseek-v4-flash-0731", lookupModelId: "deepseek/deepseek-v4-flash-20260731", providerRoute: "deepinfra/fp8", providerDisplay: "DeepInfra", priceCeiling: { inputPerMTokens: 0.08, outputPerMTokens: 0.18 }, sampling: { temperature: 0, topP: 1, seed: 1 } },
 ];
 
 export const HOSTED_PAID_PASS: PaidPassDefinition = {
@@ -394,7 +397,7 @@ export const HOSTED_PAID_PASS: PaidPassDefinition = {
   budget: { totalCapUsd: 5.0, perRunCapUsd: 1.0 },
   targets: HOSTED_PAID_TARGETS,
   sentinelScope: "global",
-  policyId: "plinius-hosted-paid-2026-08-29-r1",
+  policyId: "plinius-hosted-paid-2026-08-30-r2",
 };
 
 // Candidate Pass — new campaign; four candidate models with frozen Step 2.2 routes
@@ -405,10 +408,10 @@ export const CANDIDATE_PAID_STAGE_ID = "plinius-qualification-2026-08-26-diagnos
 // provider.order carries the OpenRouter provider SLUG (endpoint tag), never a
 // display name: z-ai/fp8, moonshotai/mxfp4, alibaba, anthropic.
 export const CANDIDATE_PAID_TARGETS: PaidTarget[] = [
-  { slug: "z-ai/glm-5.3", catalogModelId: "z-ai/glm-5.3", responseModelId: "z-ai/glm-5.3", providerRoute: "z-ai/fp8", providerDisplay: "Z.AI", priceCeiling: { inputPerMTokens: 1.4, outputPerMTokens: 4.4 }, sampling: { temperature: 0, topP: null, seed: null } },
-  { slug: "moonshotai/kimi-k3", catalogModelId: "moonshotai/kimi-k3", responseModelId: "moonshotai/kimi-k3", providerRoute: "moonshotai/mxfp4", providerDisplay: "Moonshot AI", priceCeiling: { inputPerMTokens: 3.0, outputPerMTokens: 15.0 }, sampling: { temperature: null, topP: null, seed: null } },
-  { slug: "qwen/qwen3.8-max", catalogModelId: "qwen/qwen3.8-max", responseModelId: "qwen/qwen3.8-max", providerRoute: "alibaba", providerDisplay: "Alibaba", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 6.0 }, sampling: { temperature: 0, topP: null, seed: 1 } },
-  { slug: "anthropic/claude-sonnet-5", catalogModelId: "anthropic/claude-sonnet-5", responseModelId: "anthropic/claude-sonnet-5", providerRoute: "anthropic", providerDisplay: "Anthropic", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 10.0 }, sampling: { temperature: null, topP: null, seed: null } },
+  { slug: "z-ai/glm-5.3", catalogModelId: "z-ai/glm-5.3", responseModelId: "z-ai/glm-5.3", lookupModelId: "z-ai/glm-5.3", providerRoute: "z-ai/fp8", providerDisplay: "Z.AI", priceCeiling: { inputPerMTokens: 1.4, outputPerMTokens: 4.4 }, sampling: { temperature: 0, topP: null, seed: null } },
+  { slug: "moonshotai/kimi-k3", catalogModelId: "moonshotai/kimi-k3", responseModelId: "moonshotai/kimi-k3", lookupModelId: "moonshotai/kimi-k3", providerRoute: "moonshotai/mxfp4", providerDisplay: "Moonshot AI", priceCeiling: { inputPerMTokens: 3.0, outputPerMTokens: 15.0 }, sampling: { temperature: null, topP: null, seed: null } },
+  { slug: "qwen/qwen3.8-max", catalogModelId: "qwen/qwen3.8-max", responseModelId: "qwen/qwen3.8-max", lookupModelId: "qwen/qwen3.8-max", providerRoute: "alibaba", providerDisplay: "Alibaba", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 6.0 }, sampling: { temperature: 0, topP: null, seed: 1 } },
+  { slug: "anthropic/claude-sonnet-5", catalogModelId: "anthropic/claude-sonnet-5", responseModelId: "anthropic/claude-sonnet-5", lookupModelId: "anthropic/claude-sonnet-5", providerRoute: "anthropic", providerDisplay: "Anthropic", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 10.0 }, sampling: { temperature: null, topP: null, seed: null } },
 ];
 
 export const CANDIDATE_PAID_PASS: PaidPassDefinition = {
@@ -726,6 +729,8 @@ export interface ExpectedDispatch {
   model: string;
   /** Exact model identity OpenRouter must report for this canonical request. */
   responseModelId: string;
+  /** Exact model identity the generation cost lookup must report. */
+  lookupModelId: string;
   routing: ProviderRouting;
   maxTokens: number;
   temperature: number | null;
@@ -763,12 +768,12 @@ function stableJson(v: unknown): string {
  *   - request: exact URL, POST method, model, provider routing, max_tokens (which
  *     MUST be present in the wire — no fallback), every sampling field, and the
  *     exact messages;
- *   - response: model equals the requested model, generation id present;
+ *   - response: model equals the policy-pinned response identity, generation id present;
  *   - provider provenance: the response provider AND the independent cost-lookup
  *     provider BOTH equal the fixed catalog display name exactly (a "close but
  *     different" provider such as Azure on a DeepInfra route fails);
- *   - lookup identity: model and generation id are PRESENT and agree with the
- *     response (a missing lookup is a failure, never a pass).
+ *   - lookup identity: model equals the independently policy-pinned lookup identity,
+ *     while the generation id agrees with the response (a missing lookup is a failure).
  *
  * Any single mismatch is a reason; the caller fails closed AFTER the billed
  * outcome is durably saved.
@@ -806,9 +811,9 @@ export function verifyPaidDispatch(observed: ObservedDispatch, expected: Expecte
   if (observed.lookupProvider == null || observed.lookupProvider.length === 0) reasons.push("lookup_provider_missing");
   else if (observed.lookupProvider !== expected.providerDisplay) reasons.push(`lookup_provider_mismatch:${observed.lookupProvider}`);
 
-  // Independent cost-lookup identity is REQUIRED and must agree with the response.
+  // Independent cost-lookup model identity is REQUIRED and policy-pinned separately.
   if (observed.lookupModelId == null || observed.lookupModelId.length === 0) reasons.push("lookup_model_missing");
-  else if (observed.lookupModelId !== observed.responseModelId) reasons.push("lookup_model_mismatch");
+  else if (observed.lookupModelId !== expected.lookupModelId) reasons.push(`lookup_model_mismatch:${observed.lookupModelId}`);
   if (observed.lookupGenerationId == null || observed.lookupGenerationId.length === 0) reasons.push("lookup_generation_id_missing");
   else if (observed.lookupGenerationId !== observed.responseGenerationId) reasons.push("lookup_generation_id_mismatch");
 
