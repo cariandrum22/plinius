@@ -191,6 +191,10 @@ test "$(stat -c '%u' "$SECRET_FILE")" = "$(id -u)"
 test "$(stat -c '%a' "$SECRET_FILE")" = '600'
 test "$(stat -c '%h' "$SECRET_FILE")" = '1'
 
+# The file must contain only the 73-byte OpenRouter key. A dotenv assignment
+# such as OPENROUTER_API_KEY=... is prohibited and will be rejected by the engine.
+test "$(wc -c < "$SECRET_FILE")" -eq 73 -o "$(wc -c < "$SECRET_FILE")" -eq 74
+
 export CONTINUATION_OUTPUT_ROOT PARENT_EVIDENCE_ROOT PARENT_BUNDLE_PATH
 export PLINIUS_DRIVER_MODE="$MODE"
 unset CONTINUATION_RESUME PLINIUS_LOCAL_BINDING_DIR OPENROUTER_API_KEY

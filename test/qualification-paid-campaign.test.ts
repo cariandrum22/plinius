@@ -73,7 +73,7 @@ import type {
   PaidManifestRef,
 } from "../src/qualification/paid-campaign.js";
 
-import { dispatchViaBackend, preparePaidBootstrap, runPaidPass, paidPlanCell, verifyPaidCatalog, resolveDriverMode, generationCost, copyPaidAnchorsIntoRoot } from "../qualification-driver.mjs";
+import { dispatchViaBackend, preparePaidBootstrap, runPaidPass, paidPlanCell, verifyPaidCatalog, resolveDriverMode, generationCost, copyPaidAnchorsIntoRoot, validatePaidOpenRouterCredential } from "../qualification-driver.mjs";
 import type { PaidCellPlan } from "../qualification-driver.mjs";
 import type { FetchFn } from "../src/backends/openai-compatible.js";
 
@@ -112,8 +112,12 @@ function wirePreimage(obj: unknown) {
   return { encoding: "base64" as const, base64: bytes.toString("base64"), sha256: "sha256:" + createHash("sha256").update(bytes).digest("hex"), bytes: bytes.byteLength };
 }
 
-function mockFetch(model: string): { fn: FetchFn; calls: Array<{ url: string; body: unknown }> } {
-  const calls: Array<{ url: string; body: unknown }> = [];
+function validOpenRouterKey(): string {
+  return `sk-or-v1-${"a".repeat(64)}`;
+}
+
+function mockFetch(model: string): { fn: FetchFn; calls: Array<{ url: string; body: unknown; headers: Record<string, string> }> } {
+  const calls: Array<{ url: string; body: unknown; headers: Record<string, string> }> = [];
   const fn: FetchFn = async (url, init) => {
     let body: unknown = null;
     try {
@@ -121,7 +125,7 @@ function mockFetch(model: string): { fn: FetchFn; calls: Array<{ url: string; bo
     } catch {
       body = init?.body ?? null;
     }
-    calls.push({ url: String(url), body });
+    calls.push({ url: String(url), body, headers: Object.fromEntries(new Headers(init?.headers).entries()) });
     const payload = { id: "gen-mock-1", model, provider: DISPLAY, choices: [{ finish_reason: "stop", message: { role: "assistant", content: "FINAL ANSWER" } }], usage: {} };
     return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
   };
@@ -1065,15 +1069,26 @@ describe("dispatch adapter provider routing in the wire", () => {
   const routing = buildProviderRouting(target);
   it("serializes exact provider routing into the wire for a paid request", async () => {
     const { fn, calls } = mockFetch(target.slug);
-    const facts = await dispatchViaBackend({ backendId: "openrouter", baseUrl: OR_BASE, timeoutMs: 5000, isHosted: true, req: { model: target.slug, maxTokens: 1024, temperature: null, topP: null, seed: 1, providerRouting: routing }, messages: [{ role: "user", content: "hi" }], fetchFn: fn });
+    const facts = await dispatchViaBackend({ backendId: "openrouter", baseUrl: OR_BASE, apiKey: validOpenRouterKey(), requirePaidCredential: true, timeoutMs: 5000, isHosted: true, req: { model: target.slug, maxTokens: 1024, temperature: null, topP: null, seed: 1, providerRouting: routing }, messages: [{ role: "user", content: "hi" }], fetchFn: fn });
     expect((calls[0].body as Record<string, unknown>).provider).toEqual(serializeProviderRouting(routing));
     expect(providerRoutingEqual(facts.requestSent.providerRouting!, routing)).toBe(true);
   });
+  it("forwards the validated credential as an Authorization bearer header", async () => {
+    const key = validOpenRouterKey();
+    const { fn, calls } = mockFetch(target.slug);
+    await dispatchViaBackend({ backendId: "openrouter", baseUrl: OR_BASE, apiKey: key, requirePaidCredential: true, timeoutMs: 5000, isHosted: true, req: { model: target.slug, maxTokens: 1024, temperature: null, topP: null, seed: 1, providerRouting: routing }, messages: [{ role: "user", content: "hi" }], fetchFn: fn });
+    expect(calls[0].headers.authorization).toBe(`Bearer ${key}`);
+  });
   it("REGRESSION: a non-paid request carries no provider field", async () => {
     const { fn, calls } = mockFetch(target.slug);
-    const facts = await dispatchViaBackend({ backendId: "openrouter", baseUrl: OR_BASE, timeoutMs: 5000, isHosted: true, req: { model: target.slug, maxTokens: 1024, temperature: 0, topP: 1, seed: 1 }, messages: [{ role: "user", content: "hi" }], fetchFn: fn });
+    const facts = await dispatchViaBackend({ backendId: "openrouter", baseUrl: OR_BASE, apiKey: validOpenRouterKey(), timeoutMs: 5000, isHosted: true, req: { model: target.slug, maxTokens: 1024, temperature: 0, topP: 1, seed: 1 }, messages: [{ role: "user", content: "hi" }], fetchFn: fn });
     expect((calls[0].body as Record<string, unknown>).provider).toBeUndefined();
     expect(facts.requestSent.providerRouting).toBeUndefined();
+  });
+  it("rejects a dotenv assignment at the dispatch boundary without calling fetch", async () => {
+    const { fn, calls } = mockFetch(target.slug);
+    await expect(dispatchViaBackend({ backendId: "openrouter", baseUrl: OR_BASE, apiKey: `OPENROUTER_API_KEY=${validOpenRouterKey()}`, requirePaidCredential: true, timeoutMs: 5000, isHosted: true, req: { model: target.slug, maxTokens: 1024, temperature: null, topP: null, seed: 1, providerRouting: routing }, messages: [{ role: "user", content: "hi" }], fetchFn: fn })).rejects.toThrow(/one key only/);
+    expect(calls).toHaveLength(0);
   });
 });
 
@@ -1081,10 +1096,19 @@ describe("dispatch adapter provider routing in the wire", () => {
 
 describe("credential ordering — key read last, gates required", () => {
   it("reads the key only after every gate passes", async () => {
-    const { deps, reads } = bootDeps("diagnostic-hosted-paid-r1", { CONTINUATION_OUTPUT_ROOT: "/x", OPENROUTER_API_KEY: "sk-or-secret" });
+    const key = validOpenRouterKey();
+    const { deps, reads } = bootDeps("diagnostic-hosted-paid-r1", { CONTINUATION_OUTPUT_ROOT: "/x", OPENROUTER_API_KEY: key });
     const boot = await preparePaidBootstrap(deps as any);
-    expect(boot.orKey).toBe("sk-or-secret");
+    expect(boot.orKey).toBe(key);
     expect(reads.indexOf("OPENROUTER_API_KEY")).toBeGreaterThan(reads.indexOf("CONTINUATION_OUTPUT_ROOT"));
+  });
+  it("rejects assignment-file, whitespace, and malformed credentials before dispatch", async () => {
+    const key = validOpenRouterKey();
+    for (const value of [`OPENROUTER_API_KEY=${key}`, `${key}\n`, ` ${key}`, "sk-or-secret"]) {
+      expect(() => validatePaidOpenRouterCredential(value)).toThrow(/one key only/);
+      const { deps } = bootDeps("diagnostic-hosted-paid-r1", { CONTINUATION_OUTPUT_ROOT: "/x", OPENROUTER_API_KEY: value });
+      await expect(preparePaidBootstrap(deps as any)).rejects.toThrow(/one key only/);
+    }
   });
   it("does NOT read the key when the catalog preflight fails", async () => {
     const { deps, reads } = bootDeps("diagnostic-hosted-paid-r1", { CONTINUATION_OUTPUT_ROOT: "/x", OPENROUTER_API_KEY: "sk" }, {

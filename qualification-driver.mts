@@ -1914,6 +1914,8 @@ export interface DispatchArgs {
   backendId: string;
   baseUrl: string;
   apiKey?: string;
+  /** Paid production calls require strict key-only validation at this boundary. */
+  requirePaidCredential?: boolean;
   timeoutMs: number;
   isHosted: boolean;
   req: RequestBody;
@@ -1934,6 +1936,19 @@ export interface DispatchArgs {
    * a billed request/response. Non-paid callers omit it and are unaffected.
    */
   onWire?: (ev: PaidWireEvent) => void;
+}
+
+const OPENROUTER_PAID_KEY_PATTERN = /^sk-or-v1-[A-Za-z0-9_-]{64}$/;
+
+/**
+ * Accept only the key itself. In particular, reject dotenv-style
+ * `OPENROUTER_API_KEY=...` files before a provider request can be attempted.
+ */
+export function validatePaidOpenRouterCredential(value: string): string {
+  if (!OPENROUTER_PAID_KEY_PATTERN.test(value)) {
+    throw new Error("OPENROUTER_API_KEY must contain one key only (no variable name, whitespace, or newline)");
+  }
+  return value;
 }
 
 /**
@@ -1992,7 +2007,7 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
   const backend = new OpenAICompatibleBackend({
     id: args.backendId,
     baseUrl: args.baseUrl,
-    apiKey: args.apiKey,
+    apiKey: args.requirePaidCredential ? validatePaidOpenRouterCredential(args.apiKey ?? "") : args.apiKey,
     timeoutMs: args.timeoutMs,
     fetchFn: capturing,
   });
@@ -2903,7 +2918,7 @@ export async function preparePaidBootstrap(deps: PaidBootstrapDeps): Promise<Pai
   if (!preflight.ok) throw new Error(`catalog preflight failed: ${preflight.reasons.join(",")}`);
 
   // Deliberately last: an invalid gate above cannot reach this credential read.
-  const orKey = required("OPENROUTER_API_KEY");
+  const orKey = validatePaidOpenRouterCredential(required("OPENROUTER_API_KEY"));
   return { pass, cells, outputRoot, preflight, lock, catalogArtifactRef, executionAttestationRef, anchors, parentInputExpectedSha256, orKey };
 }
 
@@ -3577,6 +3592,7 @@ async function paidMain(
         onWire,
         baseUrl: OR_BASE,
         apiKey: boot.orKey,
+        requirePaidCredential: true,
         timeoutMs: PAID_TIMEOUT_MS,
         isHosted: true,
         req,
