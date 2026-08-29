@@ -106,7 +106,7 @@ import {
   serializeProviderRouting,
   parseProviderRoutingWire,
   buildProviderRouting,
-  paidPassFor,
+  parsePaidCampaignPolicy,
   paidUsedParams,
   paidCellMaxTokens,
   estimateCellCeilingUsd,
@@ -2525,7 +2525,7 @@ async function oneShotMain() {
   );
 }
 
-// --- paid passes (Paid Pass r1) ---------------------------------------------
+// --- policy-driven paid passes -----------------------------------------------
 
 const PAID_TIMEOUT_MS = 600_000;
 
@@ -2709,6 +2709,8 @@ export function verifyPaidCatalog(
 export interface CopiedAnchorRefs {
   executionManifestRef: PaidManifestRef | null;
   executionSignatureRef: PaidManifestRef | null;
+  campaignPolicyRef: PaidManifestRef | null;
+  campaignPolicySignatureRef: PaidManifestRef | null;
   parentInputRefs: PaidManifestRef[];
 }
 
@@ -2726,9 +2728,13 @@ export function copyPaidAnchorsIntoRoot(
   spec: {
     executionManifestPath?: string;
     executionSignaturePath?: string;
+    campaignPolicyPath?: string;
+    campaignPolicySignaturePath?: string;
     parentInputPaths?: string[];
     expectedManifestSha256: string | null;
     expectedSignatureSha256: string | null;
+    expectedCampaignPolicySha256?: string | null;
+    expectedCampaignPolicySignatureSha256?: string | null;
     parentExpectedSha256?: string[];
   },
 ): CopiedAnchorRefs {
@@ -2746,6 +2752,8 @@ export function copyPaidAnchorsIntoRoot(
   return {
     executionManifestRef: spec.executionManifestPath ? copy("paid-execution-manifest", spec.executionManifestPath, spec.expectedManifestSha256) : null,
     executionSignatureRef: spec.executionSignaturePath ? copy("paid-execution-signature", spec.executionSignaturePath, spec.expectedSignatureSha256) : null,
+    campaignPolicyRef: spec.campaignPolicyPath ? copy("paid-campaign-policy", spec.campaignPolicyPath, spec.expectedCampaignPolicySha256 ?? null) : null,
+    campaignPolicySignatureRef: spec.campaignPolicySignaturePath ? copy("paid-campaign-policy-signature", spec.campaignPolicySignaturePath, spec.expectedCampaignPolicySignatureSha256 ?? null) : null,
     parentInputRefs: (spec.parentInputPaths ?? []).map((p, i) => copy(`paid-parent-input-${i}`, p, spec.parentExpectedSha256?.[i] ?? null)),
   };
 }
@@ -2759,6 +2767,9 @@ export function copyPaidAnchorsIntoRoot(
  */
 export interface PaidBootstrapDeps {
   mode: PaidPassDefinition["mode"];
+  /** Signed policy parsed from launcher-retained bytes. Production must supply it. */
+  pass: PaidPassDefinition;
+  cells: PaidCell[];
   readEnv?: (name: string) => string | undefined;
   /** Gate 1 — Fable/launcher-verified execution package. Returns the execution
    * attestation (VALIDSIG fingerprint + manifest/signature/runner digests) so
@@ -2779,6 +2790,10 @@ export interface PaidBootstrapDeps {
   /** External anchor paths, COPIED into the root before the credential read (F04). */
   executionManifestPath?: string;
   executionSignaturePath?: string;
+  campaignPolicyPath?: string;
+  campaignPolicySignaturePath?: string;
+  campaignPolicySha256?: string;
+  campaignPolicySignatureSha256?: string;
   parentInputPaths?: string[];
   /** Pinned expected SHA-256 of each parent input, same order as parentInputPaths. */
   parentInputExpectedSha256?: string[];
@@ -2827,7 +2842,8 @@ export async function preparePaidBootstrap(deps: PaidBootstrapDeps): Promise<Pai
   if (readEnv("CONTINUATION_RESUME") !== undefined) throw new Error("CONTINUATION_RESUME is prohibited in paid passes");
   if (readEnv("PLINIUS_LOCAL_BINDING_DIR") !== undefined) throw new Error("PLINIUS_LOCAL_BINDING_DIR is prohibited in paid passes");
 
-  const { pass, cells } = paidPassFor(deps.mode);
+  const { pass, cells } = deps;
+  if (pass.mode !== deps.mode) throw new Error("paid campaign policy mode mismatch");
   const outputRoot = required("CONTINUATION_OUTPUT_ROOT");
 
   const src = deps.verifyExecution();
@@ -2878,12 +2894,16 @@ export async function preparePaidBootstrap(deps: PaidBootstrapDeps): Promise<Pai
     ? copyPaidAnchorsIntoRoot(lock, outputRoot, {
         executionManifestPath: deps.executionManifestPath,
         executionSignaturePath: deps.executionSignaturePath,
+        campaignPolicyPath: deps.campaignPolicyPath,
+        campaignPolicySignaturePath: deps.campaignPolicySignaturePath,
         parentInputPaths: deps.parentInputPaths,
         expectedManifestSha256: typeof att.manifestSha256 === "string" ? (att.manifestSha256 as string) : null,
         expectedSignatureSha256: typeof att.signatureSha256 === "string" ? (att.signatureSha256 as string) : null,
+        expectedCampaignPolicySha256: deps.campaignPolicySha256 ?? null,
+        expectedCampaignPolicySignatureSha256: deps.campaignPolicySignatureSha256 ?? null,
         parentExpectedSha256: parentInputExpectedSha256,
       })
-    : { executionManifestRef: null, executionSignatureRef: null, parentInputRefs: [] };
+    : { executionManifestRef: null, executionSignatureRef: null, campaignPolicyRef: null, campaignPolicySignatureRef: null, parentInputRefs: [] };
   if (!preflight.ok) throw new Error(`catalog preflight failed: ${preflight.reasons.join(",")}`);
 
   // Deliberately last: an invalid gate above cannot reach this credential read.
@@ -3149,7 +3169,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       // response headline FROM THE RESPONSE WIRE BYTES (deriveResponseOutcome inside
       // buildQualificationAttempt) — never from the adapter's returned facts.
       const dispatchCheck = verifyPaidDispatch(rederive.observed, {
-        requestUrl: `${OR_BASE}/chat/completions`, model: plan.target.slug, routing, maxTokens: plan.maxTokens,
+        requestUrl: `${OR_BASE}/chat/completions`, model: plan.target.slug, responseModelId: plan.target.responseModelId, routing, maxTokens: plan.maxTokens,
         temperature: plan.target.sampling.temperature, topP: plan.target.sampling.topP, seed: plan.target.sampling.seed,
         messages: plan.messages, providerDisplay: opts.providerDisplay[plan.target.slug] ?? "", costLookupBaseUrl: OR_BASE,
       });
@@ -3241,6 +3261,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       spentUsd,
       costCoverage,
       budget: opts.pass.budget,
+      policyId: opts.pass.policyId,
       skippedGroups: [...skippedGroups],
     };
     const summaryHandle = finalizeCA(opts.outputRoot, `paid-pass-summary`, JSON.stringify(summary, null, 2));
@@ -3259,11 +3280,13 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
     // (G) BIND the anchors the bootstrap ALREADY copied into the root BEFORE the credential
     // read (C1-PAID-R7-F04) — no copy (and therefore no TOCTOU discovery) happens here,
     // after the billed dispatch. Each ref is RELATIVE to the output root.
-    const anchors = opts.anchors ?? { executionManifestRef: null, executionSignatureRef: null, parentInputRefs: [] };
+    const anchors = opts.anchors ?? { executionManifestRef: null, executionSignatureRef: null, campaignPolicyRef: null, campaignPolicySignatureRef: null, parentInputRefs: [] };
     const binding: PaidBindingManifest = {
       executionManifest: anchors.executionManifestRef,
       executionSignature: anchors.executionSignatureRef,
       executionAttestation: opts.executionAttestationRef ?? null,
+      campaignPolicy: anchors.campaignPolicyRef,
+      campaignPolicySignature: anchors.campaignPolicySignatureRef,
       parentInputs: anchors.parentInputRefs,
       catalogArtifact: opts.catalogArtifactRef ?? null,
       rawObservations: rawObsRefs,
@@ -3273,9 +3296,10 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       summary: { file: summaryHandle.file, sha256: summaryHandle.sha256, bytes: summaryHandle.bytes },
     };
     const candidateManifest = {
-      manifestSchemaVersion: 5,
+      manifestSchemaVersion: 6,
       campaignId: opts.pass.campaignId,
       stageId: opts.pass.stageId,
+      policyId: opts.pass.policyId,
       ...binding,
     };
 
@@ -3317,7 +3341,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       diskFiles: diskFilesAcc,
       statFile: statForVerify,
       executingUid: typeof process.getuid === "function" ? process.getuid() : undefined,
-      expectedSchemaVersion: 5,
+      expectedSchemaVersion: 6,
       expectedCampaignId: opts.pass.campaignId,
       expectedStageId: opts.pass.stageId,
     });
@@ -3351,6 +3375,8 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
     const expSignatureSha = typeof attObj?.signatureSha256 === "string" ? (attObj.signatureSha256 as string) : null;
     if (innerShaOfEnvelope(candidateManifest.executionManifest) !== expManifestSha) crossReasons.push("execution_manifest_inner_digest");
     if (innerShaOfEnvelope(candidateManifest.executionSignature) !== expSignatureSha) crossReasons.push("execution_signature_inner_digest");
+    if (innerShaOfEnvelope(candidateManifest.campaignPolicy) !== (attObj?.campaignPolicySha256 ?? null)) crossReasons.push("campaign_policy_inner_digest");
+    if (innerShaOfEnvelope(candidateManifest.campaignPolicySignature) !== (attObj?.campaignPolicySignatureSha256 ?? null)) crossReasons.push("campaign_policy_signature_inner_digest");
     const parentExpected = opts.parentInputExpectedSha256 ?? [];
     const parentRefs = candidateManifest.parentInputs ?? [];
     if (parentRefs.length !== parentExpected.length) crossReasons.push(`parent_input_count_vs_expected:${parentRefs.length}/${parentExpected.length}`);
@@ -3419,6 +3445,9 @@ async function paidMain(
   launchGrant: PaidLaunchGrant,
   executionManifest: PaidExecutionManifest,
 ): Promise<void> {
+  const policyBytes = Buffer.from(launchGrant.campaignPolicyBase64, "base64");
+  const loadedPolicy = parsePaidCampaignPolicy(policyBytes, mode, new Date().toISOString());
+  if (loadedPolicy.sha256 !== launchGrant.campaignPolicySha256) throw new Error("campaign policy retained-byte digest mismatch");
   // Anchor paths + pinned parent digests are handed to the bootstrap so it copies and
   // digest-verifies them before the credential read.
   const parentRoot = process.env.PARENT_EVIDENCE_ROOT ?? "";
@@ -3435,8 +3464,14 @@ async function paidMain(
   ];
   const boot = await preparePaidBootstrap({
     mode,
+    pass: loadedPolicy.pass,
+    cells: loadedPolicy.cells,
     executionManifestPath: manifestPath,
     executionSignaturePath: launchGrant.executionSignaturePath,
+    campaignPolicyPath: launchGrant.campaignPolicyPath,
+    campaignPolicySignaturePath: launchGrant.campaignPolicySignaturePath,
+    campaignPolicySha256: launchGrant.campaignPolicySha256,
+    campaignPolicySignatureSha256: launchGrant.campaignPolicySignatureSha256,
     parentInputPaths,
     parentInputExpectedSha256,
     // Gate 1 — the Fable-verified launcher and fresh in-bundle observation already
@@ -3459,6 +3494,10 @@ async function paidMain(
         launcherSha256: launchGrant.launcherSha256,
         runnerSha256: launchGrant.runnerSha256,
         launchGrantSchemaVersion: launchGrant.schemaVersion,
+        campaignPolicyId: loadedPolicy.pass.policyId,
+        campaignPolicySha256: launchGrant.campaignPolicySha256,
+        campaignPolicySignatureSha256: launchGrant.campaignPolicySignatureSha256,
+        campaignPolicySignerFingerprint: launchGrant.campaignPolicySignerFingerprint,
       },
     }),
     // Gates 2-3 — parent Evidence bundle + frozen definition + historical run.
@@ -3507,6 +3546,7 @@ async function paidMain(
         {
           campaignId: pass.campaignId,
           stageId: pass.stageId,
+          policyId: pass.policyId,
           catalogEvidence: rawEvidence,
           verification: verified.perTarget,
           providerDisplay: verified.providerDisplay,
@@ -3626,13 +3666,13 @@ async function fetchPaidCatalog(pass: PaidPassDefinition): Promise<{ catalog: Ma
   };
 
   const models = ((await fetchRaw(`${OR_BASE}/models`)).json ?? {}) as { data?: Array<{ id?: string; canonical_slug?: string }> };
-  const byId = new Map((models.data ?? []).filter((m): m is { id: string; canonical_slug?: string } => typeof m.id === "string").map((m) => [m.id, m]));
   for (const target of pass.targets) {
-    const model = byId.get(target.slug);
-    if (!model) {
-      out.set(target.slug, { id: target.slug, endpoints: [] });
-      continue;
-    }
+    const matchingModels = (models.data ?? []).filter(
+      (model): model is { id: string; canonical_slug?: string } =>
+        typeof model.id === "string" && model.id === target.catalogModelId &&
+        (model.canonical_slug ?? model.id) === target.slug,
+    );
+    const model = matchingModels.length === 1 ? matchingModels[0] : undefined;
     const epJson = ((await fetchRaw(`${OR_BASE}/models/${target.slug}/endpoints`)).json ?? {}) as {
       data?: { endpoints?: Array<Record<string, unknown>> };
     };
@@ -3652,8 +3692,10 @@ async function fetchPaidCatalog(pass: PaidPassDefinition): Promise<{ catalog: Ma
       };
     });
     out.set(target.slug, {
-      id: model.id,
-      isAlias: typeof model.canonical_slug === "string" && model.canonical_slug !== model.id,
+      id: target.slug,
+      catalogModelId: model?.id ?? "",
+      canonicalSlug: model?.canonical_slug ?? model?.id ?? "",
+      isAlias: model == null || (model.canonical_slug ?? model.id) !== target.slug,
       endpoints,
     });
   }

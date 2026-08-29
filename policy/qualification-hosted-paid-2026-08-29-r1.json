@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "policyType": "plinius-paid-campaign-policy-v1",
+  "policyId": "plinius-hosted-paid-2026-08-29-r1",
+  "issuedAtUtc": "2026-08-29T02:30:00Z",
+  "catalogObservedAtUtc": "2026-08-29T02:25:00Z",
+  "expiresAtUtc": "2026-09-05T02:30:00Z",
+  "requiredSignerFingerprint": "435C9CF0DE7A2C3900FB24357E622B43290C285E",
+  "pass": {
+    "mode": "diagnostic-hosted-paid-r1",
+    "campaignId": "plinius-qualification-2026-08-22-v1",
+    "stageId": "plinius-qualification-2026-08-29-diagnostic-hosted-paid-r2",
+    "budget": {
+      "totalCapUsd": 5,
+      "perRunCapUsd": 1
+    },
+    "targets": [
+      {
+        "slug": "openai/gpt-5.6-sol-pro-20260709",
+        "catalogModelId": "openai/gpt-5.6-sol-pro",
+        "responseModelId": "openai/gpt-5.6-sol-pro",
+        "providerRoute": "openai",
+        "providerDisplay": "OpenAI",
+        "priceCeiling": {
+          "inputPerMTokens": 2,
+          "outputPerMTokens": 10
+        },
+        "sampling": {
+          "temperature": null,
+          "topP": null,
+          "seed": 1
+        }
+      },
+      {
+        "slug": "anthropic/claude-opus-5-20260723",
+        "catalogModelId": "anthropic/claude-opus-5",
+        "responseModelId": "anthropic/claude-opus-5",
+        "providerRoute": "claude-on-aws",
+        "providerDisplay": "Claude Platform on AWS",
+        "priceCeiling": {
+          "inputPerMTokens": 5,
+          "outputPerMTokens": 25
+        },
+        "sampling": {
+          "temperature": null,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "google/gemini-3.7-flash-20260813",
+        "catalogModelId": "google/gemini-3.7-flash",
+        "responseModelId": "google/gemini-3.7-flash",
+        "providerRoute": "google-vertex/global",
+        "providerDisplay": "Google",
+        "priceCeiling": {
+          "inputPerMTokens": 0.75,
+          "outputPerMTokens": 3.75
+        },
+        "sampling": {
+          "temperature": null,
+          "topP": null,
+          "seed": 1
+        }
+      },
+      {
+        "slug": "deepseek/deepseek-v4-flash-20260731",
+        "catalogModelId": "deepseek/deepseek-v4-flash-0731",
+        "responseModelId": "deepseek/deepseek-v4-flash-0731",
+        "providerRoute": "deepinfra/fp8",
+        "providerDisplay": "DeepInfra",
+        "priceCeiling": {
+          "inputPerMTokens": 0.08,
+          "outputPerMTokens": 0.18
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": 1,
+          "seed": 1
+        }
+      }
+    ],
+    "sentinelScope": "global"
+  }
+}

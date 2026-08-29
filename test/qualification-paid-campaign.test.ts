@@ -1,10 +1,11 @@
 /**
- * Partitioned hosted paid passes — production-path tests (Paid Pass v2).
+ * Partitioned hosted paid passes — production-path tests (Paid Pass v3).
  *
- * v2 packages a dependency-free launcher, one bundled driver, benchmark assets and an
- * independent Mac verifier under one signed execution manifest. Ubuntu never loads the
- * source tree, package manager, tsx or node_modules. Anchor copy remains before the key,
- * while all seal checks now precede creation of the final Evidence manifest.
+ * v3 packages a stable dependency-free launcher, one bundled driver, benchmark assets and
+ * an independent Mac verifier under one signed execution manifest. A separately signed,
+ * short-lived policy pins the mutable model catalog. Ubuntu never loads the source tree,
+ * package manager, tsx or node_modules. Anchor copy remains before the key, while all seal
+ * checks precede creation of the final Evidence manifest.
  *
  * Drives the real production code: the pure paid-campaign module (routing, catalog
  * verification, budget, actual-cost, from-bytes re-derivation with the EXACT request
@@ -19,10 +20,10 @@
  * no credential.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtemp, rm, readFile, readdir, stat, writeFile, mkdir, chmod } from "fs/promises";
+import { mkdtemp, rm, readFile, readdir, realpath, stat, writeFile, mkdir, chmod, symlink } from "fs/promises";
 import { createHash } from "crypto";
 import { tmpdir } from "os";
-import { join } from "path";
+import { basename, join } from "path";
 
 import { acquireInvocationLock, finalizeArtifact } from "../src/continuation/journal.js";
 import {
@@ -31,7 +32,7 @@ import {
   PAID_ARTIFACT_TYPE,
 } from "../src/qualification/paid-artifact.js";
 import type { PaidExecutionManifest, PaidLaunchGrant, PaidLaunchObservation } from "../src/qualification/paid-artifact.js";
-import { createLaunchGrant, loadVerifiedRunner, verifyExecutionPackage } from "../qualification-paid-launch.mjs";
+import { createLaunchGrant, loadVerifiedRunner, verifyCampaignPolicy, verifyExecutionPackage } from "../qualification-paid-launch.mjs";
 import { verifyPaidEvidence } from "../qualification-paid-verify.mjs";
 
 import {
@@ -58,6 +59,8 @@ import {
   estimateCellCeilingUsd,
   checkBudgetBeforeDispatch,
   OIDC_BENCHMARK_ID,
+  parsePaidCampaignPolicy,
+  PAID_CAMPAIGN_POLICY_SIGNER,
 } from "../src/qualification/paid-campaign.js";
 import type {
   CatalogModelInfo,
@@ -83,10 +86,12 @@ const DISPLAY = "TestProvider";
 function goodModel(target: PaidTarget): CatalogModelInfo {
   return {
     id: target.slug,
+    catalogModelId: target.catalogModelId,
+    canonicalSlug: target.slug,
     endpoints: [
       {
         tag: target.providerRoute,
-        providerName: DISPLAY,
+        providerName: target.providerDisplay,
         pricing: {
           prompt: (target.priceCeiling.inputPerMTokens / 1_000_000).toString(),
           completion: (target.priceCeiling.outputPerMTokens / 1_000_000).toString(),
@@ -99,7 +104,7 @@ function goodModel(target: PaidTarget): CatalogModelInfo {
   };
 }
 const goodCatalog = (targets: PaidTarget[]) => new Map(targets.map((t) => [t.slug, goodModel(t)]));
-const displayMap = (targets: PaidTarget[]) => Object.fromEntries(targets.map((t) => [t.slug, DISPLAY]));
+const displayMap = (targets: PaidTarget[]) => Object.fromEntries(targets.map((t) => [t.slug, t.providerDisplay]));
 const promptMap = (cells: { benchmark: string }[]) => new Map(cells.map((c) => [c.benchmark, 1000]));
 
 function wirePreimage(obj: unknown) {
@@ -133,7 +138,8 @@ function factsFor(
   const ok = opts.ok ?? true;
   const routing = opts.routing === undefined ? buildProviderRouting(plan.target) : opts.routing;
   const model = opts.model ?? plan.target.slug;
-  const display = opts.display ?? DISPLAY;
+  const responseModel = opts.model ?? plan.target.responseModelId;
+  const display = opts.display ?? plan.target.providerDisplay;
   const cost = opts.costUsd === undefined ? 0.01 : opts.costUsd;
   const s = plan.target.sampling;
   // Mirror the real OpenAI-compatible backend EXACTLY: model / messages / stream:false /
@@ -149,8 +155,8 @@ function factsFor(
     ...(routing ? { provider: serializeProviderRouting(routing) } : {}),
   };
   const genId = opts.genId ?? "gen-x";
-  const responseBody = { id: genId, model, provider: display, choices: [{ finish_reason: ok ? "stop" : "content_filter", message: { role: "assistant", content: ok ? "FINAL ANSWER" : "" } }], usage: {} };
-  const lookupBody = { data: { id: genId, model, provider_name: display, total_cost: cost } };
+  const responseBody = { id: genId, model: responseModel, provider: display, choices: [{ finish_reason: ok ? "stop" : "content_filter", message: { role: "assistant", content: ok ? "FINAL ANSWER" : "" } }], usage: {} };
+  const lookupBody = { data: { id: genId, model: responseModel, provider_name: display, total_cost: cost } };
   const reqPre = wirePreimage(sentBody);
   const resPre = wirePreimage(responseBody);
   const lookupPre = wirePreimage(lookupBody);
@@ -171,10 +177,10 @@ function factsFor(
     costLookupWireSha256: lookupPre.sha256,
     requestUrl: url,
     requestMethod: "POST",
-    responseModelId: model,
+    responseModelId: responseModel,
     responseGenerationId: "gen-x",
     responseProvider: display,
-    generationLookupModelId: model,
+    generationLookupModelId: responseModel,
     generationLookupGenerationId: "gen-x",
     generationLookupProvider: display,
     wire: {
@@ -236,6 +242,9 @@ function bootDeps(mode: any, values: Record<string, string | undefined>, over: R
   };
   const deps = {
     mode,
+    ...(mode === "diagnostic-hosted-paid-r1"
+      ? { pass: HOSTED_PAID_PASS, cells: buildHostedPaidCells(HOSTED_PAID_TARGETS) }
+      : { pass: CANDIDATE_PAID_PASS, cells: buildCandidatePaidCells(CANDIDATE_PAID_TARGETS) }),
     readEnv,
     verifyExecution: () => ({ ok: true, reasons: [] }),
     verifyParentEvidence: () => ({ ok: true, details: [] }),
@@ -260,8 +269,8 @@ let anchorPaths: { executionManifestPath: string; executionSignaturePath: string
 const launcherSha = "sha256:" + "1".repeat(64);
 const runnerSha = "sha256:" + "2".repeat(64);
 beforeAll(async () => {
-  outRoot = await mkdtemp(join(tmpdir(), "plinius-paid-"));
-  anchorDir = await mkdtemp(join(tmpdir(), "plinius-anchors-"));
+  outRoot = await realpath(await mkdtemp(join(tmpdir(), "plinius-paid-")));
+  anchorDir = await realpath(await mkdtemp(join(tmpdir(), "plinius-anchors-")));
   const w = async (name: string, body: string) => {
     const p = join(anchorDir, name);
     await writeFile(p, body, { mode: 0o600 });
@@ -269,7 +278,7 @@ beforeAll(async () => {
   };
   const executionManifest = {
     schemaVersion: 1,
-    artifactType: "plinius-paid-pass-v2",
+    artifactType: "plinius-paid-pass-v3",
     createdAtUtc: "2026-08-28T00:00:00Z",
     source: { commit: "a".repeat(40), tree: "b".repeat(40) },
     requiredSignerFingerprint: PAID_ARTIFACT_PINNED_SIGNER,
@@ -297,6 +306,20 @@ const freshRoot = (name: string) => join(outRoot, name);
 const sha256Hex = (body: string) => createHash("sha256").update(Buffer.from(body, "utf-8")).digest("hex");
 const fileSha = async (p: string) => "sha256:" + createHash("sha256").update(await readFile(p)).digest("hex");
 
+function policyBodyFor(pass: any): string {
+  const { policyId, ...unsignedPass } = pass;
+  return `${JSON.stringify({
+    schemaVersion: 1,
+    policyType: "plinius-paid-campaign-policy-v1",
+    policyId,
+    issuedAtUtc: "2026-08-28T00:00:00Z",
+    catalogObservedAtUtc: "2026-08-28T00:00:00Z",
+    expiresAtUtc: "2026-09-04T00:00:00Z",
+    requiredSignerFingerprint: PAID_CAMPAIGN_POLICY_SIGNER,
+    pass: unsignedPass,
+  }, null, 2)}\n`;
+}
+
 // Mirror the production bootstrap: acquire a lock on a fresh root, finalize the catalog +
 // the campaign/stage-bound source attestation in-root, and hand runPaidPass the same lock
 // plus the external anchor PATHS (which it copies in). The attestation records the ACTUAL
@@ -306,6 +329,10 @@ async function setupPaidRun(pass: any, cells: any[], root: string, gen: any) {
   await mkdir(root, { recursive: true });
   await chmod(root, 0o700); // the hardened journal requires a 0700 output root
   const lock = acquireInvocationLock(root, { stageId: pass.stageId, invocationId: `${pass.stageId}#test`, startedAt: "2026-08-28T00:00:00Z" });
+  const policyPath = join(anchorDir, `${basename(root)}-policy.json`);
+  const policySignaturePath = `${policyPath}.sig`;
+  await writeFile(policyPath, policyBodyFor(pass), { mode: 0o600 });
+  await writeFile(policySignaturePath, "campaign-policy-signature", { mode: 0o600 });
   const catalogEvidence: Array<Record<string, unknown>> = [];
   const addCatalogEvidence = (endpoint: string, value: unknown) => {
     const raw = Buffer.from(JSON.stringify(value), "utf-8");
@@ -319,13 +346,13 @@ async function setupPaidRun(pass: any, cells: any[], root: string, gen: any) {
       transportError: null,
     });
   };
-  addCatalogEvidence(`${OR_BASE}/models`, { data: pass.targets.map((target: PaidTarget) => ({ id: target.slug, canonical_slug: target.slug })) });
+  addCatalogEvidence(`${OR_BASE}/models`, { data: pass.targets.map((target: PaidTarget) => ({ id: target.catalogModelId, canonical_slug: target.slug })) });
   for (const target of pass.targets as PaidTarget[]) {
     addCatalogEvidence(`${OR_BASE}/models/${target.slug}/endpoints`, {
       data: {
         endpoints: [{
           tag: target.providerRoute,
-          provider_name: DISPLAY,
+          provider_name: target.providerDisplay,
           pricing: {
             prompt: target.priceCeiling.inputPerMTokens / 1_000_000,
             completion: target.priceCeiling.outputPerMTokens / 1_000_000,
@@ -353,9 +380,10 @@ async function setupPaidRun(pass: any, cells: any[], root: string, gen: any) {
     reasons: [],
     campaignId: pass.campaignId,
     stageId: pass.stageId,
+    policyId: pass.policyId,
     providerDisplay: displayMap(pass.targets),
     catalogEvidence,
-    verification: pass.targets.map((target: PaidTarget) => ({ slug: target.slug, ok: true, reasons: [], providerDisplay: DISPLAY })),
+    verification: pass.targets.map((target: PaidTarget) => ({ slug: target.slug, ok: true, reasons: [], providerDisplay: target.providerDisplay })),
     budget: pass.budget,
     totalCeilingUsd,
   });
@@ -369,10 +397,14 @@ async function setupPaidRun(pass: any, cells: any[], root: string, gen: any) {
     pinnedSigner: PAID_EXECUTION_MANIFEST_SIGNER,
     manifestSha256: await fileSha(anchorPaths.executionManifestPath),
     signatureSha256: await fileSha(anchorPaths.executionSignaturePath),
-    artifactType: "plinius-paid-pass-v2",
+    artifactType: "plinius-paid-pass-v3",
     artifactSchemaVersion: 1,
     launcherSha256: launcherSha,
     runnerSha256: runnerSha,
+    campaignPolicyId: pass.policyId,
+    campaignPolicySha256: await fileSha(policyPath),
+    campaignPolicySignatureSha256: await fileSha(policySignaturePath),
+    campaignPolicySignerFingerprint: PAID_CAMPAIGN_POLICY_SIGNER,
   });
   const att = finalizeArtifact(root, `paid-execution-attestation-${sha256Hex(attBody)}.json`, attBody, lock);
   const parentInputExpectedSha256 = await Promise.all(anchorPaths.parentInputPaths.map(fileSha));
@@ -380,9 +412,13 @@ async function setupPaidRun(pass: any, cells: any[], root: string, gen: any) {
   const anchors = copyPaidAnchorsIntoRoot(lock, root, {
     executionManifestPath: anchorPaths.executionManifestPath,
     executionSignaturePath: anchorPaths.executionSignaturePath,
+    campaignPolicyPath: policyPath,
+    campaignPolicySignaturePath: policySignaturePath,
     parentInputPaths: anchorPaths.parentInputPaths,
     expectedManifestSha256: await fileSha(anchorPaths.executionManifestPath),
     expectedSignatureSha256: await fileSha(anchorPaths.executionSignaturePath),
+    expectedCampaignPolicySha256: await fileSha(policyPath),
+    expectedCampaignPolicySignatureSha256: await fileSha(policySignaturePath),
     parentExpectedSha256: parentInputExpectedSha256,
   });
   return {
@@ -407,15 +443,15 @@ describe("paid pass fixed definitions", () => {
     expect(HOSTED_PAID_PASS.stageId).toBe("plinius-qualification-2026-08-22-diagnostic-hosted-paid-r1");
     expect(HOSTED_PAID_PASS.budget).toEqual({ totalCapUsd: 5.0, perRunCapUsd: 1.0 });
     expect(HOSTED_PAID_TARGETS.map((t) => [t.slug, t.providerRoute])).toEqual([
-      ["openai/gpt-5.6-sol-pro", "openai"],
-      ["anthropic/claude-opus-5", "claude-on-aws"],
-      ["google/gemini-3.7-flash", "google-vertex/global"],
-      ["deepseek/deepseek-v4-flash-0731", "deepinfra/fp8"],
+      ["openai/gpt-5.6-sol-pro-20260709", "openai"],
+      ["anthropic/claude-opus-5-20260723", "claude-on-aws"],
+      ["google/gemini-3.7-flash-20260813", "google-vertex/global"],
+      ["deepseek/deepseek-v4-flash-20260731", "deepinfra/fp8"],
     ]);
-    const cells = buildHostedPaidCells();
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
     expect(cells.length).toBe(15);
     expect(cells.filter((c) => c.sentinel).length).toBe(1);
-    expect(cells.some((c) => c.target === "anthropic/claude-opus-5" && c.benchmark === OIDC_BENCHMARK_ID)).toBe(false);
+    expect(cells.some((c) => c.target === "anthropic/claude-opus-5-20260723" && c.benchmark === OIDC_BENCHMARK_ID)).toBe(false);
   });
 
   it("Candidate Pass: new campaign, provider SLUG routes, 16 cells, per-model sentinels", () => {
@@ -427,7 +463,7 @@ describe("paid pass fixed definitions", () => {
       ["qwen/qwen3.8-max", "alibaba"],
       ["anthropic/claude-sonnet-5", "anthropic"],
     ]);
-    const cells = buildCandidatePaidCells();
+    const cells = buildCandidatePaidCells(CANDIDATE_PAID_TARGETS);
     expect(cells.length).toBe(16);
     for (const t of CANDIDATE_PAID_TARGETS) expect(cells.filter((c) => c.group === t.slug && c.sentinel).length).toBe(1);
   });
@@ -436,6 +472,43 @@ describe("paid pass fixed definitions", () => {
     expect(resolveDriverMode("diagnostic-hosted-paid-r1")).toBe("diagnostic-hosted-paid-r1");
     expect(resolveDriverMode("diagnostic-candidate-paid-r1")).toBe("diagnostic-candidate-paid-r1");
     expect(() => resolveDriverMode(undefined)).toThrow();
+  });
+});
+
+describe("detached-signature campaign policy", () => {
+  const bytes = Buffer.from(policyBodyFor(HOSTED_PAID_PASS), "utf-8");
+  it("loads canonical versioned targets under the fixed engine budget cap", () => {
+    const loaded = parsePaidCampaignPolicy(bytes, "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z");
+    expect(loaded.pass.policyId).toBe(HOSTED_PAID_PASS.policyId);
+    expect(loaded.pass.targets.map((target) => target.slug)).toEqual(HOSTED_PAID_TARGETS.map((target) => target.slug));
+    expect(loaded.cells).toHaveLength(15);
+    expect(loaded.sha256).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+  it("rejects noncanonical bytes, unknown fields, mode drift, expiry and an increased budget", () => {
+    expect(() => parsePaidCampaignPolicy(Buffer.concat([bytes, Buffer.from(" ")]), "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/canonical/);
+    const original = JSON.parse(bytes.toString("utf-8"));
+    const encoded = (value: unknown) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf-8");
+    expect(() => parsePaidCampaignPolicy(encoded({ ...original, extra: true }), "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/field set/);
+    expect(() => parsePaidCampaignPolicy(bytes, "diagnostic-candidate-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/mode/);
+    expect(() => parsePaidCampaignPolicy(bytes, "diagnostic-hosted-paid-r1", "2026-09-04T00:00:00Z")).toThrow(/expired/);
+    expect(() => parsePaidCampaignPolicy(encoded({ ...original, pass: { ...original.pass, budget: { totalCapUsd: 50, perRunCapUsd: 10 } } }), "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/budget/);
+    const unsafeSampling = structuredClone(original);
+    unsafeSampling.pass.targets[0].sampling.temperature = 3;
+    expect(() => parsePaidCampaignPolicy(encoded(unsafeSampling), "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/sampling/);
+    const duplicateResponse = structuredClone(original);
+    duplicateResponse.pass.targets[1].responseModelId = duplicateResponse.pass.targets[0].responseModelId;
+    expect(() => parsePaidCampaignPolicy(encoded(duplicateResponse), "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/duplicate target responseModelId/);
+    const sharedProvider = structuredClone(original);
+    sharedProvider.pass.targets[1].providerRoute = sharedProvider.pass.targets[0].providerRoute;
+    expect(parsePaidCampaignPolicy(encoded(sharedProvider), "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z").pass.targets).toHaveLength(4);
+    expect(() => parsePaidCampaignPolicy(encoded({ ...original, issuedAtUtc: "2026-02-30T00:00:00Z" }), "diagnostic-hosted-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/timestamp/);
+  });
+
+  it("loads the checked-in short-lived Hosted policy as canonical policy bytes", async () => {
+    const checkedIn = await readFile(join(process.cwd(), "policy", "qualification-hosted-paid-2026-08-29-r1.json"));
+    const loaded = parsePaidCampaignPolicy(checkedIn, "diagnostic-hosted-paid-r1", "2026-08-29T03:00:00Z");
+    expect(loaded.pass.stageId).toBe("plinius-qualification-2026-08-29-diagnostic-hosted-paid-r2");
+    expect(loaded.pass.targets.map((target) => target.slug)).toEqual(HOSTED_PAID_TARGETS.map((target) => target.slug));
   });
 });
 
@@ -470,11 +543,11 @@ describe("full request/response re-derivation and provider provenance", () => {
   const messages = [{ role: "user", content: "hi" }];
   const costUrl = `${OR_BASE}/generation?id=g1`;
   const fullKeys = ["max_tokens", "messages", "model", "provider", "seed", "stream", "temperature", "top_p"].sort();
-  const expected: ExpectedDispatch = { requestUrl: CHAT_URL, model: target.slug, routing, maxTokens: 24576, temperature: 0, topP: 1, seed: 1, messages, providerDisplay: "DeepInfra", costLookupBaseUrl: OR_BASE };
+  const expected: ExpectedDispatch = { requestUrl: CHAT_URL, model: target.slug, responseModelId: target.responseModelId, routing, maxTokens: 24576, temperature: 0, topP: 1, seed: 1, messages, providerDisplay: "DeepInfra", costLookupBaseUrl: OR_BASE };
   const base: ObservedDispatch = {
     requestUrl: CHAT_URL, requestMethod: "POST", model: target.slug, routing, maxTokens: 24576, temperature: 0, topP: 1, seed: 1, messages,
     requestKeys: fullKeys, stream: false, responseHttpStatus: 200,
-    responseModelId: target.slug, responseProvider: "DeepInfra", responseGenerationId: "g1", lookupModelId: target.slug, lookupGenerationId: "g1", lookupProvider: "DeepInfra",
+    responseModelId: target.responseModelId, responseProvider: "DeepInfra", responseGenerationId: "g1", lookupModelId: target.responseModelId, lookupGenerationId: "g1", lookupProvider: "DeepInfra",
     costPollUrls: [costUrl],
   };
   it("passes a fully-consistent dispatch", () => {
@@ -517,19 +590,21 @@ describe("catalog, budget, token bound", () => {
   it("catalog: blocks missing model/endpoint/ceiling/price/param/alias/free and a missing provider display", () => {
     const v = verifyPaidTargetAgainstCatalog(goodModel(target), target, need);
     expect(v.ok).toBe(true);
-    expect(v.providerDisplay).toBe(DISPLAY);
+    expect(v.providerDisplay).toBe(target.providerDisplay);
     expect(verifyPaidTargetAgainstCatalog(undefined, target, need).ok).toBe(false);
     expect(verifyPaidTargetAgainstCatalog({ id: target.slug, endpoints: [{ ...goodModel(target).endpoints[0], tag: "azure" }] }, target, need).reasons.some((r) => r.startsWith("provider_endpoint_missing"))).toBe(true);
     expect(verifyPaidTargetAgainstCatalog({ id: target.slug, endpoints: [{ ...goodModel(target).endpoints[0], pricing: { prompt: "1", completion: "1" } }] }, target, need).reasons).toContain("price_over_input_ceiling");
     expect(verifyPaidTargetAgainstCatalog({ id: target.slug, endpoints: [{ ...goodModel(target).endpoints[0], supportedParameters: ["max_tokens"] }] }, target, need).reasons).toContain("parameter_unsupported:seed");
     expect(verifyPaidTargetAgainstCatalog({ ...goodModel(target), isAlias: true }, target, need).reasons).toContain("model_is_alias");
+    expect(verifyPaidTargetAgainstCatalog({ ...goodModel(target), canonicalSlug: "openai/gpt-5.6-sol-pro-OTHER" }, target, need).reasons.some((r) => r.startsWith("canonical_slug_mismatch"))).toBe(true);
+    expect(verifyPaidTargetAgainstCatalog({ ...goodModel(target), catalogModelId: "openai/other" }, target, need).reasons.some((r) => r.startsWith("catalog_model_id_mismatch"))).toBe(true);
     expect(verifyPaidTargetAgainstCatalog({ id: target.slug, endpoints: [{ ...goodModel(target).endpoints[0], providerName: null }] }, target, need).reasons).toContain("provider_display_name_missing");
   });
   it("verifyPaidCatalog uses per-cell prompt bounds and returns provider displays", () => {
-    const cells = buildHostedPaidCells();
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
     const out = verifyPaidCatalog(HOSTED_PAID_PASS, cells, goodCatalog(HOSTED_PAID_TARGETS), promptMap(cells));
     expect(out.ok).toBe(true);
-    expect(out.providerDisplay["openai/gpt-5.6-sol-pro"]).toBe(DISPLAY);
+    expect(out.providerDisplay[target.slug]).toBe(target.providerDisplay);
     // a per-cell prompt bound that blows the per-run cap is rejected
     const huge = new Map(cells.map((c) => [c.benchmark, 400_000_000]));
     expect(verifyPaidCatalog(HOSTED_PAID_PASS, cells, goodCatalog(HOSTED_PAID_TARGETS), huge).ok).toBe(false);
@@ -576,8 +651,8 @@ describe("raw-observation re-derivation from disk bytes (canonical + full chain)
   const routing = buildProviderRouting(target);
   const rawFor = (over: Partial<PaidRawObservation> = {}, reqOver: Record<string, unknown> = {}): PaidRawObservation => {
     const reqBody = { model: target.slug, messages: [{ role: "user", content: "hi" }], stream: false, max_tokens: 1024, temperature: 0, top_p: 1, seed: 1, provider: serializeProviderRouting(routing), ...reqOver };
-    const resBody = { id: "g1", model: target.slug, provider: DISPLAY, choices: [{ finish_reason: "stop", message: { content: "ok" } }] };
-    const lookupBody = { data: { id: "g1", model: target.slug, provider_name: DISPLAY, total_cost: 0.0731 } };
+    const resBody = { id: "g1", model: target.responseModelId, provider: target.providerDisplay, choices: [{ finish_reason: "stop", message: { content: "ok" } }] };
+    const lookupBody = { data: { id: "g1", model: target.responseModelId, provider_name: target.providerDisplay, total_cost: 0.0731 } };
     return {
       runId: "r1",
       requestUrl: CHAT_URL,
@@ -594,8 +669,8 @@ describe("raw-observation re-derivation from disk bytes (canonical + full chain)
     expect(d.ok).toBe(true);
     expect(d.billedCostUsd).toBe(0.0731);
     expect(d.observed.model).toBe(target.slug);
-    expect(d.observed.responseProvider).toBe(DISPLAY);
-    expect(d.observed.lookupProvider).toBe(DISPLAY);
+    expect(d.observed.responseProvider).toBe(target.providerDisplay);
+    expect(d.observed.lookupProvider).toBe(target.providerDisplay);
     expect(d.responseOutcome?.status.qualification).toBeDefined();
     expect(providerRoutingEqual(d.observed.routing!, routing)).toBe(true);
     // Exposes the exact request key set, stream flag, HTTP status, and cost-poll URLs so
@@ -655,6 +730,8 @@ describe("verifyPaidManifest is fail-closed", () => {
       executionManifest: put(disk, "paid-execution-manifest.json", "{}"),
       executionSignature: put(disk, "paid-execution-signature.json", "sig"),
       executionAttestation: put(disk, "paid-execution-attestation.json", '{"a":1}'),
+      campaignPolicy: put(disk, "paid-campaign-policy.json", "{}"),
+      campaignPolicySignature: put(disk, "paid-campaign-policy-signature.json", "sig"),
       parentInputs: [put(disk, "p0.json", "[]"), put(disk, "p1.json", "[]"), put(disk, "p2.json", "[]")],
       catalogArtifact: put(disk, "cat.json", '{"c":1}'),
       rawObservations: [put(disk, "runs/raw.json", '{"r":1}')],
@@ -665,7 +742,7 @@ describe("verifyPaidManifest is fail-closed", () => {
     };
     return { disk, manifest, read: (f: string) => disk.get(f) ?? null };
   };
-  const allBound = ["paid-execution-manifest.json", "paid-execution-signature.json", "paid-execution-attestation.json", "p0.json", "p1.json", "p2.json", "cat.json", "runs/raw.json", "runs/rec.json", "runs/w.json", "runs/i.intent.json", "sum.json"];
+  const allBound = ["paid-execution-manifest.json", "paid-execution-signature.json", "paid-execution-attestation.json", "paid-campaign-policy.json", "paid-campaign-policy-signature.json", "p0.json", "p1.json", "p2.json", "cat.json", "runs/raw.json", "runs/rec.json", "runs/w.json", "runs/i.intent.json", "sum.json"];
   it("accepts a complete, digest-matching manifest", () => {
     const { manifest, read } = build();
     expect(verifyPaidManifest(manifest, read).ok).toBe(true);
@@ -715,7 +792,13 @@ describe("verifyPaidManifest is fail-closed", () => {
 });
 
 describe("verifyPaidExecutionAttestation + content-addressed name", () => {
-  const good = { campaignId: "camp", stageId: "stage", signatureVerified: true, signerFingerprint: PAID_EXECUTION_MANIFEST_SIGNER, manifestSha256: "sha256:" + "a".repeat(64), signatureSha256: "sha256:" + "b".repeat(64) };
+  const good = {
+    campaignId: "camp", stageId: "stage", signatureVerified: true,
+    signerFingerprint: PAID_EXECUTION_MANIFEST_SIGNER,
+    manifestSha256: "sha256:" + "a".repeat(64), signatureSha256: "sha256:" + "b".repeat(64),
+    campaignPolicyId: "policy", campaignPolicySha256: "sha256:" + "c".repeat(64),
+    campaignPolicySignatureSha256: "sha256:" + "d".repeat(64), campaignPolicySignerFingerprint: PAID_CAMPAIGN_POLICY_SIGNER,
+  };
   it("accepts a fully-authenticated attestation for the right campaign/stage", () => {
     expect(verifyPaidExecutionAttestation(good, { campaignId: "camp", stageId: "stage" }).ok).toBe(true);
   });
@@ -743,12 +826,14 @@ describe("verifyPaidManifest filesystem-metadata + self-identity checks (F04)", 
   const build = () => {
     const disk = new Map<string, Buffer>();
     const manifest = {
-      manifestSchemaVersion: 5,
+      manifestSchemaVersion: 6,
       campaignId: "camp",
       stageId: "stage",
       executionManifest: put(disk, "sm.json", "{}"),
       executionSignature: put(disk, "sig.json", "s"),
       executionAttestation: put(disk, "att.json", "{}"),
+      campaignPolicy: put(disk, "policy.json", "{}"),
+      campaignPolicySignature: put(disk, "policy-sig.json", "s"),
       parentInputs: [put(disk, "p0", "0"), put(disk, "p1", "1"), put(disk, "p2", "2")],
       catalogArtifact: put(disk, "cat.json", "{}"),
       rawObservations: [put(disk, "runs/raw.json", "{}")],
@@ -762,7 +847,7 @@ describe("verifyPaidManifest filesystem-metadata + self-identity checks (F04)", 
   const okStat = { isRegularFile: true, isSymbolicLink: false, ownerUid: 1000, mode: 0o600, nlink: 1 };
   it("accepts regular, single-link, owner-matched, 0600 artifacts with the right schema/campaign/stage", () => {
     const { manifest, read } = build();
-    const r = verifyPaidManifest(manifest, read, { statFile: () => ({ ...okStat }), executingUid: 1000, expectedSchemaVersion: 5, expectedCampaignId: "camp", expectedStageId: "stage" });
+    const r = verifyPaidManifest(manifest, read, { statFile: () => ({ ...okStat }), executingUid: 1000, expectedSchemaVersion: 6, expectedCampaignId: "camp", expectedStageId: "stage" });
     expect(r.ok).toBe(true);
   });
   it("rejects a symlink / hardlink / wrong-owner / group-readable artifact", () => {
@@ -833,7 +918,11 @@ describe("copyPaidAnchorsIntoRoot TOCTOU digest check (F02/F04)", () => {
   });
 });
 
-describe("Paid Pass v2 artifact boundary", () => {
+describe("Paid Pass v3 artifact boundary", () => {
+  const policyBytes = Buffer.from(policyBodyFor(HOSTED_PAID_PASS), "utf-8");
+  const policySignatureBytes = Buffer.from("campaign-policy-signature", "utf-8");
+  const policySha = "sha256:" + createHash("sha256").update(policyBytes).digest("hex");
+  const policySignatureSha = "sha256:" + createHash("sha256").update(policySignatureBytes).digest("hex");
   const manifest: PaidExecutionManifest = {
     schemaVersion: 1,
     artifactType: PAID_ARTIFACT_TYPE,
@@ -860,11 +949,16 @@ describe("Paid Pass v2 artifact boundary", () => {
     launcherSha256: launcherSha,
     runnerPath: "/artifact/qualification-driver.mjs",
     runnerSha256: runnerSha,
+    campaignPolicyPath: "/policy/hosted.json",
+    campaignPolicySha256: policySha,
+    campaignPolicySignaturePath: "/policy/hosted.json.sig",
+    campaignPolicySignatureSha256: policySignatureSha,
+    campaignPolicySignerFingerprint: PAID_CAMPAIGN_POLICY_SIGNER,
     processEntryPath: "/artifact/qualification-paid-launch.mjs",
     manifest,
   };
   const grant: PaidLaunchGrant = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactType: PAID_ARTIFACT_TYPE,
     artifactRoot: observation.artifactRoot,
     executionManifestPath: observation.executionManifestPath,
@@ -876,6 +970,13 @@ describe("Paid Pass v2 artifact boundary", () => {
     runnerPath: observation.runnerPath,
     runnerSha256: runnerSha,
     signerFingerprint: PAID_ARTIFACT_PINNED_SIGNER,
+    campaignPolicyPath: observation.campaignPolicyPath,
+    campaignPolicySha256: policySha,
+    campaignPolicyBase64: policyBytes.toString("base64"),
+    campaignPolicySignaturePath: observation.campaignPolicySignaturePath,
+    campaignPolicySignatureSha256: policySignatureSha,
+    campaignPolicySignatureBase64: policySignatureBytes.toString("base64"),
+    campaignPolicySignerFingerprint: PAID_CAMPAIGN_POLICY_SIGNER,
     mode: "diagnostic-hosted-paid-r1",
     nonce: "6".repeat(64),
     verifiedAtUtc: "2026-08-28T00:00:00Z",
@@ -889,11 +990,13 @@ describe("Paid Pass v2 artifact boundary", () => {
     expect(verifyPaidLaunchGrant({ ...grant, extra: true } as any, observation).reasons).toContain("launch_grant_shape");
     expect(verifyPaidLaunchGrant(grant, { ...observation, processEntryPath: observation.runnerPath }).reasons).toContain("launch_process_entry_not_launcher");
     expect(verifyPaidLaunchGrant({ ...grant, signerFingerprint: "7E622B43290C285E" }, observation).reasons).toContain("launch_grant_signer");
+    expect(verifyPaidLaunchGrant({ ...grant, campaignPolicyBase64: Buffer.from("tampered").toString("base64") }, observation).reasons).toContain("campaign_policy_digest");
+    expect(verifyPaidLaunchGrant({ ...grant, campaignPolicySignatureBase64: `${grant.campaignPolicySignatureBase64}==` }, observation).reasons).toContain("campaign_policy_signature_base64");
     expect(verifyPaidLaunchGrant(grant, { ...observation, runnerSha256: "sha256:" + "0".repeat(64) }).ok).toBe(false);
   });
 
   it("the dependency-free launcher verifies the exact package before importing the bundle", async () => {
-    const root = await mkdtemp(join(tmpdir(), "plinius-paid-package-"));
+    const root = await realpath(await mkdtemp(join(tmpdir(), "plinius-paid-package-")));
     await chmod(root, 0o700);
     try {
       const entries = [
@@ -911,7 +1014,12 @@ describe("Paid Pass v2 artifact boundary", () => {
       await writeFile(join(root, "qualification-paid-execution-manifest.json.sig"), "signature", { mode: 0o600 });
       const verified = verifyExecutionPackage(root, { verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER });
       expect(verified.manifest.files).toHaveLength(3);
-      const launchGrant = createLaunchGrant(verified, "diagnostic-hosted-paid-r1");
+      const policyPath = join(anchorDir, "launcher-hosted-policy.json");
+      const policySignaturePath = `${policyPath}.sig`;
+      await writeFile(policyPath, policyBytes, { mode: 0o600 });
+      await writeFile(policySignaturePath, policySignatureBytes, { mode: 0o600 });
+      const verifiedPolicy = verifyCampaignPolicy(policyPath, policySignaturePath, "diagnostic-hosted-paid-r1", { verifySignature: () => PAID_CAMPAIGN_POLICY_SIGNER, now: () => new Date("2026-08-29T00:00:00Z") });
+      const launchGrant = createLaunchGrant(verified, "diagnostic-hosted-paid-r1", verifiedPolicy);
       await writeFile(join(root, "qualification-driver.mjs"), 'export const marker = "tampered";', { mode: 0o600 });
       const loaded = await loadVerifiedRunner(verified, launchGrant);
       expect(loaded.marker).toBe("verified");
@@ -919,6 +1027,34 @@ describe("Paid Pass v2 artifact boundary", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("rejects a wrong policy signer, an expired policy, and symlinked policy inputs", async () => {
+    const policyPath = join(anchorDir, "launcher-policy-adversarial.json");
+    const signaturePath = `${policyPath}.sig`;
+    await writeFile(policyPath, policyBytes, { mode: 0o600 });
+    await writeFile(signaturePath, policySignatureBytes, { mode: 0o600 });
+    expect(() => verifyCampaignPolicy(policyPath, signaturePath, "diagnostic-hosted-paid-r1", {
+      verifySignature: () => "0".repeat(40),
+      now: () => new Date("2026-08-29T00:00:00Z"),
+    })).toThrow(/signature signer mismatch/);
+    expect(() => verifyCampaignPolicy(policyPath, signaturePath, "diagnostic-hosted-paid-r1", {
+      verifySignature: () => PAID_CAMPAIGN_POLICY_SIGNER,
+      now: () => new Date("2026-09-04T00:00:00Z"),
+    })).toThrow(/time window invalid/);
+
+    const policyLink = join(anchorDir, "launcher-policy-link.json");
+    const signatureLink = join(anchorDir, "launcher-policy-link.json.sig");
+    await symlink(policyPath, policyLink);
+    await symlink(signaturePath, signatureLink);
+    expect(() => verifyCampaignPolicy(policyLink, signaturePath, "diagnostic-hosted-paid-r1", {
+      verifySignature: () => PAID_CAMPAIGN_POLICY_SIGNER,
+      now: () => new Date("2026-08-29T00:00:00Z"),
+    })).toThrow(/insecure artifact type|canonical non-symlink/);
+    expect(() => verifyCampaignPolicy(policyPath, signatureLink, "diagnostic-hosted-paid-r1", {
+      verifySignature: () => PAID_CAMPAIGN_POLICY_SIGNER,
+      now: () => new Date("2026-08-29T00:00:00Z"),
+    })).toThrow(/insecure artifact type|canonical non-symlink/);
   });
 });
 
@@ -1005,7 +1141,7 @@ describe("credential ordering — key read last, gates required", () => {
 describe("runPaidPass orchestration", () => {
   it("candidate per-model sentinel failure skips only that model's remaining 3 cells", async () => {
     const failModel = "moonshotai/kimi-k3";
-    const cells = buildCandidatePaidCells();
+    const cells = buildCandidatePaidCells(CANDIDATE_PAID_TARGETS);
     const result = await runPaidPass(await setupPaidRun(CANDIDATE_PAID_PASS, cells, freshRoot("cand-sentinel"), withWire((cell: any, plan: any) => factsFor(plan, { ok: !(cell.target === failModel && cell.sentinel), costUsd: 0.01 }))));
     expect(result.stopped).toBeNull();
     expect(result.dispatchedRunIds.length).toBe(13);
@@ -1015,7 +1151,7 @@ describe("runPaidPass orchestration", () => {
   });
 
   it("hosted global sentinel failure stops the pass after saving the billed sentinel", async () => {
-    const cells = buildHostedPaidCells();
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
     const result = await runPaidPass(await setupPaidRun(HOSTED_PAID_PASS, cells, freshRoot("hosted-sentinel"), withWire((cell: any, plan: any) => factsFor(plan, { ok: !cell.sentinel, costUsd: 0.01 }))));
     expect(result.stopped).toMatch(/campaign_sentinel_not_accepted/);
     expect(result.dispatchedRunIds.length).toBe(1);
@@ -1023,7 +1159,7 @@ describe("runPaidPass orchestration", () => {
 
   it("blocks a WRONG response provider (Azure on a pinned route) after saving the RAW observation", async () => {
     const root = freshRoot("provider-tamper");
-    const cells = buildHostedPaidCells();
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
     const result = await runPaidPass(await setupPaidRun(HOSTED_PAID_PASS, cells, root, withWire((cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 0.01, display: "Azure" }))));
     expect(result.stopped).toMatch(/request_wire_mismatch.*response_provider_mismatch/);
     expect(result.dispatchedRunIds.length).toBe(1);
@@ -1040,7 +1176,7 @@ describe("runPaidPass orchestration", () => {
 
   it("ADVERSARIAL: a benign RETURNED facts cannot launder a bad SUNK wire (F01)", async () => {
     const root = freshRoot("divergent-wire");
-    const cells = buildHostedPaidCells();
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
     // The sink persists a BAD dispatch (wrong provider + content_filter + unknown cost);
     // generate then RETURNS a benign, fully-qualified facts object. The verdict must
     // reflect the SUNK wire read back from disk, never the returned object.
@@ -1071,7 +1207,7 @@ describe("runPaidPass orchestration", () => {
 
   it("ADVERSARIAL: an HTTP 500 response + attacker cost URL sunk to disk still fail (F02/F03)", async () => {
     const root = freshRoot("adv-500-costurl");
-    const cells = buildHostedPaidCells();
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
     const result = await runPaidPass(
       await setupPaidRun(HOSTED_PAID_PASS, cells, root, withWire((_c: any, plan: any) => {
         // A success-SHAPED body, but the response was HTTP 500 and the cost poll targets
@@ -1093,7 +1229,7 @@ describe("runPaidPass orchestration", () => {
 
   it("rejects a DUPLICATE wire stage event — no silent overwrite (F05)", async () => {
     const root = freshRoot("dup-stage");
-    const cells = buildHostedPaidCells();
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
     const result = await runPaidPass(
       await setupPaidRun(HOSTED_PAID_PASS, cells, root, async (_c: any, plan: any, _r: any, onWire: any) => {
         const f = factsFor(plan, { ok: true, costUsd: 0.01 });
@@ -1107,7 +1243,7 @@ describe("runPaidPass orchestration", () => {
 
   it("SEAL cross-check: a sealed parent envelope whose inner digest differs from the pinned value is rejected (F03)", async () => {
     const root = freshRoot("toctou-parent");
-    const opts = await setupPaidRun(HOSTED_PAID_PASS, buildHostedPaidCells(), root, withWire((_c: any, plan: any) => factsFor(plan, { costUsd: 0.01 })));
+    const opts = await setupPaidRun(HOSTED_PAID_PASS, buildHostedPaidCells(HOSTED_PAID_TARGETS), root, withWire((_c: any, plan: any) => factsFor(plan, { costUsd: 0.01 })));
     // The anchors were already copied correctly; corrupt the EXPECTED digest so the
     // post-transfer cross-check (step J) no longer matches the sealed envelope.
     opts.parentInputExpectedSha256 = [opts.parentInputExpectedSha256[0], "sha256:" + "f".repeat(64), opts.parentInputExpectedSha256[2]];
@@ -1117,7 +1253,7 @@ describe("runPaidPass orchestration", () => {
 
   it("stops (and saves the raw observation) when the actual cost exceeds the per-run cap", async () => {
     const root = freshRoot("cost-overcap");
-    const cells = buildHostedPaidCells();
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
     const result = await runPaidPass(await setupPaidRun(HOSTED_PAID_PASS, cells, root, withWire((cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 4.99 }))));
     expect(result.stopped).toMatch(/actual_cost_rejected.*per_run_cap_exceeded_actual/);
     expect(result.dispatchedRunIds.length).toBe(1);
@@ -1129,7 +1265,7 @@ describe("runPaidPass orchestration", () => {
   });
 
   it("stops (and saves the raw observation) when the actual cost is unknown (never 0-fill)", async () => {
-    const cells = buildHostedPaidCells();
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
     const result = await runPaidPass(await setupPaidRun(HOSTED_PAID_PASS, cells, freshRoot("cost-unknown"), withWire((cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: null }))));
     expect(result.stopped).toMatch(/actual_cost_rejected.*cost_unknown_or_not_finite/);
     expect(result.spentUsd).toBe(0);
@@ -1145,7 +1281,7 @@ describe("runPaidPass orchestration", () => {
 
   it("on a generate() throw, saves TERMINAL record + wire fragments and stops (no billed wire lost)", async () => {
     const root = freshRoot("dispatch-throw");
-    const cells = buildHostedPaidCells();
+    const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
     const result = await runPaidPass(
       await setupPaidRun(HOSTED_PAID_PASS, cells, root, throwAfterWire((_cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 0.01 }), "boom after provider call")),
     );
@@ -1159,7 +1295,7 @@ describe("runPaidPass orchestration", () => {
 
   it("a happy candidate pass dispatches all 16 through the hardened journal (0600) with a binding manifest and no credential", async () => {
     const root = freshRoot("cand-happy");
-    const cells = buildCandidatePaidCells();
+    const cells = buildCandidatePaidCells(CANDIDATE_PAID_TARGETS);
     const result = await runPaidPass(await setupPaidRun(CANDIDATE_PAID_PASS, cells, root, withWire((cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 0.02 }))));
     expect(result.stopped).toBeNull();
     expect(result.dispatchedRunIds.length).toBe(16);
@@ -1186,13 +1322,15 @@ describe("runPaidPass orchestration", () => {
     expect(manifestName).toBeTruthy();
     const originalManifestBody = await readFile(join(root, manifestName!), "utf-8");
     const manifest = JSON.parse(originalManifestBody);
-    expect(manifest.manifestSchemaVersion).toBe(5);
+    expect(manifest.manifestSchemaVersion).toBe(6);
     expect(manifest.records.length).toBe(16);
     expect(manifest.rawObservations.length).toBe(16);
     expect(manifest.wires.length).toBe(48);
     expect(manifest.executionManifest).toBeTruthy();
     expect(manifest.executionSignature).toBeTruthy();
     expect(manifest.executionAttestation).toBeTruthy();
+    expect(manifest.campaignPolicy).toBeTruthy();
+    expect(manifest.campaignPolicySignature).toBeTruthy();
     expect(manifest.catalogArtifact).toBeTruthy();
     expect(manifest.summary.sha256).toMatch(/^sha256:[0-9a-f]{64}$/);
 
@@ -1202,6 +1340,15 @@ describe("runPaidPass orchestration", () => {
       parentDigests,
     });
     expect(independent.ok, independent.reasons.join("\n")).toBe(true);
+    const rootLink = freshRoot("cand-happy-link");
+    await symlink(root, rootLink, "dir");
+    const linkedRoot = verifyPaidEvidence(rootLink, {
+      verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER,
+      parentDigests,
+    });
+    expect(linkedRoot.ok).toBe(false);
+    expect(linkedRoot.reasons).toContain("root_canonical");
+    await rm(rootLink, { force: true });
 
     // Rebuild the catalog artifact and final manifest with an over-ceiling raw
     // endpoint price. Digest and file-set integrity remain internally consistent;

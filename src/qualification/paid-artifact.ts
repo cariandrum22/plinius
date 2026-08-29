@@ -8,9 +8,11 @@
  * execution manifest that the external launcher already verified.
  */
 
+import { createHash } from "node:crypto";
+
 export const PAID_ARTIFACT_SCHEMA_VERSION = 1;
-export const PAID_LAUNCH_GRANT_SCHEMA_VERSION = 1;
-export const PAID_ARTIFACT_TYPE = "plinius-paid-pass-v2";
+export const PAID_LAUNCH_GRANT_SCHEMA_VERSION = 2;
+export const PAID_ARTIFACT_TYPE = "plinius-paid-pass-v3";
 export const PAID_ARTIFACT_PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 export const PAID_ARTIFACT_LAUNCHER = "qualification-paid-launch.mjs";
 export const PAID_ARTIFACT_RUNNER = "qualification-driver.mjs";
@@ -52,6 +54,13 @@ export interface PaidLaunchGrant {
   runnerPath: string;
   runnerSha256: string;
   signerFingerprint: string;
+  campaignPolicyPath: string;
+  campaignPolicySha256: string;
+  campaignPolicyBase64: string;
+  campaignPolicySignaturePath: string;
+  campaignPolicySignatureSha256: string;
+  campaignPolicySignatureBase64: string;
+  campaignPolicySignerFingerprint: string;
   mode: PaidArtifactMode;
   nonce: string;
   verifiedAtUtc: string;
@@ -67,6 +76,11 @@ export interface PaidLaunchObservation {
   launcherSha256: string;
   runnerPath: string;
   runnerSha256: string;
+  campaignPolicyPath: string;
+  campaignPolicySha256: string;
+  campaignPolicySignaturePath: string;
+  campaignPolicySignatureSha256: string;
+  campaignPolicySignerFingerprint: string;
   processEntryPath: string;
   manifest: PaidExecutionManifest;
 }
@@ -74,6 +88,13 @@ export interface PaidLaunchObservation {
 const GRANT_KEYS = [
   "artifactRoot",
   "artifactType",
+  "campaignPolicyBase64",
+  "campaignPolicyPath",
+  "campaignPolicySha256",
+  "campaignPolicySignatureBase64",
+  "campaignPolicySignaturePath",
+  "campaignPolicySignatureSha256",
+  "campaignPolicySignerFingerprint",
   "executionManifestPath",
   "executionManifestSha256",
   "executionSignaturePath",
@@ -111,6 +132,16 @@ export function verifyPaidLaunchGrant(
   if (!/^[0-9a-f]{64}$/.test(grant.nonce)) reasons.push("launch_grant_nonce");
   if (!Number.isFinite(Date.parse(grant.verifiedAtUtc))) reasons.push("launch_grant_time");
   if (grant.signerFingerprint.toUpperCase() !== PAID_ARTIFACT_PINNED_SIGNER) reasons.push("launch_grant_signer");
+  if (grant.campaignPolicySignerFingerprint.toUpperCase() !== PAID_ARTIFACT_PINNED_SIGNER) reasons.push("campaign_policy_signer");
+  for (const [label, base64, digest] of [
+    ["campaign_policy", grant.campaignPolicyBase64, grant.campaignPolicySha256],
+    ["campaign_policy_signature", grant.campaignPolicySignatureBase64, grant.campaignPolicySignatureSha256],
+  ] as const) {
+    const bytes = Buffer.from(base64, "base64");
+    if (bytes.toString("base64") !== base64) reasons.push(`${label}_base64`);
+    const actual = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    if (actual !== digest) reasons.push(`${label}_digest`);
+  }
 
   for (const key of [
     "artifactRoot",
@@ -122,6 +153,11 @@ export function verifyPaidLaunchGrant(
     "launcherSha256",
     "runnerPath",
     "runnerSha256",
+    "campaignPolicyPath",
+    "campaignPolicySha256",
+    "campaignPolicySignaturePath",
+    "campaignPolicySignatureSha256",
+    "campaignPolicySignerFingerprint",
   ] as const) {
     if (grant[key] !== observed[key]) reasons.push(`launch_grant_${key}_mismatch`);
   }

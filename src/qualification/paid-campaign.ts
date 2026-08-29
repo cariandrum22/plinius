@@ -150,9 +150,16 @@ export interface PaidSampling {
 }
 
 export interface PaidTarget {
+  /** Canonical, versioned OpenRouter slug sent on the request wire. */
   slug: string;
+  /** Catalog list id whose canonical_slug must resolve exactly to slug. */
+  catalogModelId: string;
+  /** Exact model id expected in response and cost lookup evidence. */
+  responseModelId: string;
   /** Exact OpenRouter provider route (endpoint tag). Never inferred from the slug. */
   providerRoute: string;
+  /** Exact provider display name expected from catalog, response and cost lookup. */
+  providerDisplay: string;
   priceCeiling: PriceCeiling;
   /** Per-target sampling — built individually, never forced uniform across targets. */
   sampling: PaidSampling;
@@ -185,6 +192,163 @@ export interface PaidPassDefinition {
   budget: PaidBudget;
   targets: PaidTarget[];
   sentinelScope: SentinelScope;
+  /** Detached-signature policy identity bound into all resulting Evidence. */
+  policyId: string;
+}
+
+export const PAID_CAMPAIGN_POLICY_SCHEMA_VERSION = 1;
+export const PAID_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v1";
+export const PAID_CAMPAIGN_POLICY_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
+const PAID_POLICY_MAX_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
+const PAID_POLICY_MAX_CATALOG_AGE_AT_ISSUE_MS = 24 * 60 * 60 * 1000;
+
+export interface PaidCampaignPolicyDocument {
+  schemaVersion: 1;
+  policyType: typeof PAID_CAMPAIGN_POLICY_TYPE;
+  policyId: string;
+  issuedAtUtc: string;
+  catalogObservedAtUtc: string;
+  expiresAtUtc: string;
+  requiredSignerFingerprint: typeof PAID_CAMPAIGN_POLICY_SIGNER;
+  pass: Omit<PaidPassDefinition, "policyId">;
+}
+
+export interface LoadedPaidCampaignPolicy {
+  document: PaidCampaignPolicyDocument;
+  pass: PaidPassDefinition;
+  cells: PaidCell[];
+  sha256: string;
+}
+
+function exactObjectKeys(value: unknown, expected: readonly string[]): value is Record<string, unknown> {
+  return value != null && typeof value === "object" && !Array.isArray(value) &&
+    JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...expected].sort());
+}
+
+function finitePositive(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function nullableFinite(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+function parseCanonicalUtc(value: unknown): number | null {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  const canonical = new Date(parsed).toISOString();
+  return value === canonical || value === canonical.replace(".000Z", "Z") ? parsed : null;
+}
+
+/**
+ * Parse the exact detached-signature policy bytes retained by the launcher.
+ * Canonical pretty JSON is mandatory, eliminating duplicate/ambiguous encodings.
+ * The engine retains hard budget maxima even when the signing authority changes
+ * model identities or prices in a later short-lived policy.
+ */
+export function parsePaidCampaignPolicy(
+  bytes: Buffer,
+  expectedMode: PaidPassDefinition["mode"],
+  nowUtc: string,
+): LoadedPaidCampaignPolicy {
+  let value: unknown;
+  try {
+    value = JSON.parse(bytes.toString("utf-8"));
+  } catch {
+    throw new Error("paid campaign policy is not JSON");
+  }
+  const canonical = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf-8");
+  if (!canonical.equals(bytes)) throw new Error("paid campaign policy is not canonical JSON");
+  if (!exactObjectKeys(value, ["schemaVersion", "policyType", "policyId", "issuedAtUtc", "catalogObservedAtUtc", "expiresAtUtc", "requiredSignerFingerprint", "pass"])) {
+    throw new Error("paid campaign policy field set mismatch");
+  }
+  if (value.schemaVersion !== PAID_CAMPAIGN_POLICY_SCHEMA_VERSION || value.policyType !== PAID_CAMPAIGN_POLICY_TYPE) {
+    throw new Error("paid campaign policy identity mismatch");
+  }
+  if (value.requiredSignerFingerprint !== PAID_CAMPAIGN_POLICY_SIGNER) throw new Error("paid campaign policy signer mismatch");
+  if (typeof value.policyId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(value.policyId)) throw new Error("paid campaign policy id invalid");
+  const issued = parseCanonicalUtc(value.issuedAtUtc);
+  const observed = parseCanonicalUtc(value.catalogObservedAtUtc);
+  const expires = parseCanonicalUtc(value.expiresAtUtc);
+  const now = parseCanonicalUtc(nowUtc);
+  if (issued == null || observed == null || expires == null || now == null) throw new Error("paid campaign policy timestamp invalid");
+  if (observed > issued || issued - observed > PAID_POLICY_MAX_CATALOG_AGE_AT_ISSUE_MS) throw new Error("paid campaign policy catalog observation stale");
+  if (issued > now + 5 * 60 * 1000) throw new Error("paid campaign policy issued in future");
+  if (expires <= now || expires <= issued || expires - issued > PAID_POLICY_MAX_VALIDITY_MS) throw new Error("paid campaign policy expired or overlong");
+
+  const passValue = value.pass;
+  if (!exactObjectKeys(passValue, ["mode", "campaignId", "stageId", "budget", "targets", "sentinelScope"])) throw new Error("paid campaign pass field set mismatch");
+  if (passValue.mode !== expectedMode) throw new Error("paid campaign policy mode mismatch");
+  if (typeof passValue.campaignId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(passValue.campaignId)) throw new Error("paid campaign id invalid");
+  if (typeof passValue.stageId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,159}$/.test(passValue.stageId)) throw new Error("paid campaign stage invalid");
+  const expectedScope: SentinelScope = expectedMode === "diagnostic-hosted-paid-r1" ? "global" : "per-model";
+  if (passValue.sentinelScope !== expectedScope) throw new Error("paid campaign sentinel scope mismatch");
+
+  if (!exactObjectKeys(passValue.budget, ["totalCapUsd", "perRunCapUsd"])) throw new Error("paid campaign budget field set mismatch");
+  const budget = passValue.budget as unknown as PaidBudget;
+  const hardCap = expectedMode === "diagnostic-hosted-paid-r1"
+    ? { totalCapUsd: 5, perRunCapUsd: 1 }
+    : { totalCapUsd: 6, perRunCapUsd: 0.75 };
+  if (!finitePositive(budget.totalCapUsd) || !finitePositive(budget.perRunCapUsd) || budget.totalCapUsd > hardCap.totalCapUsd || budget.perRunCapUsd > hardCap.perRunCapUsd) {
+    throw new Error("paid campaign budget exceeds engine cap");
+  }
+
+  if (!Array.isArray(passValue.targets) || passValue.targets.length !== 4) throw new Error("paid campaign must define exactly four targets");
+  const targets: PaidTarget[] = passValue.targets.map((raw, index) => {
+    if (!exactObjectKeys(raw, ["slug", "catalogModelId", "responseModelId", "providerRoute", "providerDisplay", "priceCeiling", "sampling"])) {
+      throw new Error(`paid campaign target ${index} field set mismatch`);
+    }
+    for (const field of ["slug", "catalogModelId", "responseModelId", "providerRoute", "providerDisplay"] as const) {
+      if (typeof raw[field] !== "string" || raw[field].length === 0 || raw[field].length > 160) throw new Error(`paid campaign target ${index} ${field} invalid`);
+    }
+    for (const field of ["slug", "catalogModelId", "responseModelId", "providerRoute"] as const) {
+      const identifier = raw[field] as string;
+      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(identifier) || identifier.split("/").some((part) => part === "" || part === "." || part === "..")) {
+        throw new Error(`paid campaign target ${index} ${field} unsafe`);
+      }
+    }
+    if (/[^\x20-\x7e]/.test(raw.providerDisplay as string)) throw new Error(`paid campaign target ${index} providerDisplay unsafe`);
+    if (!exactObjectKeys(raw.priceCeiling, ["inputPerMTokens", "outputPerMTokens"]) ||
+      !finitePositive(raw.priceCeiling.inputPerMTokens) || !finitePositive(raw.priceCeiling.outputPerMTokens)) {
+      throw new Error(`paid campaign target ${index} price ceiling invalid`);
+    }
+    if (!exactObjectKeys(raw.sampling, ["temperature", "topP", "seed"]) ||
+      !nullableFinite(raw.sampling.temperature) || !nullableFinite(raw.sampling.topP) ||
+      (raw.sampling.temperature !== null && (raw.sampling.temperature < 0 || raw.sampling.temperature > 2)) ||
+      (raw.sampling.topP !== null && (raw.sampling.topP <= 0 || raw.sampling.topP > 1)) ||
+      !(raw.sampling.seed === null || (Number.isSafeInteger(raw.sampling.seed) && Number(raw.sampling.seed) >= 0))) {
+      throw new Error(`paid campaign target ${index} sampling invalid`);
+    }
+    return {
+      slug: raw.slug as string,
+      catalogModelId: raw.catalogModelId as string,
+      responseModelId: raw.responseModelId as string,
+      providerRoute: raw.providerRoute as string,
+      providerDisplay: raw.providerDisplay as string,
+      priceCeiling: raw.priceCeiling as unknown as PriceCeiling,
+      sampling: raw.sampling as unknown as PaidSampling,
+    };
+  });
+  for (const field of ["slug", "catalogModelId", "responseModelId"] as const) {
+    if (new Set(targets.map((target) => target[field])).size !== targets.length) throw new Error(`paid campaign duplicate target ${field}`);
+  }
+  const pass: PaidPassDefinition = {
+    mode: expectedMode,
+    campaignId: passValue.campaignId as string,
+    stageId: passValue.stageId as string,
+    budget: { ...budget },
+    targets,
+    sentinelScope: expectedScope,
+    policyId: value.policyId,
+  };
+  const cells = expectedScope === "global" ? buildHostedPaidCells(targets) : buildCandidatePaidCells(targets);
+  return {
+    document: value as unknown as PaidCampaignPolicyDocument,
+    pass,
+    cells,
+    sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+  };
 }
 
 /** The four frozen benchmarks, reused by hash. finalBudget matches the driver. */
@@ -217,10 +381,10 @@ export const HOSTED_PAID_STAGE_ID = "plinius-qualification-2026-08-22-diagnostic
 // provider route SUPPORTS: an unsupported field is null (never sent), so the request
 // carries no capability-invalid parameter.
 export const HOSTED_PAID_TARGETS: PaidTarget[] = [
-  { slug: "openai/gpt-5.6-sol-pro", providerRoute: "openai", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 10.0 }, sampling: { temperature: null, topP: null, seed: 1 } },
-  { slug: "anthropic/claude-opus-5", providerRoute: "claude-on-aws", priceCeiling: { inputPerMTokens: 5.0, outputPerMTokens: 25.0 }, sampling: { temperature: null, topP: null, seed: null } },
-  { slug: "google/gemini-3.7-flash", providerRoute: "google-vertex/global", priceCeiling: { inputPerMTokens: 0.375, outputPerMTokens: 1.875 }, sampling: { temperature: null, topP: null, seed: 1 } },
-  { slug: "deepseek/deepseek-v4-flash-0731", providerRoute: "deepinfra/fp8", priceCeiling: { inputPerMTokens: 0.08, outputPerMTokens: 0.18 }, sampling: { temperature: 0, topP: 1, seed: 1 } },
+  { slug: "openai/gpt-5.6-sol-pro-20260709", catalogModelId: "openai/gpt-5.6-sol-pro", responseModelId: "openai/gpt-5.6-sol-pro", providerRoute: "openai", providerDisplay: "OpenAI", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 10.0 }, sampling: { temperature: null, topP: null, seed: 1 } },
+  { slug: "anthropic/claude-opus-5-20260723", catalogModelId: "anthropic/claude-opus-5", responseModelId: "anthropic/claude-opus-5", providerRoute: "claude-on-aws", providerDisplay: "Claude Platform on AWS", priceCeiling: { inputPerMTokens: 5.0, outputPerMTokens: 25.0 }, sampling: { temperature: null, topP: null, seed: null } },
+  { slug: "google/gemini-3.7-flash-20260813", catalogModelId: "google/gemini-3.7-flash", responseModelId: "google/gemini-3.7-flash", providerRoute: "google-vertex/global", providerDisplay: "Google", priceCeiling: { inputPerMTokens: 0.75, outputPerMTokens: 3.75 }, sampling: { temperature: null, topP: null, seed: 1 } },
+  { slug: "deepseek/deepseek-v4-flash-20260731", catalogModelId: "deepseek/deepseek-v4-flash-0731", responseModelId: "deepseek/deepseek-v4-flash-0731", providerRoute: "deepinfra/fp8", providerDisplay: "DeepInfra", priceCeiling: { inputPerMTokens: 0.08, outputPerMTokens: 0.18 }, sampling: { temperature: 0, topP: 1, seed: 1 } },
 ];
 
 export const HOSTED_PAID_PASS: PaidPassDefinition = {
@@ -230,6 +394,7 @@ export const HOSTED_PAID_PASS: PaidPassDefinition = {
   budget: { totalCapUsd: 5.0, perRunCapUsd: 1.0 },
   targets: HOSTED_PAID_TARGETS,
   sentinelScope: "global",
+  policyId: "plinius-hosted-paid-2026-08-29-r1",
 };
 
 // Candidate Pass — new campaign; four candidate models with frozen Step 2.2 routes
@@ -240,10 +405,10 @@ export const CANDIDATE_PAID_STAGE_ID = "plinius-qualification-2026-08-26-diagnos
 // provider.order carries the OpenRouter provider SLUG (endpoint tag), never a
 // display name: z-ai/fp8, moonshotai/mxfp4, alibaba, anthropic.
 export const CANDIDATE_PAID_TARGETS: PaidTarget[] = [
-  { slug: "z-ai/glm-5.3", providerRoute: "z-ai/fp8", priceCeiling: { inputPerMTokens: 1.4, outputPerMTokens: 4.4 }, sampling: { temperature: 0, topP: null, seed: null } },
-  { slug: "moonshotai/kimi-k3", providerRoute: "moonshotai/mxfp4", priceCeiling: { inputPerMTokens: 3.0, outputPerMTokens: 15.0 }, sampling: { temperature: null, topP: null, seed: null } },
-  { slug: "qwen/qwen3.8-max", providerRoute: "alibaba", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 6.0 }, sampling: { temperature: 0, topP: null, seed: 1 } },
-  { slug: "anthropic/claude-sonnet-5", providerRoute: "anthropic", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 10.0 }, sampling: { temperature: null, topP: null, seed: null } },
+  { slug: "z-ai/glm-5.3", catalogModelId: "z-ai/glm-5.3", responseModelId: "z-ai/glm-5.3", providerRoute: "z-ai/fp8", providerDisplay: "Z.AI", priceCeiling: { inputPerMTokens: 1.4, outputPerMTokens: 4.4 }, sampling: { temperature: 0, topP: null, seed: null } },
+  { slug: "moonshotai/kimi-k3", catalogModelId: "moonshotai/kimi-k3", responseModelId: "moonshotai/kimi-k3", providerRoute: "moonshotai/mxfp4", providerDisplay: "Moonshot AI", priceCeiling: { inputPerMTokens: 3.0, outputPerMTokens: 15.0 }, sampling: { temperature: null, topP: null, seed: null } },
+  { slug: "qwen/qwen3.8-max", catalogModelId: "qwen/qwen3.8-max", responseModelId: "qwen/qwen3.8-max", providerRoute: "alibaba", providerDisplay: "Alibaba", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 6.0 }, sampling: { temperature: 0, topP: null, seed: 1 } },
+  { slug: "anthropic/claude-sonnet-5", catalogModelId: "anthropic/claude-sonnet-5", responseModelId: "anthropic/claude-sonnet-5", providerRoute: "anthropic", providerDisplay: "Anthropic", priceCeiling: { inputPerMTokens: 2.0, outputPerMTokens: 10.0 }, sampling: { temperature: null, topP: null, seed: null } },
 ];
 
 export const CANDIDATE_PAID_PASS: PaidPassDefinition = {
@@ -253,6 +418,7 @@ export const CANDIDATE_PAID_PASS: PaidPassDefinition = {
   budget: { totalCapUsd: 6.0, perRunCapUsd: 0.75 },
   targets: CANDIDATE_PAID_TARGETS,
   sentinelScope: "per-model",
+  policyId: "plinius-candidate-paid-unissued",
 };
 
 // --- cells -------------------------------------------------------------------
@@ -270,24 +436,27 @@ export interface PaidCell {
 }
 
 /** The historical Claude sentinel cell that is NOT re-run in Hosted Pass A. */
-const HOSTED_HISTORICAL_SENTINEL = { target: "anthropic/claude-opus-5", benchmark: OIDC_BENCHMARK_ID };
+const HOSTED_HISTORICAL_SENTINEL = { targetIndex: 1, benchmark: OIDC_BENCHMARK_ID };
 /** The campaign sentinel that runs first and gates the remaining 14 cells. */
-const HOSTED_CAMPAIGN_SENTINEL = { target: "openai/gpt-5.6-sol-pro", benchmark: OIDC_BENCHMARK_ID };
+const HOSTED_CAMPAIGN_SENTINEL = { targetIndex: 0, benchmark: OIDC_BENCHMARK_ID };
 
 /**
  * Hosted Pass A: exactly 15 cells. The gpt-5.6-sol-pro OIDC cell is the single
  * campaign sentinel (first); the claude-opus-5 OIDC cell is the historical
  * sentinel and is excluded. All cells share the one global group.
  */
-export function buildHostedPaidCells(): PaidCell[] {
+export function buildHostedPaidCells(targets: PaidTarget[]): PaidCell[] {
+  if (targets.length !== 4) throw new Error("hosted paid policy must define exactly four targets");
   const group = "hosted-global";
+  const campaignSentinelTarget = targets[HOSTED_CAMPAIGN_SENTINEL.targetIndex].slug;
+  const historicalSentinelTarget = targets[HOSTED_HISTORICAL_SENTINEL.targetIndex].slug;
   const cells: PaidCell[] = [
-    { target: HOSTED_CAMPAIGN_SENTINEL.target, benchmark: HOSTED_CAMPAIGN_SENTINEL.benchmark, sentinel: true, group },
+    { target: campaignSentinelTarget, benchmark: HOSTED_CAMPAIGN_SENTINEL.benchmark, sentinel: true, group },
   ];
-  for (const t of HOSTED_PAID_TARGETS) {
+  for (const t of targets) {
     for (const b of BENCHMARK_ORDER) {
-      if (t.slug === HOSTED_HISTORICAL_SENTINEL.target && b === HOSTED_HISTORICAL_SENTINEL.benchmark) continue; // historical
-      if (t.slug === HOSTED_CAMPAIGN_SENTINEL.target && b === HOSTED_CAMPAIGN_SENTINEL.benchmark) continue; // already first
+      if (t.slug === historicalSentinelTarget && b === HOSTED_HISTORICAL_SENTINEL.benchmark) continue; // historical
+      if (t.slug === campaignSentinelTarget && b === HOSTED_CAMPAIGN_SENTINEL.benchmark) continue; // already first
       cells.push({ target: t.slug, benchmark: b, sentinel: false, group });
     }
   }
@@ -299,9 +468,9 @@ export function buildHostedPaidCells(): PaidCell[] {
  * cell is that target's own sentinel and runs first within its group; a sentinel
  * failure skips only that target's remaining 3 cells.
  */
-export function buildCandidatePaidCells(): PaidCell[] {
+export function buildCandidatePaidCells(targets: PaidTarget[]): PaidCell[] {
   const cells: PaidCell[] = [];
-  for (const t of CANDIDATE_PAID_TARGETS) {
+  for (const t of targets) {
     cells.push({ target: t.slug, benchmark: OIDC_BENCHMARK_ID, sentinel: true, group: t.slug });
     for (const b of BENCHMARK_ORDER) {
       if (b === OIDC_BENCHMARK_ID) continue;
@@ -313,8 +482,8 @@ export function buildCandidatePaidCells(): PaidCell[] {
 
 /** The cells and pass definition for a given mode. */
 export function paidPassFor(mode: PaidPassDefinition["mode"]): { pass: PaidPassDefinition; cells: PaidCell[] } {
-  if (mode === "diagnostic-hosted-paid-r1") return { pass: HOSTED_PAID_PASS, cells: buildHostedPaidCells() };
-  if (mode === "diagnostic-candidate-paid-r1") return { pass: CANDIDATE_PAID_PASS, cells: buildCandidatePaidCells() };
+  if (mode === "diagnostic-hosted-paid-r1") return { pass: HOSTED_PAID_PASS, cells: buildHostedPaidCells(HOSTED_PAID_TARGETS) };
+  if (mode === "diagnostic-candidate-paid-r1") return { pass: CANDIDATE_PAID_PASS, cells: buildCandidatePaidCells(CANDIDATE_PAID_TARGETS) };
   throw new Error(`unknown paid mode ${mode}`);
 }
 
@@ -337,7 +506,11 @@ export interface ProviderEndpointInfo {
 
 /** One catalog model with its provider endpoints. */
 export interface CatalogModelInfo {
+  /** Canonical request slug represented by this catalog entry. */
   id: string;
+  /** Public catalog id that resolved to id through canonical_slug. */
+  catalogModelId: string;
+  canonicalSlug: string;
   /** True when the id is an alias / auto-router rather than a concrete model. */
   isAlias?: boolean;
   isAutoRouter?: boolean;
@@ -385,6 +558,8 @@ export function verifyPaidTargetAgainstCatalog(
   const reasons: string[] = [];
   if (!model) return { ok: false, reasons: ["model_missing"] };
   if (model.id !== target.slug) reasons.push(`model_slug_mismatch:${model.id}`);
+  if (model.catalogModelId !== target.catalogModelId) reasons.push(`catalog_model_id_mismatch:${model.catalogModelId}`);
+  if (model.canonicalSlug !== target.slug) reasons.push(`canonical_slug_mismatch:${model.canonicalSlug}`);
   if (model.isAlias) reasons.push("model_is_alias");
   if (model.isAutoRouter) reasons.push("model_is_auto_router");
 
@@ -397,6 +572,7 @@ export function verifyPaidTargetAgainstCatalog(
   const ep = matches[0];
   if (ep.isFree) reasons.push("provider_endpoint_free");
   if (ep.providerName == null || ep.providerName.length === 0) reasons.push("provider_display_name_missing");
+  else if (ep.providerName !== target.providerDisplay) reasons.push(`provider_display_name_mismatch:${ep.providerName}`);
 
   const promptPerToken = toPerToken(ep.pricing.prompt);
   const completionPerToken = toPerToken(ep.pricing.completion);
@@ -548,6 +724,8 @@ export interface ObservedDispatch {
 export interface ExpectedDispatch {
   requestUrl: string;
   model: string;
+  /** Exact model identity OpenRouter must report for this canonical request. */
+  responseModelId: string;
   routing: ProviderRouting;
   maxTokens: number;
   temperature: number | null;
@@ -619,7 +797,7 @@ export function verifyPaidDispatch(observed: ObservedDispatch, expected: Expecte
   // A non-200 response is NEVER a pass — even when the body is success-shaped and the
   // adapter reached a generation id and a cost lookup from an HTTP-error body (F02).
   if (observed.responseHttpStatus !== 200) reasons.push(`response_http_status:${String(observed.responseHttpStatus)}`);
-  if (observed.responseModelId !== expected.model) reasons.push(`response_model_mismatch:${String(observed.responseModelId)}`);
+  if (observed.responseModelId !== expected.responseModelId) reasons.push(`response_model_mismatch:${String(observed.responseModelId)}`);
   if (observed.responseGenerationId == null || observed.responseGenerationId.length === 0) reasons.push("response_generation_id_missing");
 
   // Provider provenance — EXACT display match on both the response and the lookup.
@@ -784,6 +962,9 @@ export interface PaidBindingManifest {
   executionSignature: PaidManifestRef | null;
   /** Launcher observation binding signature, manifest, runner and campaign. */
   executionAttestation: PaidManifestRef | null;
+  /** Detached-signature campaign policy bytes retained and verified by launcher. */
+  campaignPolicy: PaidManifestRef | null;
+  campaignPolicySignature: PaidManifestRef | null;
   parentInputs: PaidManifestRef[];
   catalogArtifact: PaidManifestRef | null;
   rawObservations: PaidManifestRef[];
@@ -793,7 +974,7 @@ export interface PaidBindingManifest {
   summary: PaidManifestRef;
 }
 
-/** Full signing-subkey fingerprint pinned by the Paid Pass v2 execution manifest. */
+/** Full signing-subkey fingerprint pinned by the Paid Pass v3 execution manifest. */
 export const PAID_EXECUTION_MANIFEST_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 
 /** The exact number of parent-input anchors a paid pass binds (bundle + frozen
@@ -916,6 +1097,8 @@ export function verifyPaidManifest(
   check("execution_manifest", manifest.executionManifest, true);
   check("execution_signature", manifest.executionSignature, true);
   check("execution_attestation", manifest.executionAttestation, true);
+  check("campaign_policy", manifest.campaignPolicy, true);
+  check("campaign_policy_signature", manifest.campaignPolicySignature, true);
   if ((manifest.parentInputs ?? []).length !== PAID_PARENT_INPUT_COUNT) reasons.push(`parent_input_count:${(manifest.parentInputs ?? []).length}`);
   checkList("parent_input", manifest.parentInputs, true);
   check("catalog", manifest.catalogArtifact, true);
@@ -955,6 +1138,10 @@ export function verifyPaidExecutionAttestation(
   }
   if (typeof a.manifestSha256 !== "string" || !/^sha256:[0-9a-f]{64}$/.test(a.manifestSha256)) reasons.push("attestation_manifest_digest_missing");
   if (typeof a.signatureSha256 !== "string" || !/^sha256:[0-9a-f]{64}$/.test(a.signatureSha256)) reasons.push("attestation_signature_digest_missing");
+  if (typeof a.campaignPolicyId !== "string" || a.campaignPolicyId.length === 0) reasons.push("attestation_campaign_policy_id_missing");
+  if (typeof a.campaignPolicySha256 !== "string" || !/^sha256:[0-9a-f]{64}$/.test(a.campaignPolicySha256)) reasons.push("attestation_campaign_policy_digest_missing");
+  if (typeof a.campaignPolicySignatureSha256 !== "string" || !/^sha256:[0-9a-f]{64}$/.test(a.campaignPolicySignatureSha256)) reasons.push("attestation_campaign_policy_signature_digest_missing");
+  if (a.campaignPolicySignerFingerprint !== PAID_CAMPAIGN_POLICY_SIGNER) reasons.push("attestation_campaign_policy_signer_unpinned");
   return { ok: reasons.length === 0, reasons };
 }
 

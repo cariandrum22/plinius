@@ -1,37 +1,25 @@
 #!/usr/bin/env node
 // @ts-check
-/** Independent post-transfer verifier for Paid Pass v2 Evidence. */
+/** Independent post-transfer verifier for policy-driven Paid Pass v3 Evidence. */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join, relative, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-export const EVIDENCE_SCHEMA_VERSION = 5;
+export const EVIDENCE_SCHEMA_VERSION = 6;
 export const EXECUTION_SCHEMA_VERSION = 1;
-export const EXECUTION_ARTIFACT_TYPE = "plinius-paid-pass-v2";
+export const EXECUTION_ARTIFACT_TYPE = "plinius-paid-pass-v3";
 export const PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
+export const CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v1";
+export const CAMPAIGN_POLICY_SCHEMA_VERSION = 1;
 export const HISTORICAL_PARENT_DIGESTS = [
   "sha256:5464aac6862ee2b001cae40ac861d43b64abb9b0cd705bfa539252104963c66e",
   "sha256:eba5485902b6fa8307dc4cf1e3ff4c4bf99175f9e63eaedd0c81102332fae86d",
   "sha256:05390908e2dcadc2f029292a98be21ccc13b7e39ee8ce3b8d3660d455a1ff026",
 ];
 const GPG_CANDIDATES = ["/opt/homebrew/bin/gpg", "/usr/local/bin/gpg", "/usr/bin/gpg", "/bin/gpg", join(homedir(), ".nix-profile/bin/gpg")];
-const PASS_IDENTITIES = new Map([
-  ["plinius-qualification-2026-08-22-diagnostic-hosted-paid-r1", { campaignId: "plinius-qualification-2026-08-22-v1", mode: "diagnostic-hosted-paid-r1", totalCells: 15, totalCapUsd: 5, perRunCapUsd: 1 }],
-  ["plinius-qualification-2026-08-26-diagnostic-candidate-paid-r1", { campaignId: "plinius-qualification-2026-08-26-candidate-r1", mode: "diagnostic-candidate-paid-r1", totalCells: 16, totalCapUsd: 6, perRunCapUsd: 0.75 }],
-]);
-const TARGETS = new Map([
-  ["openai/gpt-5.6-sol-pro", { route: "openai", prompt: 2, completion: 10, temperature: null, topP: null, seed: 1 }],
-  ["anthropic/claude-opus-5", { route: "claude-on-aws", prompt: 5, completion: 25, temperature: null, topP: null, seed: null }],
-  ["google/gemini-3.7-flash", { route: "google-vertex/global", prompt: 0.375, completion: 1.875, temperature: null, topP: null, seed: 1 }],
-  ["deepseek/deepseek-v4-flash-0731", { route: "deepinfra/fp8", prompt: 0.08, completion: 0.18, temperature: 0, topP: 1, seed: 1 }],
-  ["z-ai/glm-5.3", { route: "z-ai/fp8", prompt: 1.4, completion: 4.4, temperature: 0, topP: null, seed: null }],
-  ["moonshotai/kimi-k3", { route: "moonshotai/mxfp4", prompt: 3, completion: 15, temperature: null, topP: null, seed: null }],
-  ["qwen/qwen3.8-max", { route: "alibaba", prompt: 2, completion: 6, temperature: 0, topP: null, seed: 1 }],
-  ["anthropic/claude-sonnet-5", { route: "anthropic", prompt: 2, completion: 10, temperature: null, topP: null, seed: null }],
-]);
 const BENCHMARKS = new Map([
   ["se-concurrency-atomic-stats-012", { promptTokens: 6858, maxTokens: 24576 }],
   ["arch-exactly-once-003", { promptTokens: 5541, maxTokens: 28672 }],
@@ -40,24 +28,22 @@ const BENCHMARKS = new Map([
 ]);
 const BENCHMARK_ORDER = [...BENCHMARKS.keys()];
 const OIDC_BENCHMARK = "sec-oidc-id-token-validation-001";
-const HOSTED_TARGETS = ["openai/gpt-5.6-sol-pro", "anthropic/claude-opus-5", "google/gemini-3.7-flash", "deepseek/deepseek-v4-flash-0731"];
-const CANDIDATE_TARGETS = ["z-ai/glm-5.3", "moonshotai/kimi-k3", "qwen/qwen3.8-max", "anthropic/claude-sonnet-5"];
-
-function hostedCells() {
-  const cells = [{ target: HOSTED_TARGETS[0], benchmark: OIDC_BENCHMARK, sentinel: true }];
-  for (const target of HOSTED_TARGETS) {
-    for (const benchmark of BENCHMARK_ORDER) {
-      if (target === "anthropic/claude-opus-5" && benchmark === OIDC_BENCHMARK) continue;
-      if (target === HOSTED_TARGETS[0] && benchmark === OIDC_BENCHMARK) continue;
-      cells.push({ target, benchmark, sentinel: false });
+/** @param {any} policy */
+function cellsForPolicy(policy) {
+  const targets = policy.pass.targets.map((/** @type {any} */ target) => target.slug);
+  if (policy.pass.mode === "diagnostic-hosted-paid-r1") {
+    const cells = [{ target: targets[0], benchmark: OIDC_BENCHMARK, sentinel: true }];
+    for (const target of targets) {
+      for (const benchmark of BENCHMARK_ORDER) {
+        if (target === targets[1] && benchmark === OIDC_BENCHMARK) continue;
+        if (target === targets[0] && benchmark === OIDC_BENCHMARK) continue;
+        cells.push({ target, benchmark, sentinel: false });
+      }
     }
+    return cells;
   }
-  return cells;
-}
-
-function candidateCells() {
   const cells = [];
-  for (const target of CANDIDATE_TARGETS) {
+  for (const target of targets) {
     cells.push({ target, benchmark: OIDC_BENCHMARK, sentinel: true });
     for (const benchmark of BENCHMARK_ORDER) {
       if (benchmark !== OIDC_BENCHMARK) cells.push({ target, benchmark, sentinel: false });
@@ -65,11 +51,6 @@ function candidateCells() {
   }
   return cells;
 }
-
-const PASS_CELLS = new Map([
-  ["plinius-qualification-2026-08-22-diagnostic-hosted-paid-r1", hostedCells()],
-  ["plinius-qualification-2026-08-26-diagnostic-candidate-paid-r1", candidateCells()],
-]);
 
 /** @param {Buffer | Uint8Array | string} body */
 const sha256 = (body) => `sha256:${createHash("sha256").update(body).digest("hex")}`;
@@ -194,6 +175,75 @@ function verifyDetachedSignature(manifest, signature) {
   }
 }
 
+/** @param {unknown} value @param {string[]} expected */
+function exactKeys(value, expected) {
+  return object(value) && json(Object.keys(value).sort()) === json(expected.slice().sort());
+}
+
+/** @param {unknown} value */
+function canonicalUtc(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  const canonical = new Date(parsed).toISOString();
+  return value === canonical || value === canonical.replace(".000Z", "Z") ? parsed : null;
+}
+
+/** Parse a bound policy independently of the driver. Expiry is evaluated at the
+ * catalog capture time, allowing durable Evidence to remain verifiable later. */
+/** @param {Buffer} body */
+function parseCampaignPolicy(body) {
+  const policy = JSON.parse(body.toString("utf-8"));
+  if (Buffer.from(`${JSON.stringify(policy, null, 2)}\n`, "utf-8").compare(body) !== 0) throw new Error("policy_noncanonical");
+  if (!exactKeys(policy, ["schemaVersion", "policyType", "policyId", "issuedAtUtc", "catalogObservedAtUtc", "expiresAtUtc", "requiredSignerFingerprint", "pass"])) throw new Error("policy_fields");
+  if (policy.schemaVersion !== CAMPAIGN_POLICY_SCHEMA_VERSION || policy.policyType !== CAMPAIGN_POLICY_TYPE || policy.requiredSignerFingerprint !== PINNED_SIGNER) throw new Error("policy_identity");
+  if (typeof policy.policyId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(policy.policyId)) throw new Error("policy_id");
+  const issued = canonicalUtc(policy.issuedAtUtc);
+  const observed = canonicalUtc(policy.catalogObservedAtUtc);
+  const expires = canonicalUtc(policy.expiresAtUtc);
+  if (issued == null || observed == null || expires == null || observed > issued || issued - observed > 24 * 60 * 60 * 1000 || expires <= issued || expires - issued > 7 * 24 * 60 * 60 * 1000) throw new Error("policy_time");
+  const pass = policy.pass;
+  if (!exactKeys(pass, ["mode", "campaignId", "stageId", "budget", "targets", "sentinelScope"])) throw new Error("policy_pass_fields");
+  if (typeof pass.campaignId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(pass.campaignId) || typeof pass.stageId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,159}$/.test(pass.stageId)) throw new Error("policy_pass_identity");
+  const caps = pass.mode === "diagnostic-hosted-paid-r1" ? { totalCapUsd: 5, perRunCapUsd: 1, sentinelScope: "global" } : pass.mode === "diagnostic-candidate-paid-r1" ? { totalCapUsd: 6, perRunCapUsd: 0.75, sentinelScope: "per-model" } : null;
+  if (caps == null || pass.sentinelScope !== caps.sentinelScope) throw new Error("policy_mode");
+  if (!exactKeys(pass.budget, ["totalCapUsd", "perRunCapUsd"]) || !finiteNonnegative(pass.budget.totalCapUsd) || !finiteNonnegative(pass.budget.perRunCapUsd) || pass.budget.totalCapUsd <= 0 || pass.budget.perRunCapUsd <= 0 || pass.budget.totalCapUsd > caps.totalCapUsd || pass.budget.perRunCapUsd > caps.perRunCapUsd) throw new Error("policy_budget");
+  if (!Array.isArray(pass.targets) || pass.targets.length !== 4) throw new Error("policy_targets");
+  const targets = new Map();
+  for (const target of pass.targets) {
+    if (!exactKeys(target, ["slug", "catalogModelId", "responseModelId", "providerRoute", "providerDisplay", "priceCeiling", "sampling"])) throw new Error("policy_target_fields");
+    if (![target.slug, target.catalogModelId, target.responseModelId, target.providerRoute, target.providerDisplay].every((value) => typeof value === "string" && value.length > 0 && value.length <= 160)) throw new Error("policy_target_identity");
+    for (const value of [target.slug, target.catalogModelId, target.responseModelId, target.providerRoute]) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(value) || value.split("/").some((/** @type {string} */ part) => part === "" || part === "." || part === "..")) throw new Error("policy_target_unsafe");
+    }
+    if (/[^\x20-\x7e]/.test(target.providerDisplay)) throw new Error("policy_provider_display_unsafe");
+    if (!exactKeys(target.priceCeiling, ["inputPerMTokens", "outputPerMTokens"]) || !Number.isFinite(target.priceCeiling.inputPerMTokens) || target.priceCeiling.inputPerMTokens <= 0 || !Number.isFinite(target.priceCeiling.outputPerMTokens) || target.priceCeiling.outputPerMTokens <= 0) throw new Error("policy_target_price");
+    if (!exactKeys(target.sampling, ["temperature", "topP", "seed"]) || ![target.sampling.temperature, target.sampling.topP].every((value) => value === null || Number.isFinite(value)) || (target.sampling.temperature !== null && (target.sampling.temperature < 0 || target.sampling.temperature > 2)) || (target.sampling.topP !== null && (target.sampling.topP <= 0 || target.sampling.topP > 1)) || !(target.sampling.seed === null || (Number.isSafeInteger(target.sampling.seed) && target.sampling.seed >= 0))) throw new Error("policy_target_sampling");
+    if (targets.has(target.slug)) throw new Error("policy_target_duplicate");
+    targets.set(target.slug, {
+      catalogModelId: target.catalogModelId,
+      responseModelId: target.responseModelId,
+      route: target.providerRoute,
+      providerDisplay: target.providerDisplay,
+      prompt: target.priceCeiling.inputPerMTokens,
+      completion: target.priceCeiling.outputPerMTokens,
+      temperature: target.sampling.temperature,
+      topP: target.sampling.topP,
+      seed: target.sampling.seed,
+    });
+  }
+  for (const field of ["catalogModelId", "responseModelId"]) {
+    if (new Set(pass.targets.map((/** @type {any} */ target) => target[field])).size !== pass.targets.length) throw new Error(`policy_target_duplicate_${field}`);
+  }
+  const cells = cellsForPolicy(policy);
+  return {
+    policy,
+    targets,
+    cells,
+    identity: { campaignId: pass.campaignId, stageId: pass.stageId, policyId: policy.policyId, mode: pass.mode, totalCells: cells.length, totalCapUsd: pass.budget.totalCapUsd, perRunCapUsd: pass.budget.perRunCapUsd, issued, expires },
+  };
+}
+
 /**
  * Verify Evidence without importing the driver or any project dependency.
  * @param {string} evidenceRoot
@@ -205,7 +255,10 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
   const require = (reason, condition) => { if (!condition) reasons.push(reason); };
   /** @type {string} */ let root;
   try {
+    const requestedRoot = resolve(evidenceRoot);
+    const requestedRootStat = lstatSync(requestedRoot);
     root = realpathSync(evidenceRoot);
+    require("root_canonical", root === requestedRoot && requestedRootStat.isDirectory() && !requestedRootStat.isSymbolicLink());
     const rootStat = lstatSync(root);
     const uid = typeof process.getuid === "function" ? process.getuid() : rootStat.uid;
     require("root_not_real_directory", rootStat.isDirectory() && !rootStat.isSymbolicLink());
@@ -229,14 +282,14 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
     require("manifest_content_address", manifestFile.endsWith(`${sha256(manifestBytes).slice(7)}.json`));
     const manifest = JSON.parse(manifestBytes.toString("utf-8"));
     require("manifest_schema", manifest.manifestSchemaVersion === EVIDENCE_SCHEMA_VERSION);
-    const identity = PASS_IDENTITIES.get(manifest.stageId);
-    require("manifest_stage", identity != null);
-    require("manifest_campaign", identity != null && manifest.campaignId === identity.campaignId);
-    if (identity == null) return { ok: false, reasons, manifestFile, summary: null };
+    let identity = null;
+    let policyDocument = null;
+    let policyTargets = new Map();
+    /** @type {any[]} */ let passCells = [];
 
     /** @type {Array<[string, boolean | number]>} */
     const specs = [
-      ["executionManifest", true], ["executionSignature", true], ["executionAttestation", true], ["catalogArtifact", true], ["summary", true],
+      ["executionManifest", true], ["executionSignature", true], ["executionAttestation", true], ["campaignPolicy", true], ["campaignPolicySignature", true], ["catalogArtifact", true], ["summary", true],
       ["parentInputs", 3], ["rawObservations", -1], ["records", -1], ["wires", -1], ["intents", -1],
     ];
     /** @type {Map<string, Buffer>} */ const bodies = new Map();
@@ -282,6 +335,8 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
     let executionManifest = null;
     let executionManifestInner = null;
     let executionSignatureInner = null;
+    let campaignPolicyInner = null;
+    let campaignPolicySignatureInner = null;
     try {
       if (executionManifestBody == null || executionSignatureBody == null) throw new Error("execution anchor body missing");
       const execution = decodeEnvelope(executionManifestBody);
@@ -307,12 +362,38 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       reasons.push(`execution_envelope:${error instanceof Error ? error.message : String(error)}`);
     }
     try {
+      const policyBody = bodies.get(manifest.campaignPolicy?.file ?? "");
+      const policySignatureBody = bodies.get(manifest.campaignPolicySignature?.file ?? "");
+      if (policyBody == null || policySignatureBody == null) throw new Error("campaign policy anchor body missing");
+      const policyEnvelope = decodeEnvelope(policyBody);
+      const signatureEnvelope = decodeEnvelope(policySignatureBody);
+      campaignPolicyInner = policyEnvelope.inner;
+      campaignPolicySignatureInner = signatureEnvelope.inner;
+      const fingerprint = (options.verifySignature ?? verifyDetachedSignature)(policyEnvelope.inner, signatureEnvelope.inner).toUpperCase();
+      require("campaign_policy_signature", fingerprint === PINNED_SIGNER);
+      const parsed = parseCampaignPolicy(policyEnvelope.inner);
+      policyDocument = parsed.policy;
+      policyTargets = parsed.targets;
+      passCells = parsed.cells;
+      identity = parsed.identity;
+      require("manifest_policy", manifest.policyId === identity.policyId);
+      require("manifest_stage", manifest.stageId === identity.stageId);
+      require("manifest_campaign", manifest.campaignId === identity.campaignId);
+    } catch (error) {
+      reasons.push(`campaign_policy_envelope:${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (identity == null || policyDocument == null) return { ok: false, reasons, manifestFile, summary: null };
+    try {
       if (executionAttestationBody == null) throw new Error("execution attestation body missing");
       const attestation = JSON.parse(executionAttestationBody.toString("utf-8"));
       require("execution_attestation_identity", attestation.campaignId === manifest.campaignId && attestation.stageId === manifest.stageId);
       require("execution_attestation_signature", attestation.signatureVerified === true && attestation.signerFingerprint === PINNED_SIGNER && attestation.pinnedSigner === PINNED_SIGNER);
       require("execution_attestation_manifest_digest", executionManifestInner != null && attestation.manifestSha256 === sha256(executionManifestInner));
       require("execution_attestation_signature_digest", executionSignatureInner != null && attestation.signatureSha256 === sha256(executionSignatureInner));
+      require("execution_attestation_policy_id", attestation.campaignPolicyId === identity.policyId);
+      require("execution_attestation_policy_digest", campaignPolicyInner != null && attestation.campaignPolicySha256 === sha256(campaignPolicyInner));
+      require("execution_attestation_policy_signature_digest", campaignPolicySignatureInner != null && attestation.campaignPolicySignatureSha256 === sha256(campaignPolicySignatureInner));
+      require("execution_attestation_policy_signer", attestation.campaignPolicySignerFingerprint === PINNED_SIGNER);
       require("execution_attestation_artifact", attestation.artifactType === EXECUTION_ARTIFACT_TYPE && attestation.artifactSchemaVersion === EXECUTION_SCHEMA_VERSION);
       require("execution_attestation_runner", executionManifest != null && executionManifest.files.some((/** @type {any} */ file) => file.role === "runner" && file.sha256 === attestation.runnerSha256));
       require("execution_attestation_launcher", executionManifest != null && executionManifest.files.some((/** @type {any} */ file) => file.role === "launcher" && file.sha256 === attestation.launcherSha256));
@@ -339,10 +420,9 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       const catalogBody = bodies.get(manifest.catalogArtifact.file);
       if (catalogBody == null) throw new Error("catalog body missing");
       const catalog = JSON.parse(catalogBody.toString("utf-8"));
-      require("catalog_identity", catalog.campaignId === manifest.campaignId && catalog.stageId === manifest.stageId && catalog.ok === true && Array.isArray(catalog.reasons) && catalog.reasons.length === 0);
+      require("catalog_identity", catalog.campaignId === manifest.campaignId && catalog.stageId === manifest.stageId && catalog.policyId === identity.policyId && catalog.ok === true && Array.isArray(catalog.reasons) && catalog.reasons.length === 0);
       require("catalog_budget", catalog.budget?.totalCapUsd === identity.totalCapUsd && catalog.budget?.perRunCapUsd === identity.perRunCapUsd);
-      const passCells = PASS_CELLS.get(manifest.stageId) ?? [];
-      const targetSlugs = [...new Set(passCells.map((cell) => cell.target))];
+      const targetSlugs = [...policyTargets.keys()];
       const evidence = Array.isArray(catalog.catalogEvidence) ? catalog.catalogEvidence : [];
       const expectedEndpoints = new Set([
         "https://openrouter.ai/api/v1/models",
@@ -355,6 +435,8 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
         require("catalog_base64", raw.toString("base64") === entry.rawBodyBase64);
         require("catalog_raw_digest", raw.length === entry.byteLength && sha256(raw) === entry.rawBodySha256);
         require("catalog_http", entry.httpStatus === 200 && entry.transportError == null);
+        const fetchedAt = Date.parse(entry.fetchedAtUtc);
+        require("catalog_capture_within_policy", Number.isFinite(fetchedAt) && fetchedAt >= identity.issued && fetchedAt < identity.expires);
         require(`catalog_endpoint:${String(entry.endpoint)}`, expectedEndpoints.has(entry.endpoint) && !rawByEndpoint.has(entry.endpoint));
         rawByEndpoint.set(entry.endpoint, JSON.parse(raw.toString("utf-8")));
       }
@@ -364,9 +446,9 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       require("catalog_models_shape", Array.isArray(models));
       providerDisplay = {};
       for (const slug of targetSlugs) {
-        const target = TARGETS.get(slug);
-        const matchingModels = Array.isArray(models) ? models.filter((model) => object(model) && model.id === slug) : [];
-        require(`catalog_model_exact:${slug}`, matchingModels.length === 1 && (matchingModels[0].canonical_slug == null || matchingModels[0].canonical_slug === slug));
+        const target = policyTargets.get(slug);
+        const matchingModels = Array.isArray(models) ? models.filter((model) => object(model) && model.id === target?.catalogModelId && (model.canonical_slug ?? model.id) === slug) : [];
+        require(`catalog_model_exact:${slug}`, matchingModels.length === 1);
         const endpointPayload = rawByEndpoint.get(`https://openrouter.ai/api/v1/models/${slug}/endpoints`);
         const endpoints = endpointPayload?.data?.endpoints;
         require(`catalog_endpoints_shape:${slug}`, Array.isArray(endpoints));
@@ -379,7 +461,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
         const completionPrice = catalogPrice(endpoint.pricing?.completion);
         require(`catalog_price:${slug}`, promptPrice != null && promptPrice <= target.prompt / 1_000_000 && completionPrice != null && completionPrice <= target.completion / 1_000_000 && !(promptPrice === 0 && completionPrice === 0));
         const display = typeof endpoint.provider_name === "string" ? endpoint.provider_name : typeof endpoint.name === "string" ? endpoint.name : "";
-        require(`catalog_provider_display:${slug}`, display.length > 0);
+        require(`catalog_provider_display:${slug}`, display.length > 0 && display === target.providerDisplay);
         if (display.length > 0) providerDisplay[slug] = display;
         const maxPrompt = Math.max(...passCells.filter((cell) => cell.target === slug).map((cell) => BENCHMARKS.get(cell.benchmark)?.promptTokens ?? Number.POSITIVE_INFINITY));
         const maxTokens = Math.max(...passCells.filter((cell) => cell.target === slug).map((cell) => BENCHMARKS.get(cell.benchmark)?.maxTokens ?? Number.POSITIVE_INFINITY));
@@ -396,12 +478,12 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       const verification = Array.isArray(catalog.verification) ? catalog.verification : [];
       require("catalog_verification_set", verification.length === targetSlugs.length && targetSlugs.every((slug) => verification.some((/** @type {any} */ entry) => entry?.slug === slug && entry.ok === true && Array.isArray(entry.reasons) && entry.reasons.length === 0 && entry.providerDisplay === providerDisplay[slug])));
       const totalCeiling = passCells.reduce((sum, cell) => {
-        const target = TARGETS.get(cell.target);
+        const target = policyTargets.get(cell.target);
         const benchmark = BENCHMARKS.get(cell.benchmark);
         return target && benchmark ? sum + (benchmark.promptTokens * target.prompt + benchmark.maxTokens * target.completion) / 1_000_000 : Number.POSITIVE_INFINITY;
       }, 0);
       require("catalog_budget_ceiling", Number.isFinite(totalCeiling) && totalCeiling <= identity.totalCapUsd && passCells.every((cell) => {
-        const target = TARGETS.get(cell.target);
+        const target = policyTargets.get(cell.target);
         const benchmark = BENCHMARKS.get(cell.benchmark);
         return target != null && benchmark != null && (benchmark.promptTokens * target.prompt + benchmark.maxTokens * target.completion) / 1_000_000 <= identity.perRunCapUsd;
       }));
@@ -440,7 +522,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
     /** @type {string[]} */ const invalidCostRunIds = [];
     let passed = 0;
     let failed = 0;
-    const expectedCells = PASS_CELLS.get(manifest.stageId) ?? [];
+    const expectedCells = passCells;
     const observedCells = new Set();
     for (const [runId, recordRef] of records) {
       try {
@@ -473,7 +555,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
         const requestDecoded = decodePreimage(raw.requestBody);
         require(`request_preimage:${runId}:${requestDecoded.reason}`, requestDecoded.ok && requestDecoded.jsonOk);
         const request = /** @type {any} */ (requestDecoded.value ?? {});
-        const target = TARGETS.get(record.requestedSlug);
+        const target = policyTargets.get(record.requestedSlug);
         require(`target_known:${runId}`, target != null);
         if (target != null) {
           const expectedKeys = ["max_tokens", "messages", "model", "provider", "stream"];
@@ -525,7 +607,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
         require(`record_response_qualification:${runId}`, record.paidVerdict?.responseQualified === responsePass);
         require(`record_verdict_status:${runId}`, verdictPass ? record.status?.qualification === "pass" : record.status?.qualification === "fail");
         if (verdictPass) {
-          require(`passing_response:${runId}`, raw.responseHttpStatus === 200 && response?.model === record.requestedSlug && typeof response?.id === "string" && response.id.length > 0);
+          require(`passing_response:${runId}`, raw.responseHttpStatus === 200 && response?.model === target?.responseModelId && typeof response?.id === "string" && response.id.length > 0);
           require(`passing_provider:${runId}`, response?.provider === providerDisplay[record.requestedSlug] && finalData?.provider_name === providerDisplay[record.requestedSlug]);
           require(`passing_cost:${runId}`, finiteNonnegative(billed) && billed <= identity.perRunCapUsd);
           require(`passing_completion:${runId}`, responsePass);
@@ -548,7 +630,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       const summaryBody = bodies.get(manifest.summary.file);
       if (summaryBody == null) throw new Error("summary body missing");
       const summary = JSON.parse(summaryBody.toString("utf-8"));
-      require("summary_identity", summary.campaignId === manifest.campaignId && summary.stageId === manifest.stageId && summary.mode === identity.mode);
+      require("summary_identity", summary.campaignId === manifest.campaignId && summary.stageId === manifest.stageId && summary.mode === identity.mode && summary.policyId === identity.policyId);
       require("summary_budget", summary.budget?.totalCapUsd === identity.totalCapUsd && summary.budget?.perRunCapUsd === identity.perRunCapUsd);
       require("summary_counts", summary.totalCells === identity.totalCells && summary.dispatched === records.size && summary.passed === passed && summary.failed === failed && summary.dispatched === summary.passed + summary.failed);
       require("summary_cost", finiteNonnegative(summary.spentUsd) && Math.abs(summary.spentUsd - billedTotal) < 1e-12 && summary.spentUsd <= identity.totalCapUsd);

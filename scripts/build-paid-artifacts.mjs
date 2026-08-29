@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-/** Build a source-tree-independent Paid Pass v2 package on the Mac authority. */
+/** Build a source-tree-independent Paid Pass v3 engine package on the Mac authority. */
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 const MANIFEST = "qualification-paid-execution-manifest.json";
+const DEFAULT_POLICY = join(REPO, "policy", "qualification-hosted-paid-2026-08-29-r1.json");
 const BENCHMARK_IDS = [
   "software-engineering/se-concurrency-atomic-stats-012",
   "architecture/arch-exactly-once-003",
@@ -61,25 +62,42 @@ function git(args) {
 
 /** @param {string[]} argv */
 function parseArgs(argv) {
-  let output = join(REPO, "build", "qualification-paid-v2");
+  let output = join(REPO, "build", "qualification-paid-v3-release");
+  let policy = DEFAULT_POLICY;
   let sign = true;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--output") output = resolve(argv[++i] ?? "");
+    else if (argv[i] === "--policy") policy = resolve(argv[++i] ?? "");
     else if (argv[i] === "--no-sign") sign = false;
     else if (argv[i] === "--sign") sign = true;
     else throw new Error(`unknown build argument: ${argv[i]}`);
   }
-  return { output, sign };
+  return { output, policy, sign };
 }
 
 async function main() {
-  const { output, sign } = parseArgs(process.argv.slice(2));
+  const { output, policy, sign } = parseArgs(process.argv.slice(2));
   const status = git(["status", "--porcelain=v1", "--untracked-files=all"]);
   if (status !== "") throw new Error("paid artifact build requires a completely clean committed worktree");
   const buildRoot = join(REPO, "build");
   if (output === REPO || !output.startsWith(`${buildRoot}${sep}`)) throw new Error("output must be beneath the repository build directory");
+  const policyRoot = realpathSync(join(REPO, "policy"));
+  const policyPath = realpathSync(policy);
+  if (!policyPath.startsWith(`${policyRoot}${sep}`) || resolve(policy) !== policyPath) throw new Error("policy must be a canonical path beneath the repository policy directory");
+  const policyStat = lstatSync(policyPath);
+  if (!policyStat.isFile() || policyStat.isSymbolicLink() || policyStat.nlink !== 1) throw new Error("policy must be a regular non-symlink single-link file");
+  const policyBytes = readFileSync(policyPath);
+  const policyDocument = JSON.parse(policyBytes.toString("utf-8"));
+  if (!Buffer.from(`${JSON.stringify(policyDocument, null, 2)}\n`, "utf-8").equals(policyBytes)) throw new Error("policy must be canonical pretty JSON");
+  if (policyDocument.schemaVersion !== 1 || policyDocument.policyType !== "plinius-paid-campaign-policy-v1" || policyDocument.requiredSignerFingerprint !== PINNED_SIGNER) {
+    throw new Error("policy identity or signer mismatch");
+  }
+
   rmSync(output, { recursive: true, force: true });
-  mkdirSync(output, { recursive: true, mode: 0o700 });
+  const engineOutput = join(output, "engine");
+  const policyOutput = join(output, "policy");
+  mkdirSync(engineOutput, { recursive: true, mode: 0o700 });
+  mkdirSync(policyOutput, { recursive: true, mode: 0o700 });
 
   await build({
     stdin: {
@@ -98,7 +116,7 @@ async function main() {
       sourcefile: "qualification-paid-bundle-entry.mjs",
       loader: "js",
     },
-    outfile: join(output, "qualification-driver.mjs"),
+    outfile: join(engineOutput, "qualification-driver.mjs"),
     bundle: true,
     platform: "node",
     format: "esm",
@@ -110,29 +128,29 @@ async function main() {
     define: { __PLINIUS_PAID_BUNDLE__: "true" },
     banner: {
       js: [
-        "// Plinius Paid Pass v2 isolated driver bundle.",
+        "// Plinius Paid Pass v3 isolated driver bundle.",
         'import { createRequire as __pliniusCreateRequire } from "node:module";',
         'const require = __pliniusCreateRequire(process.cwd() + "/qualification-driver.mjs");',
       ].join("\n"),
     },
   });
-  cpSync(join(REPO, "qualification-paid-launch.mjs"), join(output, "qualification-paid-launch.mjs"));
-  cpSync(join(REPO, "qualification-paid-verify.mjs"), join(output, "qualification-paid-verify.mjs"));
+  cpSync(join(REPO, "qualification-paid-launch.mjs"), join(engineOutput, "qualification-paid-launch.mjs"));
+  cpSync(join(REPO, "qualification-paid-verify.mjs"), join(engineOutput, "qualification-paid-verify.mjs"));
   for (const id of BENCHMARK_IDS) {
-    cpSync(join(REPO, "benchmark", id), join(output, "benchmark", id), { recursive: true, dereference: false, errorOnExist: true });
+    cpSync(join(REPO, "benchmark", id), join(engineOutput, "benchmark", id), { recursive: true, dereference: false, errorOnExist: true });
   }
 
   /** @param {string} path */
   const roleFor = (path) => path === "qualification-paid-launch.mjs" ? "launcher" : path === "qualification-driver.mjs" ? "runner" : path === "qualification-paid-verify.mjs" ? "verifier" : "benchmark";
-  const files = walk(output).map((absolute) => {
-    const path = relative(output, absolute).split(sep).join("/");
+  const files = walk(engineOutput).map((absolute) => {
+    const path = relative(engineOutput, absolute).split(sep).join("/");
     const body = readFileSync(absolute);
     chmodSync(absolute, 0o600);
     return { path, sha256: sha256(body), bytes: body.length, role: roleFor(path) };
   });
   const manifest = {
     schemaVersion: 1,
-    artifactType: "plinius-paid-pass-v2",
+    artifactType: "plinius-paid-pass-v3",
     createdAtUtc: new Date().toISOString(),
     source: { commit: git(["rev-parse", "HEAD"]), tree: git(["rev-parse", "HEAD^{tree}"]) },
     requiredSignerFingerprint: PINNED_SIGNER,
@@ -142,16 +160,36 @@ async function main() {
     verifier: "qualification-paid-verify.mjs",
     files,
   };
-  const manifestPath = join(output, MANIFEST);
+  const manifestPath = join(engineOutput, MANIFEST);
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  const packagedPolicyPath = join(policyOutput, basename(policyPath));
+  cpSync(policyPath, packagedPolicyPath, { dereference: false, errorOnExist: true });
+  chmodSync(packagedPolicyPath, 0o600);
   if (sign) {
     const signaturePath = `${manifestPath}.sig`;
     execFileSync(pinnedBinary(GPG_CANDIDATES), ["--batch", "--yes", "--local-user", PINNED_SIGNER, "--output", signaturePath, "--detach-sign", manifestPath], { stdio: "inherit" });
     chmodSync(signaturePath, 0o600);
+    const policySignaturePath = `${packagedPolicyPath}.sig`;
+    execFileSync(pinnedBinary(GPG_CANDIDATES), ["--batch", "--yes", "--local-user", PINNED_SIGNER, "--output", policySignaturePath, "--detach-sign", packagedPolicyPath], { stdio: "inherit" });
+    chmodSync(policySignaturePath, 0o600);
   } else {
-    console.warn("UNSIGNED TEST ARTIFACT: launcher will reject it until the detached signature is added");
+    console.warn("UNSIGNED TEST PACKAGE: launcher will reject it until both detached signatures are added");
   }
-  console.log(JSON.stringify({ output: realpathSync(output), manifest: basename(manifestPath), manifestSha256: sha256(readFileSync(manifestPath)), signed: sign }, null, 2));
+  const checksumBody = walk(output)
+    .map((absolute) => `${sha256(readFileSync(absolute)).slice("sha256:".length)}  ${relative(output, absolute).split(sep).join("/")}`)
+    .join("\n") + "\n";
+  const checksumsPath = join(output, "SHA256SUMS");
+  writeFileSync(checksumsPath, checksumBody, { mode: 0o600, flag: "wx" });
+  console.log(JSON.stringify({
+    packageRoot: realpathSync(output),
+    artifactRoot: realpathSync(engineOutput),
+    manifest: relative(output, manifestPath),
+    manifestSha256: sha256(readFileSync(manifestPath)),
+    policy: relative(output, packagedPolicyPath),
+    policySha256: sha256(readFileSync(packagedPolicyPath)),
+    checksumsSha256: sha256(readFileSync(checksumsPath)),
+    signed: sign,
+  }, null, 2));
 }
 
 main().catch((error) => {

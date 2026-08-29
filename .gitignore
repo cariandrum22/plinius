@@ -56,3 +56,4 @@ coverage/
 
 # Operational authority material is intentionally versioned.
 !docs/qualification-paid-v2-ubuntu-runbook.md
+!docs/qualification-paid-v3-ubuntu-runbook.md
