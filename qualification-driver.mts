@@ -150,10 +150,6 @@ const OR_BASE = "https://openrouter.ai/api/v1";
 /** Replaced with `true` only in the isolated paid bundle. */
 declare const __PLINIUS_PAID_BUNDLE__: boolean;
 
-function compiledAsPaidBundle(): boolean {
-  return typeof __PLINIUS_PAID_BUNDLE__ !== "undefined" && __PLINIUS_PAID_BUNDLE__;
-}
-
 /**
  * Attempts allowed per logical run. This campaign runs a single attempt per
  * cell; the record shape supports more, but no continuation mode or retry policy
@@ -3737,7 +3733,9 @@ function invokedDirectly(): boolean {
   }
 }
 
-if (!compiledAsPaidBundle() && invokedDirectly()) {
+// Keep the define check directly in this condition. Esbuild can then erase the
+// entire non-paid entrypoint and its frozen model tables from the paid bundle.
+if (typeof __PLINIUS_PAID_BUNDLE__ === "undefined" && invokedDirectly()) {
   const mode = resolveDriverMode(process.env.PLINIUS_DRIVER_MODE);
   // A paid bundle is imported by the externally verified artifact launcher. Executing
   // the source or bundle directly never reaches the paid entrypoint.

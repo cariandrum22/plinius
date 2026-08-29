@@ -134,6 +134,14 @@ async function main() {
       ].join("\n"),
     },
   });
+  const runnerPath = join(engineOutput, "qualification-driver.mjs");
+  const runnerText = readFileSync(runnerPath, "utf-8");
+  const policyTargets = Array.isArray(policyDocument.pass?.targets) ? policyDocument.pass.targets : [];
+  const policyModelIdentifiers = new Set(policyTargets.flatMap((/** @type {any} */ target) => [target.slug, target.catalogModelId, target.responseModelId]));
+  for (const identifier of policyModelIdentifiers) {
+    if (typeof identifier !== "string" || identifier.length === 0) throw new Error("policy contains an invalid model identifier");
+    if (runnerText.includes(identifier)) throw new Error(`policy model identifier leaked into stable engine bundle: ${identifier}`);
+  }
   cpSync(join(REPO, "qualification-paid-launch.mjs"), join(engineOutput, "qualification-paid-launch.mjs"));
   cpSync(join(REPO, "qualification-paid-verify.mjs"), join(engineOutput, "qualification-paid-verify.mjs"));
   for (const id of BENCHMARK_IDS) {
