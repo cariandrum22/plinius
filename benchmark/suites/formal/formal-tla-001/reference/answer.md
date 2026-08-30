@@ -1,33 +1,42 @@
-# Bounded-Buffer Safety Specification -- Reference Answer
-
+File: spec.tla
 ```tla
----------------------------- MODULE BoundedBuffer ----------------------------
+-------------------------------- MODULE spec ---------------------------------
 EXTENDS Naturals, Sequences
 
-CONSTANT Capacity
+CONSTANTS Capacity, MaxProduced
 
-ASSUME CapacityOK == Capacity \in Nat /\ Capacity > 0
+ASSUME ModelBounds ==
+    /\ Capacity \in Nat \ {0}
+    /\ MaxProduced \in Nat \ {0}
+    /\ MaxProduced > Capacity
 
 VARIABLES buffer, produced, consumed
 
 vars == << buffer, produced, consumed >>
 
+-----------------------------------------------------------------------------
+\* Type correctness of the state.
 TypeOK ==
     /\ buffer \in Seq(Nat)
     /\ produced \in Nat
     /\ consumed \in Nat
 
+\* The system starts empty, with both counters at zero.
 Init ==
     /\ buffer = << >>
     /\ produced = 0
     /\ consumed = 0
 
+\* Produce is enabled only when the buffer is not full and the finite model
+\* checking boundary has not been reached.
 Produce ==
     /\ Len(buffer) < Capacity
+    /\ produced < MaxProduced
     /\ buffer' = Append(buffer, produced)
     /\ produced' = produced + 1
     /\ consumed' = consumed
 
+\* Consume is enabled only when the buffer is not empty.
 Consume ==
     /\ Len(buffer) > 0
     /\ buffer' = Tail(buffer)
@@ -38,6 +47,11 @@ Next == Produce \/ Consume
 
 Spec == Init /\ [][Next]_vars
 
+-----------------------------------------------------------------------------
+\* Safety invariant: the buffer never exceeds capacity, and its length is
+\* exactly the number of items produced but not yet consumed. This is a real
+\* constraint on reachable states -- dropping the Produce capacity guard would
+\* let Len(buffer) climb past Capacity and violate the first conjunct.
 BufferInvariant ==
     /\ Len(buffer) <= Capacity
     /\ Len(buffer) = produced - consumed
@@ -45,8 +59,6 @@ BufferInvariant ==
 
 =============================================================================
 ```
-
-File: spec.tla
 
 ## State variables
 
@@ -56,6 +68,8 @@ File: spec.tla
 - `consumed` -- monotone count of items ever removed from the head.
 - `Capacity` -- a `CONSTANT`, fixed by `ASSUME` to a positive natural number,
   keeping the spec parametric rather than hard-coding one buffer size.
+- `MaxProduced` -- a positive finite exploration bound. It does not weaken the
+  capacity property; it makes the TLC state graph finite.
 
 ## Init
 
@@ -69,8 +83,9 @@ determined by `Next`.
 Each action assigns a primed value to all three variables, so no variable is
 ever left undefined in a step:
 
-- `Produce` is guarded by `Len(buffer) < Capacity` (not full). It appends a new
-  item and increments `produced`, leaving `consumed` unchanged.
+- `Produce` is guarded by `Len(buffer) < Capacity` (not full) and
+  `produced < MaxProduced` (inside the finite exploration prefix). It appends a
+  new item and increments `produced`, leaving `consumed` unchanged.
 - `Consume` is guarded by `Len(buffer) > 0` (not empty). It drops the head and
   increments `consumed`, leaving `produced` unchanged.
 

@@ -1,9 +1,12 @@
----------------------------- MODULE BoundedBuffer ----------------------------
+-------------------------------- MODULE spec ---------------------------------
 EXTENDS Naturals, Sequences
 
-CONSTANT Capacity
+CONSTANTS Capacity, MaxProduced
 
-ASSUME CapacityOK == Capacity \in Nat /\ Capacity > 0
+ASSUME ModelBounds ==
+    /\ Capacity \in Nat \ {0}
+    /\ MaxProduced \in Nat \ {0}
+    /\ MaxProduced > Capacity
 
 VARIABLES buffer, produced, consumed
 
@@ -22,9 +25,11 @@ Init ==
     /\ produced = 0
     /\ consumed = 0
 
-\* Produce is enabled only when the buffer is not full.
+\* Produce is enabled only when the buffer is not full and the finite model
+\* checking boundary has not been reached.
 Produce ==
     /\ Len(buffer) < Capacity
+    /\ produced < MaxProduced
     /\ buffer' = Append(buffer, produced)
     /\ produced' = produced + 1
     /\ consumed' = consumed
@@ -43,8 +48,8 @@ Spec == Init /\ [][Next]_vars
 -----------------------------------------------------------------------------
 \* Safety invariant: the buffer never exceeds capacity, and its length is
 \* exactly the number of items produced but not yet consumed. This is a real
-\* constraint on reachable states -- dropping the Produce guard would let
-\* Len(buffer) climb past Capacity and violate the first conjunct.
+\* constraint on reachable states -- dropping the Produce capacity guard would
+\* let Len(buffer) climb past Capacity and violate the first conjunct.
 BufferInvariant ==
     /\ Len(buffer) <= Capacity
     /\ Len(buffer) = produced - consumed

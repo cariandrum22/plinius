@@ -9,8 +9,9 @@ expectedOutputFormat: >
   Return TWO things.
 
   (1) The complete TLA+ module as a single fenced code block using the ```tla
-  language tag. The module MUST define, at minimum, the operators Init, Next,
-  and a named safety invariant, plus a temporal Spec formula.
+  language tag. Because the required output file is spec.tla, the module MUST
+  be named spec. It MUST define, at minimum, the operators Init, Next, and a
+  named safety invariant, plus a temporal Spec formula.
 
   (2) A prose section titled "Explanation" (a Markdown "## Explanation"
   heading) that walks through the state variables, Init, Next, and — crucially —
@@ -28,13 +29,16 @@ requiredConstraints:
     tautology such as TRUE or x = x.
   - Init and Next MUST together model the SPECIFIC protocol described in the
     task (a bounded producer/consumer buffer), including the capacity bound.
+  - The model MUST use the positive constant MaxProduced as a finite TLC
+    exploration bound and disable Produce once produced = MaxProduced.
   - The spec.tla file content MUST match the fenced ```tla block exactly.
   - Every Next-action disjunct MUST be a well-formed TLA+ action that assigns a
     primed value (or UNCHANGED) to every declared variable.
 referenceFiles:
   - reference/spec.tla
   - reference/answer.md
-fixtures: []
+fixtures:
+  - fixtures/spec.cfg
 deterministicChecks:
   - kind: command
     id: tlc-check
@@ -45,7 +49,7 @@ deterministicChecks:
       not_available and the result is inconclusive rather than a false pass.
     blocking: true
     tool: tlc
-    args: ["spec.tla"]
+    args: ["-config", "fixtures/spec.cfg", "spec.tla"]
     expectExitCode: 0
     timeoutMs: 60000
     forbidOutputMatches: "0 states generated|No states"

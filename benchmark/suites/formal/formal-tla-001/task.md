@@ -23,13 +23,17 @@ zero.
 
 Write a **complete, self-contained TLA+ module** that formalizes this protocol:
 
-1. Declare the state variables (at minimum: the buffer sequence and the
-   `produced` / `consumed` counters) and a `CONSTANT Capacity`, with an
-   `ASSUME` that pins it to a positive natural number.
+1. Name the module exactly **`spec`** so that it matches the required
+   `spec.tla` filename. Declare the state variables (at minimum: the buffer
+   sequence and the `produced` / `consumed` counters) and the constants
+   `Capacity` and `MaxProduced`. Use an `ASSUME` requiring both constants to be
+   positive natural numbers and `MaxProduced > Capacity`.
 2. Define **`Init`** describing the unique initial state.
 3. Define the **`Produce`** and **`Consume`** actions with their correct
-   enabling guards, and combine them into **`Next`**. Every action must assign a
-   primed value (or `UNCHANGED`) to *every* declared variable.
+   enabling guards, and combine them into **`Next`**. `Produce` must also be
+   disabled once `produced = MaxProduced`; this is a model-checking bound, not
+   a change to the capacity invariant. Every action must assign a primed value
+   (or `UNCHANGED`) to *every* declared variable.
 4. Define a temporal **`Spec == Init /\\ [][Next]_vars`** formula.
 5. State a **named safety invariant** capturing the real correctness property of
    this protocol. A strong invariant relates the buffer length to the counters,
@@ -61,3 +65,7 @@ Then write a prose **Explanation** that:
   what matter.
 - Keep the module parametric in `Capacity`; do not hard-code a single size into
   the actions.
+- `MaxProduced` makes TLC's state space finite. The supplied evaluator config
+  checks `Capacity = 2` and `MaxProduced = 4` and disables deadlock checking
+  because reaching the finite exploration boundary is expected. Safety is
+  prefix-closed, so every explored state still has to satisfy the invariant.
