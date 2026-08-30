@@ -526,6 +526,20 @@ describe("detached-signature campaign policy", () => {
     const legacy = await readFile(join(process.cwd(), "policy", "qualification-hosted-paid-2026-08-29-r1.json"));
     expect(() => parsePaidCampaignPolicy(legacy, "diagnostic-hosted-paid-r1", "2026-08-29T16:00:00Z")).toThrow(/identity mismatch/);
   });
+
+  it("loads the checked-in Candidate policy with four canonical versioned targets", async () => {
+    const checkedIn = await readFile(join(process.cwd(), "policy", "qualification-candidate-paid-2026-08-30-r1.json"));
+    const loaded = parsePaidCampaignPolicy(checkedIn, "diagnostic-candidate-paid-r1", "2026-08-30T02:00:00Z");
+    expect(loaded.pass.policyId).toBe("plinius-candidate-paid-2026-08-30-r1");
+    expect(loaded.pass.targets.map((target) => target.slug)).toEqual([
+      "z-ai/glm-5.3-20260816",
+      "moonshotai/kimi-k3-20260715",
+      "qwen/qwen3.8-max-20260803",
+      "anthropic/claude-sonnet-5-20260630",
+    ]);
+    expect(loaded.cells).toHaveLength(16);
+    expect(loaded.cells.filter((cell) => cell.sentinel)).toHaveLength(4);
+  });
 });
 
 // --- 2. routing + wire tamper ------------------------------------------------
