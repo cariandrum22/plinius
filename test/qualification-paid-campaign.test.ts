@@ -1,5 +1,5 @@
 /**
- * Partitioned hosted paid passes — production-path tests (Paid Pass v3).
+ * Partitioned hosted paid passes — production-path tests (Paid Pass v3.3).
  *
  * v3 packages a stable dependency-free launcher, one bundled driver, benchmark assets and
  * an independent Mac verifier under one signed execution manifest. A separately signed,
@@ -73,7 +73,7 @@ import type {
   PaidManifestRef,
 } from "../src/qualification/paid-campaign.js";
 
-import { dispatchViaBackend, preparePaidBootstrap, runPaidPass, paidPlanCell, verifyPaidCatalog, resolveDriverMode, generationCost, copyPaidAnchorsIntoRoot, validatePaidOpenRouterCredential } from "../qualification-driver.mjs";
+import { dispatchViaBackend, preparePaidBootstrap, runPaidPass, paidPlanCell, verifyPaidCatalog, resolveDriverMode, generationCost, copyPaidAnchorsIntoRoot, validatePaidOpenRouterCredential, PAID_TIMEOUT_MS } from "../qualification-driver.mjs";
 import type { PaidCellPlan } from "../qualification-driver.mjs";
 import type { FetchFn } from "../src/backends/openai-compatible.js";
 
@@ -203,7 +203,7 @@ type OnWire = (ev: any) => void;
  * assembled from these persisted fragments, never from the returned facts. */
 function emitWire(facts: any, onWire: OnWire) {
   onWire({ stage: "request", url: facts.wire.request.url, method: "POST", preimage: facts.wire.request.body });
-  onWire({ stage: "response", url: facts.wire.request.url, method: "POST", httpStatus: facts.wire.response.httpStatus ?? 200, preimage: facts.wire.response.body });
+  onWire({ stage: "response", url: facts.wire.request.url, method: "POST", httpStatus: facts.wire.response.httpStatus ?? 200, preimage: facts.wire.response.body, bodyReadError: null });
   for (const poll of facts.wire.costLookup.polls) onWire({ stage: "cost_poll", pollIndex: poll.pollIndex, poll });
 }
 
@@ -234,7 +234,7 @@ function throwAfterWire(factsFn: (cell: any, plan: any) => any, message: string)
   return async (cell: any, plan: any, _req: any, onWire: OnWire) => {
     const facts = factsFn(cell, plan);
     onWire({ stage: "request", url: facts.wire.request.url, method: "POST", preimage: facts.wire.request.body });
-    onWire({ stage: "response", url: facts.wire.request.url, method: "POST", httpStatus: 200, preimage: facts.wire.response.body });
+    onWire({ stage: "response", url: facts.wire.request.url, method: "POST", httpStatus: 200, preimage: facts.wire.response.body, bodyReadError: null });
     throw new Error(message);
   };
 }
@@ -540,6 +540,25 @@ describe("detached-signature campaign policy", () => {
     expect(loaded.cells).toHaveLength(16);
     expect(loaded.cells.filter((cell) => cell.sentinel)).toHaveLength(4);
   });
+
+  it("loads Candidate r2 as a fresh full pass with non-colliding campaign identity", async () => {
+    const r1 = parsePaidCampaignPolicy(
+      await readFile(join(process.cwd(), "policy", "qualification-candidate-paid-2026-08-30-r1.json")),
+      "diagnostic-candidate-paid-r1",
+      "2026-08-30T06:14:00Z",
+    );
+    const r2 = parsePaidCampaignPolicy(
+      await readFile(join(process.cwd(), "policy", "qualification-candidate-paid-2026-08-30-r2.json")),
+      "diagnostic-candidate-paid-r1",
+      "2026-08-30T06:14:00Z",
+    );
+    expect(r2.pass.policyId).toBe("plinius-candidate-paid-2026-08-30-r2");
+    expect(r2.pass.campaignId).not.toBe(r1.pass.campaignId);
+    expect(r2.pass.stageId).not.toBe(r1.pass.stageId);
+    expect(r2.pass.budget).toEqual({ totalCapUsd: 6, perRunCapUsd: 0.75 });
+    expect(r2.cells).toHaveLength(16);
+    expect(r2.cells.filter((cell) => cell.sentinel)).toHaveLength(4);
+  });
 });
 
 // --- 2. routing + wire tamper ------------------------------------------------
@@ -701,6 +720,7 @@ describe("raw-observation re-derivation from disk bytes (canonical + full chain)
       requestBody: goodPre(reqBody),
       responseHttpStatus: 200,
       responseBody: goodPre(resBody),
+      responseBodyError: null,
       costLookup: { polls: [httpPoll(0, 200, goodPre(lookupBody))], finalOk: true } as any,
       ...over,
     };
@@ -740,6 +760,24 @@ describe("raw-observation re-derivation from disk bytes (canonical + full chain)
     const d = reDerivePaidFromRawObservation(tampered);
     expect(d.ok).toBe(false);
     expect(d.reasons.some((r) => r.startsWith("response_"))).toBe(true);
+  });
+  it("retains a validated body-read timeout as an explicit failure reason", () => {
+    const raw = rawFor({
+      responseBody: null,
+      responseBodyError: { kind: "timeout", message: "response body read timed out after 1200000ms", timeoutMs: 1_200_000 },
+      costLookup: null,
+    });
+    const d = reDerivePaidFromRawObservation(raw);
+    expect(d.ok).toBe(false);
+    expect(d.reasons).toContain("response_body_timeout");
+    expect(d.reasons).toContain("response_wire_body_missing");
+    expect(d.billedCostUsd).toBeNull();
+  });
+  it("rejects malformed or contradictory body-read error evidence", () => {
+    const raw = rawFor({ responseBodyError: { kind: "timeout", message: "timeout", timeoutMs: 1_200_000 } });
+    expect(reDerivePaidFromRawObservation(raw).reasons).toContain("response_body_error_with_preimage");
+    const malformed = rawFor({ responseBody: null, responseBodyError: { kind: "timeout", message: "bad\nmessage", timeoutMs: 0 } });
+    expect(reDerivePaidFromRawObservation(malformed).reasons).toContain("response_body_error_invalid");
   });
   it("rejects finalOk=false / an unsettled cost lookup, and bills nothing", () => {
     const notSettled = rawFor({ costLookup: { polls: [httpPoll(0, 500, goodPre({ error: "boom" }), { dataPresent: false })], finalOk: false } as any });
@@ -1127,6 +1165,76 @@ describe("dispatch adapter provider routing in the wire", () => {
     await expect(dispatchViaBackend({ backendId: "openrouter", baseUrl: OR_BASE, apiKey: `OPENROUTER_API_KEY=${validOpenRouterKey()}`, requirePaidCredential: true, timeoutMs: 5000, isHosted: true, req: { model: target.slug, maxTokens: 1024, temperature: null, topP: null, seed: 1, providerRouting: routing }, messages: [{ role: "user", content: "hi" }], fetchFn: fn })).rejects.toThrow(/one key only/);
     expect(calls).toHaveLength(0);
   });
+
+  it("captures the response stream once without clone/tee", async () => {
+    const target = HOSTED_PAID_TARGETS[0];
+    const response = new Response(JSON.stringify({
+      id: "gen-once",
+      model: target.responseModelId,
+      provider: target.providerDisplay,
+      choices: [{ finish_reason: "stop", message: { role: "assistant", content: "ok" } }],
+      usage: {},
+    }), { status: 200 });
+    Object.defineProperty(response, "clone", { value: () => { throw new Error("clone must not be called"); } });
+    let fetches = 0;
+    const events: any[] = [];
+    const facts = await dispatchViaBackend({
+      backendId: "openrouter", baseUrl: OR_BASE, apiKey: validOpenRouterKey(), requirePaidCredential: true,
+      timeoutMs: 1000, isHosted: true,
+      req: { model: target.slug, maxTokens: 1024, temperature: null, topP: null, seed: 1, providerRouting: buildProviderRouting(target) },
+      messages: [{ role: "user", content: "hi" }],
+      fetchFn: async () => { fetches++; return response; },
+      onWire: (event) => events.push(event),
+    });
+    expect(fetches).toBe(1);
+    expect(facts.transportError).toBeNull();
+    expect(events.find((event) => event.stage === "response")).toMatchObject({ httpStatus: 200, bodyReadError: null });
+    expect(events.find((event) => event.stage === "response").preimage).not.toBeNull();
+  });
+
+  it("persists a body-read timeout reason after HTTP headers arrive", async () => {
+    const target = CANDIDATE_PAID_TARGETS[1];
+    const events: any[] = [];
+    let bodyReads = 0;
+    let cloneCalls = 0;
+    const fetchFn: FetchFn = async (_url, init) => ({
+      status: 200,
+      statusText: "OK",
+      headers: new Headers(),
+      clone: () => { cloneCalls++; throw new Error("clone must not be called"); },
+      arrayBuffer: () => {
+        bodyReads++;
+        return new Promise<ArrayBuffer>((_resolve, reject) => {
+          const signal = init?.signal as AbortSignal;
+          const abort = () => reject(new DOMException("aborted", "AbortError"));
+          if (signal.aborted) abort();
+          else signal.addEventListener("abort", abort, { once: true });
+        });
+      },
+    } as unknown as Response);
+    const facts = await dispatchViaBackend({
+      backendId: "openrouter", baseUrl: OR_BASE, apiKey: validOpenRouterKey(), requirePaidCredential: true,
+      timeoutMs: 10, isHosted: true,
+      req: { model: target.slug, maxTokens: 1024, temperature: null, topP: null, seed: null, providerRouting: buildProviderRouting(target) },
+      messages: [{ role: "user", content: "hi" }], fetchFn,
+      onWire: (event) => events.push(event),
+    });
+    expect(bodyReads).toBe(1);
+    expect(cloneCalls).toBe(0);
+    expect(facts.transportError?.kind).toBe("timeout");
+    expect(events.find((event) => event.stage === "response")).toEqual({
+      stage: "response",
+      url: CHAT_URL,
+      method: "POST",
+      httpStatus: 200,
+      preimage: null,
+      bodyReadError: { kind: "timeout", message: "response body read timed out after 10ms", timeoutMs: 10 },
+    });
+  });
+
+  it("uses a bounded twenty-minute timeout for slow paid reasoning", () => {
+    expect(PAID_TIMEOUT_MS).toBe(1_200_000);
+  });
 });
 
 // --- 6. credential ordering --------------------------------------------------
@@ -1373,6 +1481,52 @@ describe("runPaidPass orchestration", () => {
     expect(result.dispatchedRunIds.length).toBe(1);
   });
 
+  it("binds a response-body timeout into raw Evidence and the failed record", async () => {
+    const root = freshRoot("response-body-timeout");
+    const cells = buildCandidatePaidCells(CANDIDATE_PAID_TARGETS);
+    const result = await runPaidPass(await setupPaidRun(CANDIDATE_PAID_PASS, cells, root, async (_cell: any, plan: any, _req: any, onWire: any) => {
+      const facts = factsFor(plan, { ok: true, costUsd: 0.01 });
+      onWire({ stage: "request", url: facts.wire.request.url, method: "POST", preimage: facts.wire.request.body });
+      onWire({
+        stage: "response", url: facts.wire.request.url, method: "POST", httpStatus: 200, preimage: null,
+        bodyReadError: { kind: "timeout", message: "response body read timed out after 1200000ms", timeoutMs: 1_200_000 },
+      });
+      return { ...facts, latencyMs: 1_200_001 };
+    }));
+    expect(result.stopped).toMatch(/response_body_timeout/);
+    expect(result.costCoverage.unknownCostRunIds).toEqual(result.dispatchedRunIds);
+    const files = await readdir(join(root, "runs"));
+    const rawName = files.find((file) => file.startsWith("paid-rawobs-"));
+    const recordName = files.find((file) => file.endsWith(".json") && !file.startsWith("paid-") && !file.includes("intent"));
+    const raw = JSON.parse(await readFile(join(root, "runs", rawName!), "utf-8"));
+    const record = JSON.parse(await readFile(join(root, "runs", recordName!), "utf-8"));
+    expect(raw.responseBody).toBeNull();
+    expect(raw.responseBodyError).toEqual({ kind: "timeout", message: "response body read timed out after 1200000ms", timeoutMs: 1_200_000 });
+    expect(record.error).toEqual({ kind: "timeout", message: "response body read timed out after 1200000ms" });
+    const independent = verifyPaidEvidence(root, {
+      verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER,
+      parentDigests: await Promise.all(anchorPaths.parentInputPaths.map(fileSha)),
+    });
+    expect(independent.ok, independent.reasons.join("\n")).toBe(true);
+  });
+
+  it("independent verifier rejects malformed response-body error Evidence", async () => {
+    const root = freshRoot("response-body-error-malformed");
+    const cells = buildCandidatePaidCells(CANDIDATE_PAID_TARGETS);
+    await runPaidPass(await setupPaidRun(CANDIDATE_PAID_PASS, cells, root, async (_cell: any, plan: any, _req: any, onWire: any) => {
+      const facts = factsFor(plan, { ok: true, costUsd: 0.01 });
+      onWire({ stage: "request", url: facts.wire.request.url, method: "POST", preimage: facts.wire.request.body });
+      onWire({ stage: "response", url: facts.wire.request.url, method: "POST", httpStatus: 200, preimage: null, bodyReadError: { kind: "timeout", message: "bad\nmessage", timeoutMs: 0 } });
+      return facts;
+    }));
+    const independent = verifyPaidEvidence(root, {
+      verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER,
+      parentDigests: await Promise.all(anchorPaths.parentInputPaths.map(fileSha)),
+    });
+    expect(independent.ok).toBe(false);
+    expect(independent.reasons.some((reason) => reason.startsWith("response_body_error_shape:"))).toBe(true);
+  });
+
   it("on a generate() throw, saves TERMINAL record + wire fragments and stops (no billed wire lost)", async () => {
     const root = freshRoot("dispatch-throw");
     const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
@@ -1416,7 +1570,7 @@ describe("runPaidPass orchestration", () => {
     expect(manifestName).toBeTruthy();
     const originalManifestBody = await readFile(join(root, manifestName!), "utf-8");
     const manifest = JSON.parse(originalManifestBody);
-    expect(manifest.manifestSchemaVersion).toBe(6);
+    expect(manifest.manifestSchemaVersion).toBe(7);
     expect(manifest.records.length).toBe(16);
     expect(manifest.rawObservations.length).toBe(16);
     expect(manifest.wires.length).toBe(48);

@@ -139,6 +139,7 @@ import type {
   CatalogModelInfo,
   CatalogVerifyNeed,
   PaidRawObservation,
+  ResponseBodyReadError,
   PaidManifestRef,
   PaidBindingManifest,
   PaidArtifactStat,
@@ -1906,7 +1907,8 @@ export async function livePreflight(args: LivePreflightArgs): Promise<PreflightR
  * from these persisted fragments — never from the adapter's returned object.
  */
 export type PaidWireEvent =
-  | { stage: "request" | "response"; url: string | null; method: string | null; httpStatus?: number | null; preimage: WireBodyPreimage | null }
+  | { stage: "request"; url: string | null; method: string | null; preimage: WireBodyPreimage | null }
+  | { stage: "response"; url: string | null; method: string | null; httpStatus: number | null; preimage: WireBodyPreimage | null; bodyReadError: ResponseBodyReadError | null }
   | { stage: "cost_poll"; pollIndex: number; poll: CostLookupPollEvidence };
 
 /** Arguments to {@link dispatchViaBackend}. */
@@ -1971,13 +1973,22 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
   let capturedResBody: string | null = null;
   let capturedResHeaders: Record<string, string> = {};
   let responseReceivedUtc: string | null = null;
+  let wireSinkError: unknown = null;
+  const persistWire = (event: PaidWireEvent) => {
+    try {
+      args.onWire?.(event);
+    } catch (error) {
+      wireSinkError = error;
+      throw error;
+    }
+  };
   const capturing: FetchFn = async (url, init) => {
     capturedUrl = url;
     capturedMethod = (init?.method as string) ?? "GET";
     capturedReqBody = typeof init?.body === "string" ? init.body : "";
     // Send-time durable sink: the request wire is persisted BEFORE the provider is
     // called, so an exception after this point cannot lose the billed request.
-    args.onWire?.({ stage: "request", url: capturedUrl, method: capturedMethod, preimage: capturedReqBody ? encodeWireBody(capturedReqBody) : null });
+    persistWire({ stage: "request", url: capturedUrl, method: capturedMethod, preimage: capturedReqBody ? encodeWireBody(capturedReqBody) : null });
     const res = await args.fetchFn(url, init);
     responseReceivedUtc = now();
     // Allowlisted response headers only — authorization / cookie / set-cookie / any
@@ -1987,21 +1998,30 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
     } catch {
       capturedResHeaders = {};
     }
-    // arrayBuffer() preserves the EXACT response bytes — never a .text() decode/re-encode.
+    capturedResStatus = res.status;
+    // Consume the provider body exactly once. Returning a reconstructed Response lets
+    // the backend parse those same retained bytes without cloning/teeing the network
+    // stream, which previously allowed a slow body to time out with only HTTP 200
+    // retained. A body-read failure is durably classified before it is rethrown.
     try {
-      const clone = res.clone();
-      capturedResStatus = res.status;
-      capturedResBytes = new Uint8Array(await clone.arrayBuffer());
+      capturedResBytes = new Uint8Array(await res.arrayBuffer());
       capturedResBody = Buffer.from(capturedResBytes).toString("utf-8");
-    } catch {
-      capturedResStatus = res.status;
+    } catch (error) {
       capturedResBytes = null;
       capturedResBody = null;
+      const aborted = Boolean((init?.signal as AbortSignal | undefined)?.aborted);
+      const name = error instanceof Error ? error.name : "UnknownError";
+      const bodyReadError: ResponseBodyReadError = aborted || name === "AbortError"
+        ? { kind: "timeout", message: `response body read timed out after ${args.timeoutMs}ms`, timeoutMs: args.timeoutMs }
+        : { kind: "read_error", message: `response body read failed (${/^[A-Za-z][A-Za-z0-9]*$/.test(name) ? name : "UnknownError"})`, timeoutMs: args.timeoutMs };
+      persistWire({ stage: "response", url: capturedUrl, method: capturedMethod, httpStatus: capturedResStatus, preimage: null, bodyReadError });
+      throw error;
     }
     // Receive-time durable sink: the response wire is persisted right after the
     // bytes are received, before any parsing/cost-lookup that might throw.
-    args.onWire?.({ stage: "response", url: capturedUrl, method: capturedMethod, httpStatus: capturedResStatus, preimage: capturedResBytes != null ? encodeWireBody(capturedResBytes) : null });
-    return res;
+    persistWire({ stage: "response", url: capturedUrl, method: capturedMethod, httpStatus: capturedResStatus, preimage: encodeWireBody(capturedResBytes), bodyReadError: null });
+    const bodyForbidden = capturedResStatus === 204 || capturedResStatus === 205 || capturedResStatus === 304;
+    return new Response(bodyForbidden ? null : capturedResBytes, { status: capturedResStatus, statusText: res.statusText, headers: res.headers });
   };
 
   const backend = new OpenAICompatibleBackend({
@@ -2042,6 +2062,7 @@ export async function dispatchViaBackend(args: DispatchArgs): Promise<GenerateFa
     rawFinish = resp.finishReason ?? null;
     usage = resp.usage ?? null;
   } catch (err) {
+    if (wireSinkError !== null) throw wireSinkError;
     const kind = err instanceof InferenceError ? err.kind : ((err as { kind?: string })?.kind ?? "unknown");
     const message = err instanceof Error ? err.message : String(err);
     if ((kind === "http" || kind === "invalid_response") && capturedResBody != null) {
@@ -2538,7 +2559,7 @@ async function oneShotMain() {
 
 // --- policy-driven paid passes -----------------------------------------------
 
-const PAID_TIMEOUT_MS = 600_000;
+export const PAID_TIMEOUT_MS = 1_200_000;
 
 /** Everything one paid cell needs to plan its request — no network, no credential. */
 export interface PaidCellPlan {
@@ -3080,7 +3101,15 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
           return;
         }
         if (sink[ev.stage] != null) throw new Error(`duplicate ${ev.stage} wire event for ${plan.runId}`);
-        const body = JSON.stringify({ runId: plan.runId, stage: ev.stage, url: ev.url, method: ev.method, httpStatus: ev.httpStatus ?? null, preimage: ev.preimage }, null, 2);
+        const body = JSON.stringify({
+          runId: plan.runId,
+          stage: ev.stage,
+          url: ev.url,
+          method: ev.method,
+          httpStatus: ev.stage === "response" ? ev.httpStatus : null,
+          preimage: ev.preimage,
+          bodyReadError: ev.stage === "response" ? (ev.bodyReadError ?? null) : null,
+        }, null, 2);
         const ref = finalizeCA(runsDir, `paid-wirefrag-${plan.runId}-${ev.stage}`, body);
         wireRefs.push({ file: ref.file, sha256: ref.sha256, bytes: ref.bytes, runId: plan.runId });
         sink[ev.stage] = ref.path;
@@ -3116,6 +3145,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
           requestBody: (reqFrag?.preimage ?? null) as WireBodyPreimage | null,
           responseHttpStatus: (resFrag?.httpStatus ?? null) as number | null,
           responseBody: (resFrag?.preimage ?? null) as WireBodyPreimage | null,
+          responseBodyError: (resFrag?.bodyReadError ?? null) as ResponseBodyReadError | null,
           costLookup,
         };
         const handle = finalizeCA(runsDir, `paid-rawobs-${plan.runId}`, JSON.stringify(rawObs, null, 2));
@@ -3188,10 +3218,16 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       const respParse = readBack.responseBody ? parseWireJson(readBack.responseBody) : { ok: false as const, reason: "no_response_wire" };
       const parsedResponse = respParse.ok ? respParse.value : null;
       const wireUsage = parsedResponse != null && typeof parsedResponse === "object" ? (parsedResponse as Record<string, unknown>).usage ?? null : null;
+      const storedBodyError = readBack.responseBodyError;
+      const responseTransportError = parsedResponse == null
+        ? storedBodyError != null && (storedBodyError.kind === "timeout" || storedBodyError.kind === "read_error")
+          ? { kind: storedBodyError.kind, message: storedBodyError.message }
+          : { kind: "no_response_wire", message: "no durable response body was captured" }
+        : null;
       const attempt = buildQualificationAttempt({
         attemptIndex: 0, timestamp, backend: "openrouter", requestedSlug: plan.target.slug, endpoint: OR_BASE,
         raw: parsedResponse, text: null, rawFinish: null,
-        transportError: parsedResponse == null ? { kind: "no_response_wire", message: "no durable response body was captured" } : null,
+        transportError: responseTransportError,
         usage: wireUsage, latencyMs: typeof facts.latencyMs === "number" ? facts.latencyMs : 0,
         cost: { costModel: "METERED", actualCostUsd: billed },
         routing: { providerRoutingSent: serializeProviderRouting(routing), responseProvider: rederive.observed.responseProvider, lookupProvider: rederive.observed.lookupProvider },
@@ -3307,7 +3343,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       summary: { file: summaryHandle.file, sha256: summaryHandle.sha256, bytes: summaryHandle.bytes },
     };
     const candidateManifest = {
-      manifestSchemaVersion: 6,
+      manifestSchemaVersion: 7,
       campaignId: opts.pass.campaignId,
       stageId: opts.pass.stageId,
       policyId: opts.pass.policyId,
@@ -3352,7 +3388,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       diskFiles: diskFilesAcc,
       statFile: statForVerify,
       executingUid: typeof process.getuid === "function" ? process.getuid() : undefined,
-      expectedSchemaVersion: 6,
+      expectedSchemaVersion: 7,
       expectedCampaignId: opts.pass.campaignId,
       expectedStageId: opts.pass.stageId,
     });

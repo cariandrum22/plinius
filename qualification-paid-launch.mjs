@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 /**
- * Dependency-free Paid Pass v3.2 launcher.
+ * Dependency-free Paid Pass v3.3 launcher.
  *
  * Fable must verify the signed execution manifest and launcher digest before
  * invoking `/usr/bin/node qualification-paid-launch.mjs`. This launcher then

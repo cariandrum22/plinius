@@ -855,7 +855,15 @@ export interface PaidRawObservation {
   requestBody: WireBodyPreimage | null;
   responseHttpStatus: number | null;
   responseBody: WireBodyPreimage | null;
+  /** Durable classification when response headers arrived but the body did not. */
+  responseBodyError: ResponseBodyReadError | null;
   costLookup: CostLookupWireEvidence | null;
+}
+
+export interface ResponseBodyReadError {
+  kind: "timeout" | "read_error";
+  message: string;
+  timeoutMs: number;
 }
 
 export interface PaidReDerivation {
@@ -902,6 +910,18 @@ export function reDerivePaidFromRawObservation(raw: PaidRawObservation): PaidReD
   const parsedRouting = reqObj.provider !== undefined ? parseProviderRoutingWire(reqObj.provider) : { ok: false as const, reasons: [] };
 
   // (2) Response wire — canonical integrity + identity + full outcome from the bytes.
+  const responseBodyError = raw.responseBodyError;
+  if (responseBodyError !== null) {
+    if (!exactObjectKeys(responseBodyError, ["kind", "message", "timeoutMs"]) ||
+      (responseBodyError.kind !== "timeout" && responseBodyError.kind !== "read_error") ||
+      typeof responseBodyError.message !== "string" || responseBodyError.message.length === 0 || responseBodyError.message.length > 256 ||
+      /[^\x20-\x7e]/.test(responseBodyError.message) || !Number.isSafeInteger(responseBodyError.timeoutMs) || responseBodyError.timeoutMs <= 0) {
+      reasons.push("response_body_error_invalid");
+    } else {
+      reasons.push(`response_body_${responseBodyError.kind}`);
+    }
+    if (raw.responseBody !== null) reasons.push("response_body_error_with_preimage");
+  }
   const resParsed = parseWireJson(raw.responseBody);
   if (!resParsed.ok) reasons.push(`response_${resParsed.reason}`);
   const resId = reDeriveResponseIdentity(raw.responseBody);

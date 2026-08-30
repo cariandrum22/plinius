@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 2,
+  "policyType": "plinius-paid-campaign-policy-v2",
+  "policyId": "plinius-candidate-paid-2026-08-30-r2",
+  "issuedAtUtc": "2026-08-30T06:13:07Z",
+  "catalogObservedAtUtc": "2026-08-30T06:13:02.763Z",
+  "expiresAtUtc": "2026-09-06T06:13:07Z",
+  "requiredSignerFingerprint": "435C9CF0DE7A2C3900FB24357E622B43290C285E",
+  "pass": {
+    "mode": "diagnostic-candidate-paid-r1",
+    "campaignId": "plinius-qualification-2026-08-30-candidate-r2",
+    "stageId": "plinius-qualification-2026-08-30-diagnostic-candidate-paid-r2",
+    "budget": {
+      "totalCapUsd": 6,
+      "perRunCapUsd": 0.75
+    },
+    "targets": [
+      {
+        "slug": "z-ai/glm-5.3-20260816",
+        "catalogModelId": "z-ai/glm-5.3",
+        "responseModelId": "z-ai/glm-5.3",
+        "lookupModelId": "z-ai/glm-5.3-20260816",
+        "providerRoute": "z-ai/fp8",
+        "providerDisplay": "Z.AI",
+        "priceCeiling": {
+          "inputPerMTokens": 1.4,
+          "outputPerMTokens": 4.4
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "moonshotai/kimi-k3-20260715",
+        "catalogModelId": "moonshotai/kimi-k3",
+        "responseModelId": "moonshotai/kimi-k3",
+        "lookupModelId": "moonshotai/kimi-k3-20260715",
+        "providerRoute": "moonshotai/mxfp4",
+        "providerDisplay": "Moonshot AI",
+        "priceCeiling": {
+          "inputPerMTokens": 3,
+          "outputPerMTokens": 15
+        },
+        "sampling": {
+          "temperature": null,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "qwen/qwen3.8-max-20260803",
+        "catalogModelId": "qwen/qwen3.8-max",
+        "responseModelId": "qwen/qwen3.8-max",
+        "lookupModelId": "qwen/qwen3.8-max-20260803",
+        "providerRoute": "alibaba",
+        "providerDisplay": "Alibaba",
+        "priceCeiling": {
+          "inputPerMTokens": 2,
+          "outputPerMTokens": 6
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": 1
+        }
+      },
+      {
+        "slug": "anthropic/claude-sonnet-5-20260630",
+        "catalogModelId": "anthropic/claude-sonnet-5",
+        "responseModelId": "anthropic/claude-sonnet-5",
+        "lookupModelId": "anthropic/claude-sonnet-5-20260630",
+        "providerRoute": "anthropic",
+        "providerDisplay": "Anthropic",
+        "priceCeiling": {
+          "inputPerMTokens": 2,
+          "outputPerMTokens": 10
+        },
+        "sampling": {
+          "temperature": null,
+          "topP": null,
+          "seed": null
+        }
+      }
+    ],
+    "sentinelScope": "per-model"
+  }
+}

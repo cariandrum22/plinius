@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-/** Build a source-tree-independent Paid Pass v3.2 engine package on the Mac authority. */
+/** Build a source-tree-independent Paid Pass v3.3 engine package on the Mac authority. */
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 const MANIFEST = "qualification-paid-execution-manifest.json";
-const DEFAULT_POLICY = join(REPO, "policy", "qualification-hosted-paid-2026-08-30-r2.json");
+const DEFAULT_POLICY = join(REPO, "policy", "qualification-candidate-paid-2026-08-30-r2.json");
 const BENCHMARK_IDS = [
   "software-engineering/se-concurrency-atomic-stats-012",
   "architecture/arch-exactly-once-003",
@@ -62,7 +62,7 @@ function git(args) {
 
 /** @param {string[]} argv */
 function parseArgs(argv) {
-  let output = join(REPO, "build", "qualification-paid-v3.2-release");
+  let output = join(REPO, "build", "qualification-paid-v3.3-release");
   let policy = DEFAULT_POLICY;
   let sign = true;
   for (let i = 0; i < argv.length; i++) {
@@ -128,7 +128,7 @@ async function main() {
     define: { __PLINIUS_PAID_BUNDLE__: "true" },
     banner: {
       js: [
-        "// Plinius Paid Pass v3.2 isolated driver bundle.",
+        "// Plinius Paid Pass v3.3 isolated driver bundle.",
         'import { createRequire as __pliniusCreateRequire } from "node:module";',
         'const require = __pliniusCreateRequire(process.cwd() + "/qualification-driver.mjs");',
       ].join("\n"),

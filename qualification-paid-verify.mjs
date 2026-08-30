@@ -8,7 +8,7 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-export const EVIDENCE_SCHEMA_VERSION = 6;
+export const EVIDENCE_SCHEMA_VERSION = 7;
 export const EXECUTION_SCHEMA_VERSION = 1;
 export const EXECUTION_ARTIFACT_TYPE = "plinius-paid-pass-v3";
 export const PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
@@ -547,9 +547,17 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
         const pollFragments = fragments.filter((fragment) => fragment.stage === "cost_poll").sort((a, b) => a.pollIndex - b.pollIndex);
         require(`wire_request_count:${runId}`, requests.length === 1);
         require(`wire_response_count:${runId}`, responses.length <= 1);
+        require(`raw_response_error_field:${runId}`, Object.hasOwn(raw, "responseBodyError"));
         if (requests.length === 1) require(`raw_request_fragment:${runId}`, raw.requestUrl === requests[0].url && raw.requestMethod === requests[0].method && json(raw.requestBody) === json(requests[0].preimage));
-        if (responses.length === 1) require(`raw_response_fragment:${runId}`, raw.responseHttpStatus === responses[0].httpStatus && json(raw.responseBody) === json(responses[0].preimage));
-        else require(`raw_response_absent:${runId}`, raw.responseHttpStatus == null && raw.responseBody == null);
+        if (responses.length === 1) {
+          require(`wire_response_error_field:${runId}`, Object.hasOwn(responses[0], "bodyReadError"));
+          require(`raw_response_fragment:${runId}`, raw.responseHttpStatus === responses[0].httpStatus && json(raw.responseBody) === json(responses[0].preimage) && json(raw.responseBodyError) === json(responses[0].bodyReadError));
+          const bodyError = responses[0].bodyReadError;
+          require(`response_body_error_shape:${runId}`, bodyError == null ||
+            (json(Object.keys(bodyError).sort()) === json(["kind", "message", "timeoutMs"]) &&
+              (bodyError.kind === "timeout" || bodyError.kind === "read_error") && typeof bodyError.message === "string" && bodyError.message.length > 0 && bodyError.message.length <= 256 && !/[^\x20-\x7e]/.test(bodyError.message) && Number.isSafeInteger(bodyError.timeoutMs) && bodyError.timeoutMs > 0));
+          require(`response_body_error_exclusive:${runId}`, bodyError == null || responses[0].preimage == null);
+        } else require(`raw_response_absent:${runId}`, raw.responseHttpStatus == null && raw.responseBody == null && raw.responseBodyError == null);
         const rawPolls = raw.costLookup?.polls ?? [];
         require(`raw_cost_fragments:${runId}`, json(rawPolls) === json(pollFragments.map((fragment) => fragment.poll)));
 
