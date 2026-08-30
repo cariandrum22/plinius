@@ -720,6 +720,27 @@ describe("catalog, budget, token bound", () => {
     expect(verifyPaidTargetAgainstCatalog({ ...goodModel(target), catalogModelId: "openai/other" }, target, need).reasons.some((r) => r.startsWith("catalog_model_id_mismatch"))).toBe(true);
     expect(verifyPaidTargetAgainstCatalog({ id: target.slug, endpoints: [{ ...goodModel(target).endpoints[0], providerName: null }] }, target, need).reasons).toContain("provider_display_name_missing");
   });
+  it("compares decimal catalog prices to per-million policy ceilings without float drift", () => {
+    const decimalTarget = broadTarget(1);
+    decimalTarget.priceCeiling = { inputPerMTokens: 0.425, outputPerMTokens: 2.55 };
+    const model: CatalogModelInfo = {
+      id: decimalTarget.slug,
+      catalogModelId: decimalTarget.catalogModelId,
+      canonicalSlug: decimalTarget.slug,
+      endpoints: [{
+        tag: decimalTarget.providerRoute,
+        providerName: decimalTarget.providerDisplay,
+        pricing: { prompt: "0.000000425", completion: "0.00000255" },
+        contextLength: 100_000,
+        maxCompletionTokens: 50_000,
+        supportedParameters: ["max_tokens"],
+      }],
+    };
+    const decimalNeed = { maxTokens: 24_576, promptTokens: 6_858, usedParams: ["max_tokens"] };
+    expect(verifyPaidTargetAgainstCatalog(model, decimalTarget, decimalNeed).reasons).toEqual([]);
+    model.endpoints[0].pricing.completion = "0.000002550001";
+    expect(verifyPaidTargetAgainstCatalog(model, decimalTarget, decimalNeed).reasons).toContain("price_over_output_ceiling");
+  });
   it("verifyPaidCatalog uses per-cell prompt bounds and returns provider displays", () => {
     const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
     const out = verifyPaidCatalog(HOSTED_PAID_PASS, cells, goodCatalog(HOSTED_PAID_TARGETS), promptMap(cells));

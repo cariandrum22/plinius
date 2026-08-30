@@ -598,6 +598,29 @@ function toPerToken(value: number | string | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function decimalFraction(value: number | string): { numerator: bigint; denominator: bigint } | null {
+  const text = typeof value === "number" ? value.toString() : value;
+  const match = /^([+-]?)(\d+)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(text);
+  if (!match) return null;
+  const sign = match[1] === "-" ? -1n : 1n;
+  const fraction = match[3] ?? "";
+  const exponent = Number(match[4] ?? "0");
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1000) return null;
+  let numerator = sign * BigInt(`${match[2]}${fraction}`);
+  const scale = fraction.length - exponent;
+  if (scale < 0) numerator *= 10n ** BigInt(-scale);
+  return { numerator, denominator: scale > 0 ? 10n ** BigInt(scale) : 1n };
+}
+
+/** Compare a catalog per-token decimal with a policy per-million-token ceiling exactly. */
+function exceedsPerMillionCeiling(catalogPerToken: number | string, policyPerMillion: number): boolean | null {
+  const catalog = decimalFraction(catalogPerToken);
+  const ceiling = decimalFraction(policyPerMillion);
+  if (!catalog || !ceiling || catalog.numerator < 0n || ceiling.numerator < 0n) return null;
+  return catalog.numerator * 1_000_000n * ceiling.denominator >
+    ceiling.numerator * catalog.denominator;
+}
+
 /**
  * Verify one paid target against the live catalog for its exact model + provider
  * route: the model exists and is not an alias/auto-router; exactly one endpoint
@@ -635,10 +658,13 @@ export function verifyPaidTargetAgainstCatalog(
   if (promptPerToken == null || completionPerToken == null) {
     reasons.push("price_unknown");
   } else {
-    const inputCeilPerToken = target.priceCeiling.inputPerMTokens / 1_000_000;
-    const outputCeilPerToken = target.priceCeiling.outputPerMTokens / 1_000_000;
-    if (promptPerToken > inputCeilPerToken) reasons.push("price_over_input_ceiling");
-    if (completionPerToken > outputCeilPerToken) reasons.push("price_over_output_ceiling");
+    const promptOver = exceedsPerMillionCeiling(ep.pricing.prompt!, target.priceCeiling.inputPerMTokens);
+    const completionOver = exceedsPerMillionCeiling(ep.pricing.completion!, target.priceCeiling.outputPerMTokens);
+    if (promptOver == null || completionOver == null) reasons.push("price_decimal_invalid");
+    else {
+      if (promptOver) reasons.push("price_over_input_ceiling");
+      if (completionOver) reasons.push("price_over_output_ceiling");
+    }
   }
 
   if (ep.contextLength == null || ep.contextLength < need.promptTokens + need.maxTokens) {
