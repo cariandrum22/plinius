@@ -1,16 +1,29 @@
-# Paid Pass v3.2 Ubuntu execution runbook
+# Paid Pass v3.4 broad-screening Ubuntu runbook
 
-## 0. Authority and stop condition
+## 0. Authorization boundary
 
-This runbook is not a Paid GO. Paid Pass v3.2 separates a stable signed engine
-from a separately signed, short-lived campaign policy. Do not execute a provider
-request until the Mac authority has separately issued all of the following:
+This runbook is not a `PAID_GO`. It prepares and verifies one signed broad
+campaign, then stops at `READY_FOR_EXPLICIT_PAID_GO`. A separate authorization
+is required for each of H1, H2, and H3.
 
-- an approved, signed v3.2 source commit and release tag;
-- the signed `plinius-paid-pass-v3` engine package;
-- a signed, unexpired campaign policy for exactly one mode;
-- the release archive SHA-256 and exact signing fingerprint;
-- an explicit one-shot Paid GO naming the mode, budget caps and secret file.
+The v3.4 engine adds `diagnostic-broad-paid-r1` with these immutable engine
+limits:
+
+- 1 through 24 targets;
+- four frozen benchmarks per target and at most 96 logical cells;
+- one OIDC sentinel per model;
+- `MAX_TOTAL_USD <= 12.00` and `MAX_PER_RUN_USD <= 2.00`;
+- no resume, retry, model substitution, alias, automatic fallback, or direct
+  driver execution.
+
+Each signed policy may set lower limits. The planned campaign limits are H1
+`$3.00/$0.75`, H2 `$5.00/$1.00`, and H3 `$12.00/$2.00`. Completion of one
+campaign does not authorize the next campaign.
+
+Broad H1-H3 sends no reasoning-effort field. The signed policy pins only the
+supported `temperature`, `topP`, and `seed` fields, and the engine rejects an
+unknown profile field. Reasoning-profile comparisons require a later engine
+schema, policy, output root, and authorization.
 
 Pinned signing fingerprint:
 
@@ -18,89 +31,43 @@ Pinned signing fingerprint:
 435C9CF0DE7A2C3900FB24357E622B43290C285E
 ```
 
-Fail closed on any mismatch. Do not repair, retry, resume, substitute a model,
-enable provider fallback, reuse an output root, or start another pass.
+Fail closed on every mismatch. Never repair a path, infer a missing value, reuse
+an output root, or rerun a consumed command.
 
-## 1. Current authorization boundary
+## 1. Authority-issued values
 
-The issued Hosted policy is:
-
-```text
-MODE=diagnostic-hosted-paid-r1
-POLICY_ID=plinius-hosted-paid-2026-08-30-r2
-STAGE=plinius-qualification-2026-08-30-diagnostic-hosted-paid-r3
-CELLS=15
-MAX_TOTAL_USD=5.00
-MAX_PER_RUN_USD=1.00
-ONE_SHOT=true
-EXPIRES_AT_UTC=2026-09-05T15:10:00Z
-```
-
-The policy sends canonical, versioned model slugs. Catalog, response and cost-lookup
-model IDs are pinned separately and checked exactly. The engine requires exactly one
-provider route, `allow_fallbacks:false`, `require_parameters:true`, and the
-policy price ceilings.
-
-No Candidate policy has been issued. Candidate Pass remains unauthorized even
-though the engine understands its mode. Do not construct or infer a Candidate
-policy and do not reuse a Hosted GO for Candidate Pass.
-
-## 2. Runtime prohibitions
-
-- Do not clone or switch a repository on Ubuntu.
-- Do not run `pnpm`, `tsx`, TypeScript, or a shared `node_modules` tree.
-- Do not use Docker, vLLM, a local model endpoint, GPU, or A100.
-- Do not set `CONTINUATION_RESUME` or `PLINIUS_LOCAL_BINDING_DIR`.
-- Do not print, paste, log, hash, or include `OPENROUTER_API_KEY` in Evidence.
-- Do not run `qualification-driver.mjs` directly.
-- Do not use any consumed prior GO, prior output root, or superseded policy values.
-
-## 3. Acquire the release package
-
-The authority message supplies exact values for these placeholders:
+The Mac authority must provide all placeholders below. Do not infer them from a
+previous package or campaign.
 
 ```bash
 set -Eeuo pipefail
 umask 077
 
-RELEASE_TAG='<AUTHORITY_ISSUED_TAG>'
-ARCHIVE_NAME='<AUTHORITY_ISSUED_ARCHIVE_NAME>'
-ARCHIVE_SHA256='<AUTHORITY_ISSUED_ARCHIVE_SHA256>'
-BASE_URL="https://github.com/cariandrum22/plinius/releases/download/${RELEASE_TAG}"
-DOWNLOAD_ROOT='/home/ubuntu/plinius-paid-v3.2/download'
+PACKAGE_ARCHIVE='<AUTHORITY_ISSUED_LOCAL_ARCHIVE_PATH>'
+PACKAGE_ARCHIVE_SHA256='<64_HEX_DIGEST>'
+PACKAGE_NAME='<AUTHORITY_ISSUED_PACKAGE_DIRECTORY_NAME>'
+PACKAGE_PARENT='/home/ubuntu/plinius-paid-v3.4/packages'
+PACKAGE_ROOT="$PACKAGE_PARENT/$PACKAGE_NAME"
+ARTIFACT_ROOT="$PACKAGE_ROOT/engine"
+POLICY_PATH="$PACKAGE_ROOT/policy/<AUTHORITY_ISSUED_POLICY_FILENAME>.json"
+POLICY_SIGNATURE_PATH="${POLICY_PATH}.sig"
+MODE='diagnostic-broad-paid-r1'
 
-install -d -m 0700 "$DOWNLOAD_ROOT"
-test ! -e "$DOWNLOAD_ROOT/$ARCHIVE_NAME"
-curl --fail --location --proto '=https' --tlsv1.2 \
-  --output "$DOWNLOAD_ROOT/$ARCHIVE_NAME" \
-  "$BASE_URL/$ARCHIVE_NAME"
-test "$(sha256sum "$DOWNLOAD_ROOT/$ARCHIVE_NAME" | awk '{print $1}')" = \
-  "$ARCHIVE_SHA256"
-```
-
-Extract once into a new directory:
-
-```bash
-PACKAGE_PARENT='/home/ubuntu/plinius-paid-v3.2/packages'
-PACKAGE_ROOT="$PACKAGE_PARENT/qualification-paid-v3.2-release"
+test "$(sha256sum "$PACKAGE_ARCHIVE" | awk '{print $1}')" = "$PACKAGE_ARCHIVE_SHA256"
+gzip --test "$PACKAGE_ARCHIVE"
+tar -tzf "$PACKAGE_ARCHIVE" >/dev/null
 install -d -m 0700 "$PACKAGE_PARENT"
 test ! -e "$PACKAGE_ROOT"
-tar -C "$PACKAGE_PARENT" -xzf "$DOWNLOAD_ROOT/$ARCHIVE_NAME"
+tar -C "$PACKAGE_PARENT" -xzf "$PACKAGE_ARCHIVE"
 test -d "$PACKAGE_ROOT"
 test ! -L "$PACKAGE_ROOT"
 (cd "$PACKAGE_ROOT" && sha256sum --check SHA256SUMS)
-
-ARTIFACT_ROOT="$PACKAGE_ROOT/engine"
-POLICY_PATH="$PACKAGE_ROOT/policy/qualification-hosted-paid-2026-08-30-r2.json"
-POLICY_SIGNATURE_PATH="${POLICY_PATH}.sig"
-MODE='diagnostic-hosted-paid-r1'
 ```
 
-## 4. Verify both detached signatures
+## 2. Offline signature and package verification
 
-The pinned public key must already be present in the executing user's GPG
-keyring through an authority-approved channel. Do not fetch a key by key ID from
-an unauthenticated keyserver.
+The pinned public key must already be installed through an authenticated
+authority channel. Never retrieve it by short key ID from a public keyserver.
 
 ```bash
 test -x /usr/bin/gpg
@@ -121,10 +88,10 @@ verify_pinned_signature \
 verify_pinned_signature "$POLICY_SIGNATURE_PATH" "$POLICY_PATH"
 ```
 
-Invoke only the dependency-free launcher verification exports. This verifies
-the recursive engine file set, every signed digest, file ownership/mode, policy
-signature, policy mode and policy validity window. It does not load the runner,
-read a credential, call the catalog, or dispatch.
+Use only exports from the signed dependency-free launcher and independent
+verifier. This validates the recursive package, detached signatures, policy
+validity window, canonical policy bytes, broad-mode limits, and exact cell
+count. It does not import the runner or read a credential.
 
 ```bash
 /usr/bin/node --input-type=module - \
@@ -134,34 +101,56 @@ import { join } from "node:path";
 
 const [artifactRoot, policyPath, signaturePath, mode] = process.argv.slice(2);
 const launcher = await import(pathToFileURL(join(artifactRoot, "qualification-paid-launch.mjs")));
+const verifier = await import(pathToFileURL(join(artifactRoot, "qualification-paid-verify.mjs")));
 const engine = launcher.verifyExecutionPackage(artifactRoot);
-const policy = launcher.verifyCampaignPolicy(policyPath, signaturePath, mode);
+const signedPolicy = launcher.verifyCampaignPolicy(policyPath, signaturePath, mode);
+const parsed = verifier.parseCampaignPolicy(signedPolicy.policyBytes);
+if (parsed.identity.mode !== mode) throw new Error("deep policy mode mismatch");
+if (!engine.manifest.allowedModes.includes(mode)) throw new Error("execution mode not allowed");
 console.log(JSON.stringify({
   artifactType: engine.manifest.artifactType,
   commit: engine.manifest.source.commit,
   tree: engine.manifest.source.tree,
   payloadFiles: engine.manifest.files.length,
   engineSigner: engine.fingerprint,
-  policySha256: policy.policySha256,
-  policySignatureSha256: policy.signatureSha256,
-  policySigner: policy.fingerprint,
-  mode,
+  policyId: parsed.identity.policyId,
+  campaignId: parsed.identity.campaignId,
+  stageId: parsed.identity.stageId,
+  mode: parsed.identity.mode,
+  targets: parsed.targets.size,
+  cells: parsed.identity.totalCells,
+  maxTotalUsd: parsed.identity.totalCapUsd,
+  maxPerRunUsd: parsed.identity.perRunCapUsd,
+  policySha256: signedPolicy.policySha256,
+  policySignatureSha256: signedPolicy.signatureSha256,
+  policySigner: signedPolicy.fingerprint,
 }, null, 2));
 NODE
 ```
 
-Verify the fixed parent inputs without reading the secret:
+Compare every printed value with the authority-issued values. Stop on any
+difference.
+
+## 3. Parent Evidence and secret metadata
 
 ```bash
-PARENT_EVIDENCE_ROOT='/home/ubuntu/plinius-evidence/plinius-qualification-2026-08-22-exec'
-PARENT_BUNDLE_PATH='/home/ubuntu/plinius-evidence/plinius-qualification-2026-08-22-exec-evidence.tar.gz'
+PARENT_EVIDENCE_ROOT='<AUTHORITY_ISSUED_PARENT_EVIDENCE_ROOT>'
+PARENT_BUNDLE_PATH='<AUTHORITY_ISSUED_PARENT_BUNDLE_PATH>'
+PARENT_BUNDLE_SHA256='<AUTHORITY_ISSUED_PARENT_BUNDLE_SHA256>'
+PARENT_DEFINITION_SHA256='<AUTHORITY_ISSUED_PARENT_DEFINITION_SHA256>'
+PARENT_RUN_SHA256='<AUTHORITY_ISSUED_PARENT_RUN_SHA256>'
+SECRET_FILE='/home/ubuntu/.secrets/openrouter-api-key'
 
-test "$(sha256sum "$PARENT_BUNDLE_PATH" | awk '{print $1}')" = \
-  '5464aac6862ee2b001cae40ac861d43b64abb9b0cd705bfa539252104963c66e'
-test "$(sha256sum "$PARENT_EVIDENCE_ROOT/campaign/frozen-campaign-definition.json" | awk '{print $1}')" = \
-  'eba5485902b6fa8307dc4cf1e3ff4c4bf99175f9e63eaedd0c81102332fae86d'
-test "$(sha256sum "$PARENT_EVIDENCE_ROOT/campaign/runs/run-d43bb9bcd2a03c20.json" | awk '{print $1}')" = \
-  '05390908e2dcadc2f029292a98be21ccc13b7e39ee8ce3b8d3660d455a1ff026'
+test "$(sha256sum "$PARENT_BUNDLE_PATH" | awk '{print $1}')" = "$PARENT_BUNDLE_SHA256"
+test "$(sha256sum "$PARENT_EVIDENCE_ROOT/campaign/frozen-campaign-definition.json" | awk '{print $1}')" = "$PARENT_DEFINITION_SHA256"
+test "$(sha256sum "$PARENT_EVIDENCE_ROOT/campaign/runs/run-d43bb9bcd2a03c20.json" | awk '{print $1}')" = "$PARENT_RUN_SHA256"
+
+test -f "$SECRET_FILE"
+test ! -L "$SECRET_FILE"
+test "$(stat -c '%u' "$SECRET_FILE")" = "$(id -u)"
+test "$(stat -c '%a' "$SECRET_FILE")" = '600'
+test "$(stat -c '%h' "$SECRET_FILE")" = '1'
+test "$(stat -c '%s' "$SECRET_FILE")" -eq 73 -o "$(stat -c '%s' "$SECRET_FILE")" -eq 74
 
 test -z "${OPENROUTER_API_KEY+x}"
 test -z "${CONTINUATION_RESUME+x}"
@@ -169,43 +158,49 @@ test -z "${PLINIUS_LOCAL_BINDING_DIR+x}"
 printf '%s\n' 'READY_FOR_EXPLICIT_PAID_GO'
 ```
 
-Stop here. Package verification is not authorization to dispatch.
+Stop here. Do not read the secret contents, create an output root, fetch the
+catalog, or invoke the launcher until a campaign-specific `PAID_GO` is received.
 
-## 5. One-shot execution after a separate GO
+## 4. One-shot execution template after a separate GO
 
-Only after receiving a matching explicit Paid GO, create one fresh output root.
-Never reuse a path, including one left by a failed catalog preflight.
+This section is a template, not authorization. The authorization must repeat the
+exact policy ID, mode, policy digest, total cap, per-run cap, secret path, and
+`ONE_SHOT=true`. The authority then issues one exact fresh output path.
 
 ```bash
-SECRET_FILE='/home/ubuntu/.secrets/openrouter-api-key'
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
-CONTINUATION_OUTPUT_ROOT="/home/ubuntu/plinius-paid-v3.2/runs/${RUN_ID}/${MODE}"
+AUTHORIZED_POLICY_ID='<FROM_PAID_GO>'
+AUTHORIZED_POLICY_SHA256='<FROM_PAID_GO>'
+AUTHORIZED_MAX_TOTAL_USD='<FROM_PAID_GO>'
+AUTHORIZED_MAX_PER_RUN_USD='<FROM_PAID_GO>'
+CONTINUATION_OUTPUT_ROOT='<AUTHORITY_ISSUED_FRESH_OUTPUT_ROOT>'
+
+test "$(sha256sum "$POLICY_PATH" | awk '{print "sha256:"$1}')" = "$AUTHORIZED_POLICY_SHA256"
+
+/usr/bin/node --input-type=module - \
+  "$ARTIFACT_ROOT" "$POLICY_PATH" "$MODE" "$AUTHORIZED_POLICY_ID" \
+  "$AUTHORIZED_MAX_TOTAL_USD" "$AUTHORIZED_MAX_PER_RUN_USD" <<'NODE'
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+import { join } from "node:path";
+
+const [root, policyPath, mode, policyId, total, perRun] = process.argv.slice(2);
+const verifier = await import(pathToFileURL(join(root, "qualification-paid-verify.mjs")));
+const parsed = verifier.parseCampaignPolicy(readFileSync(policyPath));
+if (parsed.identity.mode !== mode || parsed.identity.policyId !== policyId ||
+    parsed.identity.totalCapUsd !== Number(total) ||
+    parsed.identity.perRunCapUsd !== Number(perRun)) {
+  throw new Error("PAID_GO does not match signed policy");
+}
+NODE
 
 test ! -e "$CONTINUATION_OUTPUT_ROOT"
 install -d -m 0700 "$CONTINUATION_OUTPUT_ROOT"
 test -z "$(find "$CONTINUATION_OUTPUT_ROOT" -mindepth 1 -print -quit)"
 
-test -f "$SECRET_FILE"
-test ! -L "$SECRET_FILE"
-test "$(stat -c '%u' "$SECRET_FILE")" = "$(id -u)"
-test "$(stat -c '%a' "$SECRET_FILE")" = '600'
-test "$(stat -c '%h' "$SECRET_FILE")" = '1'
-
-# The file must contain only the 73-byte OpenRouter key. A dotenv assignment
-# such as OPENROUTER_API_KEY=... is prohibited and will be rejected by the engine.
-test "$(wc -c < "$SECRET_FILE")" -eq 73 -o "$(wc -c < "$SECRET_FILE")" -eq 74
-
 export CONTINUATION_OUTPUT_ROOT PARENT_EVIDENCE_ROOT PARENT_BUNDLE_PATH
 export PLINIUS_DRIVER_MODE="$MODE"
 unset CONTINUATION_RESUME PLINIUS_LOCAL_BINDING_DIR OPENROUTER_API_KEY
-printf 'AUTHORIZED_OUTPUT_ROOT=%s\n' "$CONTINUATION_OUTPUT_ROOT"
-```
 
-Execute the launcher exactly once with shell tracing disabled. Reading the
-secret into the child environment is part of the paid invocation and must not
-occur before the explicit GO.
-
-```bash
 set +e
 set +x
 OPENROUTER_API_KEY="$(<"$SECRET_FILE")" \
@@ -214,46 +209,54 @@ OPENROUTER_API_KEY="$(<"$SECRET_FILE")" \
     --policy "$POLICY_PATH" \
     --policy-signature "$POLICY_SIGNATURE_PATH" \
     --mode "$MODE"
-RUN_EXIT=$?
+PAID_RUN_EXIT=$?
 unset OPENROUTER_API_KEY
 set -e
-printf 'PAID_RUN_EXIT=%s\n' "$RUN_EXIT"
+printf 'PAID_RUN_EXIT=%s\n' "$PAID_RUN_EXIT"
 ```
 
-Stop after this one invocation, whether it succeeds or fails. Do not retry the
-launcher, catalog, a cell, or cost lookup outside the engine's fixed behavior.
+Invoke the launcher exactly once. Stop after every success, rejection, catalog
+drift, transport failure, unknown cost, or integrity failure. Do not run an
+external retry or continue with another campaign.
 
-## 6. Seal and transfer Evidence
+## 5. Verify and archive Evidence
 
-Do not modify the output root. Archive success or negative preflight Evidence in
-the same way:
+Do not edit the output root. If it contains a final manifest, run the signed
+independent verifier before archiving. Preserve negative Evidence even when no
+final manifest exists.
 
 ```bash
+if find "$CONTINUATION_OUTPUT_ROOT" -maxdepth 1 -type f \
+    -name 'paid-pass-manifest-*.json' -print -quit | grep -q .; then
+  /usr/bin/node "$ARTIFACT_ROOT/qualification-paid-verify.mjs" \
+    --root "$CONTINUATION_OUTPUT_ROOT"
+fi
+
 EVIDENCE_PARENT="$(dirname "$CONTINUATION_OUTPUT_ROOT")"
 EVIDENCE_NAME="$(basename "$CONTINUATION_OUTPUT_ROOT")"
 EVIDENCE_ARCHIVE="${EVIDENCE_PARENT}/${EVIDENCE_NAME}-evidence.tar.gz"
 test ! -e "$EVIDENCE_ARCHIVE"
-tar -C "$EVIDENCE_PARENT" -czf "$EVIDENCE_ARCHIVE" "$EVIDENCE_NAME"
-sha256sum "$EVIDENCE_ARCHIVE" > "${EVIDENCE_ARCHIVE}.sha256"
+tar --format=posix --sort=name --mtime='UTC 1970-01-01' \
+  --owner=0 --group=0 --numeric-owner \
+  -C "$EVIDENCE_PARENT" -cf - "$EVIDENCE_NAME" | gzip -n >"$EVIDENCE_ARCHIVE"
+sha256sum "$EVIDENCE_ARCHIVE" >"${EVIDENCE_ARCHIVE}.sha256"
 chmod 0600 "$EVIDENCE_ARCHIVE" "${EVIDENCE_ARCHIVE}.sha256"
+gzip --test "$EVIDENCE_ARCHIVE"
+tar -tzf "$EVIDENCE_ARCHIVE" >/dev/null
 ```
 
-For a completed run, require exactly one final manifest and run the independent
-verifier from the signed engine package after transfer to the Mac:
+Transfer the archive, checksum, and exact signed v3.4 package to the Mac. The Mac
+authority rechecks the archive digest, extracts to a fresh directory, reruns the
+signed independent verifier, recomputes every manifest entry, and reconciles
+generation IDs and settled costs with OpenRouter Activity before authorizing the
+next campaign.
 
-```bash
-/usr/bin/node "$ARTIFACT_ROOT/qualification-paid-verify.mjs" \
-  --root "$CONTINUATION_OUTPUT_ROOT"
-```
+## 6. Required report
 
-A catalog-preflight failure intentionally has no billed runs and may not have a
-final pass manifest. Preserve and transfer that negative Evidence unchanged;
-do not turn it into a completed run or invoke the paid launcher again.
-
-## 7. Final report
-
-Report the release tag/archive digest, engine commit/tree/signature, policy ID,
-policy/signature digests, mode, output root, exit code, final manifest if any,
-catalog/provider/generation/token/cost counts, Evidence archive digest, and Mac
-read-back result. Explicitly confirm that no retry, resume, fallback,
-substitution, source checkout, local model, GPU, or A100 was used.
+Report package archive digest, commit, tree, signer, policy ID and digests,
+campaign/stage IDs, target/cell counts, output root, exit code, stop reason,
+dispatch/pass/fail/skip counts, generation IDs, tokens, cost coverage, settled
+cost, final manifest, Evidence archive digest, Mac read-back, and Activity
+reconciliation. Explicitly report unknown costs and confirm that no retry,
+resume, fallback, substitution, direct driver, source checkout, package manager,
+local model, Docker, GPU, or A100 was used.

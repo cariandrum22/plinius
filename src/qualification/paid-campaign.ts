@@ -1,12 +1,13 @@
 /**
- * Partitioned hosted paid passes (Paid Pass r1).
+ * Policy-driven hosted paid passes.
  *
- * Two production campaign passes that make hosted OpenRouter calls only and need
+ * Production campaign passes that make hosted OpenRouter calls only and need
  * NO A100 / local runtime / Docker / GPU / Fable attestation:
  *
  *   diagnostic-hosted-paid-r1   — the 15 hosted cells of the existing frozen
  *                                 campaign, minus the historical Claude sentinel.
- *   diagnostic-candidate-paid-r1 — a NEW campaign over four candidate models.
+ *   diagnostic-candidate-paid-r1 — a campaign over four candidate models.
+ *   diagnostic-broad-paid-r1     — a generic 1-24 target screening campaign.
  *
  * Everything in this module is pure and offline: campaign / target / cell
  * definitions, provider-routing construction and wire (de)serialization, live
@@ -187,8 +188,52 @@ export interface PaidBudget {
 
 export type SentinelScope = "global" | "per-model";
 
+export type PaidPassMode =
+  | "diagnostic-hosted-paid-r1"
+  | "diagnostic-candidate-paid-r1"
+  | "diagnostic-broad-paid-r1";
+
+export const BROAD_PAID_MAX_TARGETS = 24;
+export const BROAD_PAID_MAX_CELLS = 96;
+
+interface PaidModeConstraints {
+  totalCapUsd: number;
+  perRunCapUsd: number;
+  sentinelScope: SentinelScope;
+  minTargets: number;
+  maxTargets: number;
+  maxCells: number;
+}
+
+const PAID_MODE_CONSTRAINTS: Record<PaidPassMode, PaidModeConstraints> = {
+  "diagnostic-hosted-paid-r1": {
+    totalCapUsd: 5,
+    perRunCapUsd: 1,
+    sentinelScope: "global",
+    minTargets: 4,
+    maxTargets: 4,
+    maxCells: 15,
+  },
+  "diagnostic-candidate-paid-r1": {
+    totalCapUsd: 6,
+    perRunCapUsd: 0.75,
+    sentinelScope: "per-model",
+    minTargets: 4,
+    maxTargets: 4,
+    maxCells: 16,
+  },
+  "diagnostic-broad-paid-r1": {
+    totalCapUsd: 12,
+    perRunCapUsd: 2,
+    sentinelScope: "per-model",
+    minTargets: 1,
+    maxTargets: BROAD_PAID_MAX_TARGETS,
+    maxCells: BROAD_PAID_MAX_CELLS,
+  },
+};
+
 export interface PaidPassDefinition {
-  mode: "diagnostic-hosted-paid-r1" | "diagnostic-candidate-paid-r1";
+  mode: PaidPassMode;
   campaignId: string;
   stageId: string;
   budget: PaidBudget;
@@ -284,19 +329,18 @@ export function parsePaidCampaignPolicy(
   if (passValue.mode !== expectedMode) throw new Error("paid campaign policy mode mismatch");
   if (typeof passValue.campaignId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(passValue.campaignId)) throw new Error("paid campaign id invalid");
   if (typeof passValue.stageId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,159}$/.test(passValue.stageId)) throw new Error("paid campaign stage invalid");
-  const expectedScope: SentinelScope = expectedMode === "diagnostic-hosted-paid-r1" ? "global" : "per-model";
-  if (passValue.sentinelScope !== expectedScope) throw new Error("paid campaign sentinel scope mismatch");
+  const constraints = PAID_MODE_CONSTRAINTS[expectedMode];
+  if (passValue.sentinelScope !== constraints.sentinelScope) throw new Error("paid campaign sentinel scope mismatch");
 
   if (!exactObjectKeys(passValue.budget, ["totalCapUsd", "perRunCapUsd"])) throw new Error("paid campaign budget field set mismatch");
   const budget = passValue.budget as unknown as PaidBudget;
-  const hardCap = expectedMode === "diagnostic-hosted-paid-r1"
-    ? { totalCapUsd: 5, perRunCapUsd: 1 }
-    : { totalCapUsd: 6, perRunCapUsd: 0.75 };
-  if (!finitePositive(budget.totalCapUsd) || !finitePositive(budget.perRunCapUsd) || budget.totalCapUsd > hardCap.totalCapUsd || budget.perRunCapUsd > hardCap.perRunCapUsd) {
+  if (!finitePositive(budget.totalCapUsd) || !finitePositive(budget.perRunCapUsd) || budget.totalCapUsd > constraints.totalCapUsd || budget.perRunCapUsd > constraints.perRunCapUsd) {
     throw new Error("paid campaign budget exceeds engine cap");
   }
 
-  if (!Array.isArray(passValue.targets) || passValue.targets.length !== 4) throw new Error("paid campaign must define exactly four targets");
+  if (!Array.isArray(passValue.targets) || passValue.targets.length < constraints.minTargets || passValue.targets.length > constraints.maxTargets) {
+    throw new Error(`paid campaign target count must be ${constraints.minTargets}-${constraints.maxTargets}`);
+  }
   const targets: PaidTarget[] = passValue.targets.map((raw, index) => {
     if (!exactObjectKeys(raw, ["slug", "catalogModelId", "responseModelId", "lookupModelId", "providerRoute", "providerDisplay", "priceCeiling", "sampling"])) {
       throw new Error(`paid campaign target ${index} field set mismatch`);
@@ -342,10 +386,11 @@ export function parsePaidCampaignPolicy(
     stageId: passValue.stageId as string,
     budget: { ...budget },
     targets,
-    sentinelScope: expectedScope,
+    sentinelScope: constraints.sentinelScope,
     policyId: value.policyId,
   };
-  const cells = expectedScope === "global" ? buildHostedPaidCells(targets) : buildCandidatePaidCells(targets);
+  const cells = constraints.sentinelScope === "global" ? buildHostedPaidCells(targets) : buildPerModelPaidCells(targets);
+  if (cells.length > constraints.maxCells) throw new Error(`paid campaign exceeds ${constraints.maxCells} logical cells`);
   return {
     document: value as unknown as PaidCampaignPolicyDocument,
     pass,
@@ -467,11 +512,14 @@ export function buildHostedPaidCells(targets: PaidTarget[]): PaidCell[] {
 }
 
 /**
- * Candidate Pass: exactly 16 cells (4 targets x 4 benchmarks). Each target's OIDC
- * cell is that target's own sentinel and runs first within its group; a sentinel
- * failure skips only that target's remaining 3 cells.
+ * Per-model paid layout. Each target's OIDC cell is that target's own sentinel
+ * and runs first within its group; a sentinel failure skips only that target's
+ * remaining three cells.
  */
-export function buildCandidatePaidCells(targets: PaidTarget[]): PaidCell[] {
+export function buildPerModelPaidCells(targets: PaidTarget[]): PaidCell[] {
+  if (targets.length < 1 || targets.length > BROAD_PAID_MAX_TARGETS) {
+    throw new Error(`per-model paid policy must define 1-${BROAD_PAID_MAX_TARGETS} targets`);
+  }
   const cells: PaidCell[] = [];
   for (const t of targets) {
     cells.push({ target: t.slug, benchmark: OIDC_BENCHMARK_ID, sentinel: true, group: t.slug });
@@ -480,13 +528,18 @@ export function buildCandidatePaidCells(targets: PaidTarget[]): PaidCell[] {
       cells.push({ target: t.slug, benchmark: b, sentinel: false, group: t.slug });
     }
   }
+  if (cells.length > BROAD_PAID_MAX_CELLS) throw new Error(`per-model paid policy exceeds ${BROAD_PAID_MAX_CELLS} logical cells`);
   return cells;
 }
+
+/** Compatibility name for the original four-target Candidate Pass. */
+export const buildCandidatePaidCells = buildPerModelPaidCells;
 
 /** The cells and pass definition for a given mode. */
 export function paidPassFor(mode: PaidPassDefinition["mode"]): { pass: PaidPassDefinition; cells: PaidCell[] } {
   if (mode === "diagnostic-hosted-paid-r1") return { pass: HOSTED_PAID_PASS, cells: buildHostedPaidCells(HOSTED_PAID_TARGETS) };
   if (mode === "diagnostic-candidate-paid-r1") return { pass: CANDIDATE_PAID_PASS, cells: buildCandidatePaidCells(CANDIDATE_PAID_TARGETS) };
+  if (mode === "diagnostic-broad-paid-r1") throw new Error("broad paid mode requires a signed campaign policy");
   throw new Error(`unknown paid mode ${mode}`);
 }
 

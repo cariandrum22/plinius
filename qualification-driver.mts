@@ -3753,12 +3753,12 @@ async function fetchPaidCatalog(pass: PaidPassDefinition): Promise<{ catalog: Ma
 /**
  * Resolve the driver mode. Fail-closed BEFORE any network or credential access:
  * an absent or unknown mode is rejected. The old continuation mode is retired; the
- * bounded diagnostic run is "diagnostic-one-shot-r1"; the two partitioned paid
- * passes are "diagnostic-hosted-paid-r1" and "diagnostic-candidate-paid-r1".
+ * bounded diagnostic run is "diagnostic-one-shot-r1"; signed paid policies use
+ * the hosted, candidate, or broad paid mode.
  */
 export function resolveDriverMode(
   raw: string | undefined,
-): "default" | "diagnostic-one-shot-r1" | "diagnostic-hosted-paid-r1" | "diagnostic-candidate-paid-r1" {
+): "default" | "diagnostic-one-shot-r1" | PaidPassDefinition["mode"] {
   if (raw === "default") return "default";
   if (raw === "diagnostic-continuation-r1") {
     throw new Error("diagnostic-continuation-r1 is retired; automatic continuation/resume is prohibited");
@@ -3766,8 +3766,9 @@ export function resolveDriverMode(
   if (raw === "diagnostic-one-shot-r1") return "diagnostic-one-shot-r1";
   if (raw === "diagnostic-hosted-paid-r1") return "diagnostic-hosted-paid-r1";
   if (raw === "diagnostic-candidate-paid-r1") return "diagnostic-candidate-paid-r1";
+  if (raw === "diagnostic-broad-paid-r1") return "diagnostic-broad-paid-r1";
   throw new Error(
-    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default, diagnostic-one-shot-r1, diagnostic-hosted-paid-r1 or diagnostic-candidate-paid-r1`,
+    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default, diagnostic-one-shot-r1, diagnostic-hosted-paid-r1, diagnostic-candidate-paid-r1 or diagnostic-broad-paid-r1`,
   );
 }
 
@@ -3791,7 +3792,7 @@ if (typeof __PLINIUS_PAID_BUNDLE__ === "undefined" && invokedDirectly()) {
   const mode = resolveDriverMode(process.env.PLINIUS_DRIVER_MODE);
   // A paid bundle is imported by the externally verified artifact launcher. Executing
   // the source or bundle directly never reaches the paid entrypoint.
-  if (mode === "diagnostic-hosted-paid-r1" || mode === "diagnostic-candidate-paid-r1") {
+  if (mode === "diagnostic-hosted-paid-r1" || mode === "diagnostic-candidate-paid-r1" || mode === "diagnostic-broad-paid-r1") {
     console.error(`DRIVER ERROR: paid mode ${mode} must be launched through qualification-paid-launch.mjs, not the driver directly`);
     process.exit(1);
   }

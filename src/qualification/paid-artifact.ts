@@ -19,7 +19,10 @@ export const PAID_ARTIFACT_RUNNER = "qualification-driver.mjs";
 export const PAID_ARTIFACT_VERIFIER = "qualification-paid-verify.mjs";
 export const PAID_EXECUTION_MANIFEST = "qualification-paid-execution-manifest.json";
 
-export type PaidArtifactMode = "diagnostic-hosted-paid-r1" | "diagnostic-candidate-paid-r1";
+export type PaidArtifactMode =
+  | "diagnostic-hosted-paid-r1"
+  | "diagnostic-candidate-paid-r1"
+  | "diagnostic-broad-paid-r1";
 
 export interface PaidExecutionFile {
   path: string;

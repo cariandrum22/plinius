@@ -33,7 +33,7 @@ import {
 } from "../src/qualification/paid-artifact.js";
 import type { PaidExecutionManifest, PaidLaunchGrant, PaidLaunchObservation } from "../src/qualification/paid-artifact.js";
 import { createLaunchGrant, loadVerifiedRunner, verifyCampaignPolicy, verifyExecutionPackage } from "../qualification-paid-launch.mjs";
-import { verifyPaidEvidence } from "../qualification-paid-verify.mjs";
+import { parseCampaignPolicy, verifyPaidEvidence } from "../qualification-paid-verify.mjs";
 
 import {
   HOSTED_PAID_PASS,
@@ -42,6 +42,7 @@ import {
   CANDIDATE_PAID_TARGETS,
   buildHostedPaidCells,
   buildCandidatePaidCells,
+  buildPerModelPaidCells,
   buildProviderRouting,
   serializeProviderRouting,
   parseProviderRoutingWire,
@@ -61,6 +62,8 @@ import {
   OIDC_BENCHMARK_ID,
   parsePaidCampaignPolicy,
   PAID_CAMPAIGN_POLICY_SIGNER,
+  BROAD_PAID_MAX_CELLS,
+  BROAD_PAID_MAX_TARGETS,
 } from "../src/qualification/paid-campaign.js";
 import type {
   CatalogModelInfo,
@@ -80,6 +83,7 @@ import type { FetchFn } from "../src/backends/openai-compatible.js";
 const OR_BASE = "https://openrouter.ai/api/v1";
 const CHAT_URL = `${OR_BASE}/chat/completions`;
 const DISPLAY = "TestProvider";
+const ALL_PAID_MODES = ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1"] as const;
 
 // --- helpers -----------------------------------------------------------------
 
@@ -287,7 +291,7 @@ beforeAll(async () => {
     createdAtUtc: "2026-08-28T00:00:00Z",
     source: { commit: "a".repeat(40), tree: "b".repeat(40) },
     requiredSignerFingerprint: PAID_ARTIFACT_PINNED_SIGNER,
-    allowedModes: ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1"],
+    allowedModes: [...ALL_PAID_MODES],
     launcher: "qualification-paid-launch.mjs",
     runner: "qualification-driver.mjs",
     verifier: "qualification-paid-verify.mjs",
@@ -323,6 +327,31 @@ function policyBodyFor(pass: any): string {
     requiredSignerFingerprint: PAID_CAMPAIGN_POLICY_SIGNER,
     pass: unsignedPass,
   }, null, 2)}\n`;
+}
+
+function broadTarget(index: number): PaidTarget {
+  return {
+    slug: `vendor/model-${index}-20260830`,
+    catalogModelId: `vendor/model-${index}`,
+    responseModelId: `vendor/model-${index}`,
+    lookupModelId: `vendor/model-${index}-20260830`,
+    providerRoute: `provider-${index}`,
+    providerDisplay: `Provider ${index}`,
+    priceCeiling: { inputPerMTokens: 0.1, outputPerMTokens: 0.2 },
+    sampling: { temperature: null, topP: null, seed: null },
+  };
+}
+
+function broadPass(targetCount: number): any {
+  return {
+    mode: "diagnostic-broad-paid-r1",
+    campaignId: "plinius-qualification-broad-h1-r1",
+    stageId: "plinius-qualification-diagnostic-broad-h1-r1",
+    budget: { totalCapUsd: 3, perRunCapUsd: 0.75 },
+    targets: Array.from({ length: targetCount }, (_, index) => broadTarget(index + 1)),
+    sentinelScope: "per-model",
+    policyId: "plinius-broad-paid-h1-r1",
+  };
 }
 
 // Mirror the production bootstrap: acquire a lock on a fresh root, finalize the catalog +
@@ -473,9 +502,10 @@ describe("paid pass fixed definitions", () => {
     for (const t of CANDIDATE_PAID_TARGETS) expect(cells.filter((c) => c.group === t.slug && c.sentinel).length).toBe(1);
   });
 
-  it("resolveDriverMode accepts both paid modes and rejects unknown", () => {
+  it("resolveDriverMode accepts all paid modes and rejects unknown", () => {
     expect(resolveDriverMode("diagnostic-hosted-paid-r1")).toBe("diagnostic-hosted-paid-r1");
     expect(resolveDriverMode("diagnostic-candidate-paid-r1")).toBe("diagnostic-candidate-paid-r1");
+    expect(resolveDriverMode("diagnostic-broad-paid-r1")).toBe("diagnostic-broad-paid-r1");
     expect(() => resolveDriverMode(undefined)).toThrow();
   });
 });
@@ -559,6 +589,34 @@ describe("detached-signature campaign policy", () => {
     expect(r2.cells).toHaveLength(16);
     expect(r2.cells.filter((cell) => cell.sentinel)).toHaveLength(4);
   });
+
+  it("loads broad policies from one through 24 targets with per-model sentinels", () => {
+    const one = parsePaidCampaignPolicy(Buffer.from(policyBodyFor(broadPass(1))), "diagnostic-broad-paid-r1", "2026-08-29T00:00:00Z");
+    expect(one.cells).toHaveLength(4);
+    expect(one.cells.filter((cell) => cell.sentinel)).toHaveLength(1);
+
+    const maximum = parsePaidCampaignPolicy(Buffer.from(policyBodyFor(broadPass(BROAD_PAID_MAX_TARGETS))), "diagnostic-broad-paid-r1", "2026-08-29T00:00:00Z");
+    expect(maximum.cells).toHaveLength(BROAD_PAID_MAX_CELLS);
+    expect(maximum.cells.filter((cell) => cell.sentinel)).toHaveLength(BROAD_PAID_MAX_TARGETS);
+    expect(buildPerModelPaidCells(maximum.pass.targets)).toEqual(maximum.cells);
+  });
+
+  it("rejects broad target, cell, scope, budget, and field-set drift", () => {
+    const encode = (pass: any) => Buffer.from(policyBodyFor(pass));
+    expect(() => parsePaidCampaignPolicy(encode(broadPass(0)), "diagnostic-broad-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/target count/);
+    expect(() => parsePaidCampaignPolicy(encode(broadPass(BROAD_PAID_MAX_TARGETS + 1)), "diagnostic-broad-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/target count/);
+    expect(() => buildPerModelPaidCells(broadPass(BROAD_PAID_MAX_TARGETS + 1).targets)).toThrow(/1-24 targets/);
+    expect(() => parsePaidCampaignPolicy(encode({ ...broadPass(1), sentinelScope: "global" }), "diagnostic-broad-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/sentinel scope/);
+    expect(() => parsePaidCampaignPolicy(encode({ ...broadPass(1), budget: { totalCapUsd: 12.01, perRunCapUsd: 2 } }), "diagnostic-broad-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/budget/);
+    expect(() => parsePaidCampaignPolicy(encode({ ...broadPass(1), targets: [{ ...broadTarget(1), reasoningEffort: "high" }] }), "diagnostic-broad-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/field set/);
+  });
+
+  it("the independent verifier applies the same broad bounds without importing the engine", () => {
+    expect(parseCampaignPolicy(Buffer.from(policyBodyFor(broadPass(2)))).identity.totalCells).toBe(8);
+    expect(() => parseCampaignPolicy(Buffer.from(policyBodyFor({ ...broadPass(1), sentinelScope: "global" })))).toThrow(/policy_mode/);
+    expect(() => parseCampaignPolicy(Buffer.from(policyBodyFor({ ...broadPass(1), budget: { totalCapUsd: 12, perRunCapUsd: 2.01 } })))).toThrow(/policy_budget/);
+    expect(() => parseCampaignPolicy(Buffer.from(policyBodyFor(broadPass(BROAD_PAID_MAX_TARGETS + 1))))).toThrow(/policy_targets/);
+  });
 });
 
 // --- 2. routing + wire tamper ------------------------------------------------
@@ -619,6 +677,8 @@ describe("full request/response re-derivation and provider provenance", () => {
     expect(verifyPaidDispatch({ ...base, requestKeys: [...fullKeys, "models"].sort() }, expected).reasons.some((r) => r.startsWith("request_field_set_mismatch"))).toBe(true);
     // a present-but-null sampling field the plan does not send (extra "logprobs")
     expect(verifyPaidDispatch({ ...base, requestKeys: [...fullKeys, "logprobs"].sort() }, expected).reasons.some((r) => r.startsWith("request_field_set_mismatch"))).toBe(true);
+    // reasoning profiles are intentionally outside the broad-screening schema
+    expect(verifyPaidDispatch({ ...base, requestKeys: [...fullKeys, "reasoning"].sort() }, expected).reasons.some((r) => r.startsWith("request_field_set_mismatch"))).toBe(true);
     // HTTP 500 is never a pass even with a success-shaped body
     expect(verifyPaidDispatch({ ...base, responseHttpStatus: 500 }, expected).reasons.some((r) => r.startsWith("response_http_status"))).toBe(true);
     // an attacker cost-poll URL (different generation id / host)
@@ -1008,7 +1068,7 @@ describe("Paid Pass v3 artifact boundary", () => {
     createdAtUtc: "2026-08-28T00:00:00Z",
     source: { commit: "a".repeat(40), tree: "b".repeat(40) },
     requiredSignerFingerprint: PAID_ARTIFACT_PINNED_SIGNER,
-    allowedModes: ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1"],
+    allowedModes: [...ALL_PAID_MODES],
     launcher: "qualification-paid-launch.mjs",
     runner: "qualification-driver.mjs",
     verifier: "qualification-paid-verify.mjs",
@@ -1093,6 +1153,9 @@ describe("Paid Pass v3 artifact boundary", () => {
       await writeFile(join(root, "qualification-paid-execution-manifest.json.sig"), "signature", { mode: 0o600 });
       const verified = verifyExecutionPackage(root, { verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER });
       expect(verified.manifest.files).toHaveLength(3);
+      await writeFile(join(root, "qualification-paid-execution-manifest.json"), JSON.stringify({ ...packageManifest, allowedModes: ALL_PAID_MODES.slice(0, 2) }), { mode: 0o600 });
+      expect(() => verifyExecutionPackage(root, { verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER })).toThrow(/modes mismatch/);
+      await writeFile(join(root, "qualification-paid-execution-manifest.json"), JSON.stringify(packageManifest), { mode: 0o600 });
       const policyPath = join(anchorDir, "launcher-hosted-policy.json");
       const policySignaturePath = `${policyPath}.sig`;
       await writeFile(policyPath, policyBytes, { mode: 0o600 });
@@ -1315,6 +1378,21 @@ describe("runPaidPass orchestration", () => {
     expect(result.stopped).toBeNull();
     expect(result.dispatchedRunIds).toHaveLength(15);
     expect(result.passed).toBe(15);
+    const independent = verifyPaidEvidence(root, {
+      verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER,
+      parentDigests: await Promise.all(anchorPaths.parentInputPaths.map(fileSha)),
+    });
+    expect(independent.ok, independent.reasons.join("\n")).toBe(true);
+  }, 20_000);
+
+  it("runs a signed-policy broad layout and passes independent Evidence verification", async () => {
+    const pass = broadPass(2);
+    const cells = buildPerModelPaidCells(pass.targets);
+    const root = freshRoot("broad-happy");
+    const result = await runPaidPass(await setupPaidRun(pass, cells, root, withWire((_cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 0.01 }))));
+    expect(result.stopped).toBeNull();
+    expect(result.dispatchedRunIds).toHaveLength(8);
+    expect(result.passed).toBe(8);
     const independent = verifyPaidEvidence(root, {
       verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER,
       parentDigests: await Promise.all(anchorPaths.parentInputPaths.map(fileSha)),

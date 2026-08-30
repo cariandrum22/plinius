@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-/** Independent post-transfer verifier for policy-driven Paid Pass v3.2 Evidence. */
+/** Independent post-transfer verifier for policy-driven Paid Pass v3.4 Evidence. */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -28,6 +28,12 @@ const BENCHMARKS = new Map([
 ]);
 const BENCHMARK_ORDER = [...BENCHMARKS.keys()];
 const OIDC_BENCHMARK = "sec-oidc-id-token-validation-001";
+const ALLOWED_MODES = ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1"];
+const MODE_CONSTRAINTS = new Map([
+  ["diagnostic-hosted-paid-r1", { totalCapUsd: 5, perRunCapUsd: 1, sentinelScope: "global", minTargets: 4, maxTargets: 4, maxCells: 15 }],
+  ["diagnostic-candidate-paid-r1", { totalCapUsd: 6, perRunCapUsd: 0.75, sentinelScope: "per-model", minTargets: 4, maxTargets: 4, maxCells: 16 }],
+  ["diagnostic-broad-paid-r1", { totalCapUsd: 12, perRunCapUsd: 2, sentinelScope: "per-model", minTargets: 1, maxTargets: 24, maxCells: 96 }],
+]);
 /** @param {any} policy */
 function cellsForPolicy(policy) {
   const targets = policy.pass.targets.map((/** @type {any} */ target) => target.slug);
@@ -192,7 +198,7 @@ function canonicalUtc(value) {
 /** Parse a bound policy independently of the driver. Expiry is evaluated at the
  * catalog capture time, allowing durable Evidence to remain verifiable later. */
 /** @param {Buffer} body */
-function parseCampaignPolicy(body) {
+export function parseCampaignPolicy(body) {
   const policy = JSON.parse(body.toString("utf-8"));
   if (Buffer.from(`${JSON.stringify(policy, null, 2)}\n`, "utf-8").compare(body) !== 0) throw new Error("policy_noncanonical");
   if (!exactKeys(policy, ["schemaVersion", "policyType", "policyId", "issuedAtUtc", "catalogObservedAtUtc", "expiresAtUtc", "requiredSignerFingerprint", "pass"])) throw new Error("policy_fields");
@@ -205,10 +211,10 @@ function parseCampaignPolicy(body) {
   const pass = policy.pass;
   if (!exactKeys(pass, ["mode", "campaignId", "stageId", "budget", "targets", "sentinelScope"])) throw new Error("policy_pass_fields");
   if (typeof pass.campaignId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(pass.campaignId) || typeof pass.stageId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,159}$/.test(pass.stageId)) throw new Error("policy_pass_identity");
-  const caps = pass.mode === "diagnostic-hosted-paid-r1" ? { totalCapUsd: 5, perRunCapUsd: 1, sentinelScope: "global" } : pass.mode === "diagnostic-candidate-paid-r1" ? { totalCapUsd: 6, perRunCapUsd: 0.75, sentinelScope: "per-model" } : null;
+  const caps = MODE_CONSTRAINTS.get(pass.mode);
   if (caps == null || pass.sentinelScope !== caps.sentinelScope) throw new Error("policy_mode");
   if (!exactKeys(pass.budget, ["totalCapUsd", "perRunCapUsd"]) || !finiteNonnegative(pass.budget.totalCapUsd) || !finiteNonnegative(pass.budget.perRunCapUsd) || pass.budget.totalCapUsd <= 0 || pass.budget.perRunCapUsd <= 0 || pass.budget.totalCapUsd > caps.totalCapUsd || pass.budget.perRunCapUsd > caps.perRunCapUsd) throw new Error("policy_budget");
-  if (!Array.isArray(pass.targets) || pass.targets.length !== 4) throw new Error("policy_targets");
+  if (!Array.isArray(pass.targets) || pass.targets.length < caps.minTargets || pass.targets.length > caps.maxTargets) throw new Error("policy_targets");
   const targets = new Map();
   for (const target of pass.targets) {
     if (!exactKeys(target, ["slug", "catalogModelId", "responseModelId", "lookupModelId", "providerRoute", "providerDisplay", "priceCeiling", "sampling"])) throw new Error("policy_target_fields");
@@ -237,6 +243,7 @@ function parseCampaignPolicy(body) {
     if (new Set(pass.targets.map((/** @type {any} */ target) => target[field])).size !== pass.targets.length) throw new Error(`policy_target_duplicate_${field}`);
   }
   const cells = cellsForPolicy(policy);
+  if (cells.length > caps.maxCells) throw new Error("policy_cells");
   return {
     policy,
     targets,
@@ -349,7 +356,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       require("execution_manifest_signer", executionManifest.requiredSignerFingerprint === PINNED_SIGNER);
       require("execution_manifest_source", /^[0-9a-f]{40}$/.test(executionManifest.source?.commit ?? "") && /^[0-9a-f]{40}$/.test(executionManifest.source?.tree ?? ""));
       require("execution_manifest_entrypoints", executionManifest.launcher === "qualification-paid-launch.mjs" && executionManifest.runner === "qualification-driver.mjs" && executionManifest.verifier === "qualification-paid-verify.mjs");
-      require("execution_manifest_mode", Array.isArray(executionManifest.allowedModes) && json([...executionManifest.allowedModes].sort()) === json(["diagnostic-candidate-paid-r1", "diagnostic-hosted-paid-r1"]));
+      require("execution_manifest_mode", Array.isArray(executionManifest.allowedModes) && json([...executionManifest.allowedModes].sort()) === json([...ALLOWED_MODES].sort()));
       require("execution_manifest_files", Array.isArray(executionManifest.files) && executionManifest.files.some((/** @type {any} */ file) => file.path === "qualification-paid-launch.mjs" && file.role === "launcher") && executionManifest.files.some((/** @type {any} */ file) => file.path === "qualification-driver.mjs" && file.role === "runner") && executionManifest.files.some((/** @type {any} */ file) => file.path === "qualification-paid-verify.mjs" && file.role === "verifier"));
       const executionPaths = new Set();
       for (const file of executionManifest.files ?? []) {

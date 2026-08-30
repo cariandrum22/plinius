@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-/** Build a source-tree-independent Paid Pass v3.3 engine package on the Mac authority. */
+/** Build a source-tree-independent Paid Pass v3.4 engine package on the Mac authority. */
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -8,11 +8,11 @@ import { chmodSync, cpSync, lstatSync, mkdirSync, readFileSync, readdirSync, rea
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { parseCampaignPolicy } from "../qualification-paid-verify.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 const MANIFEST = "qualification-paid-execution-manifest.json";
-const DEFAULT_POLICY = join(REPO, "policy", "qualification-candidate-paid-2026-08-30-r2.json");
 const BENCHMARK_IDS = [
   "software-engineering/se-concurrency-atomic-stats-012",
   "architecture/arch-exactly-once-003",
@@ -62,8 +62,8 @@ function git(args) {
 
 /** @param {string[]} argv */
 function parseArgs(argv) {
-  let output = join(REPO, "build", "qualification-paid-v3.3-release");
-  let policy = DEFAULT_POLICY;
+  let output = join(REPO, "build", "qualification-paid-v3.4-release");
+  let policy = "";
   let sign = true;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--output") output = resolve(argv[++i] ?? "");
@@ -72,6 +72,7 @@ function parseArgs(argv) {
     else if (argv[i] === "--sign") sign = true;
     else throw new Error(`unknown build argument: ${argv[i]}`);
   }
+  if (!policy) throw new Error("--policy is required; no campaign policy is selected implicitly");
   return { output, policy, sign };
 }
 
@@ -92,6 +93,7 @@ async function main() {
   if (policyDocument.schemaVersion !== 2 || policyDocument.policyType !== "plinius-paid-campaign-policy-v2" || policyDocument.requiredSignerFingerprint !== PINNED_SIGNER) {
     throw new Error("policy identity or signer mismatch");
   }
+  parseCampaignPolicy(policyBytes);
 
   rmSync(output, { recursive: true, force: true });
   const engineOutput = join(output, "engine");
@@ -128,7 +130,7 @@ async function main() {
     define: { __PLINIUS_PAID_BUNDLE__: "true" },
     banner: {
       js: [
-        "// Plinius Paid Pass v3.3 isolated driver bundle.",
+        "// Plinius Paid Pass v3.4 isolated driver bundle.",
         'import { createRequire as __pliniusCreateRequire } from "node:module";',
         'const require = __pliniusCreateRequire(process.cwd() + "/qualification-driver.mjs");',
       ].join("\n"),
@@ -162,7 +164,7 @@ async function main() {
     createdAtUtc: new Date().toISOString(),
     source: { commit: git(["rev-parse", "HEAD"]), tree: git(["rev-parse", "HEAD^{tree}"]) },
     requiredSignerFingerprint: PINNED_SIGNER,
-    allowedModes: ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1"],
+    allowedModes: ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1"],
     launcher: "qualification-paid-launch.mjs",
     runner: "qualification-driver.mjs",
     verifier: "qualification-paid-verify.mjs",

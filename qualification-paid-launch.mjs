@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 /**
- * Dependency-free Paid Pass v3.3 launcher.
+ * Dependency-free Paid Pass v3.4 launcher.
  *
  * Fable must verify the signed execution manifest and launcher digest before
  * invoking `/usr/bin/node qualification-paid-launch.mjs`. This launcher then
@@ -26,7 +26,7 @@ export const SIGNATURE_NAME = `${MANIFEST_NAME}.sig`;
 export const LAUNCHER_NAME = "qualification-paid-launch.mjs";
 export const RUNNER_NAME = "qualification-driver.mjs";
 export const VERIFIER_NAME = "qualification-paid-verify.mjs";
-const MODES = new Set(["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1"]);
+const MODES = new Set(["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1"]);
 const GPG_CANDIDATES = ["/usr/bin/gpg", "/bin/gpg", "/opt/homebrew/bin/gpg", "/usr/local/bin/gpg", join(homedir(), ".nix-profile/bin/gpg")];
 
 /** @param {Buffer | Uint8Array | string} bytes */
