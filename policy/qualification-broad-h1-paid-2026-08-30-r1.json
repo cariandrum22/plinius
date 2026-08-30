@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 2,
+  "policyType": "plinius-paid-campaign-policy-v2",
+  "policyId": "plinius-broad-paid-h1-2026-08-30-r1",
+  "issuedAtUtc": "2026-08-30T11:12:00Z",
+  "catalogObservedAtUtc": "2026-08-30T11:08:02Z",
+  "expiresAtUtc": "2026-09-06T11:12:00Z",
+  "requiredSignerFingerprint": "435C9CF0DE7A2C3900FB24357E622B43290C285E",
+  "pass": {
+    "mode": "diagnostic-broad-paid-r1",
+    "campaignId": "plinius-qualification-broad-h1-2026-08-30-r1",
+    "stageId": "plinius-qualification-diagnostic-broad-h1-2026-08-30-r1",
+    "budget": {
+      "totalCapUsd": 3,
+      "perRunCapUsd": 0.75
+    },
+    "targets": [
+      {
+        "slug": "z-ai/glm-5.3-flash-20260826",
+        "catalogModelId": "z-ai/glm-5.3-flash",
+        "responseModelId": "z-ai/glm-5.3-flash",
+        "lookupModelId": "z-ai/glm-5.3-flash-20260826",
+        "providerRoute": "z-ai/fp8",
+        "providerDisplay": "Z.AI",
+        "priceCeiling": {
+          "inputPerMTokens": 0.075,
+          "outputPerMTokens": 0.25
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "xiaomi/mimo-v2.5-20260422",
+        "catalogModelId": "xiaomi/mimo-v2.5",
+        "responseModelId": "xiaomi/mimo-v2.5",
+        "lookupModelId": "xiaomi/mimo-v2.5-20260422",
+        "providerRoute": "xiaomi/fp8",
+        "providerDisplay": "Xiaomi",
+        "priceCeiling": {
+          "inputPerMTokens": 0.14,
+          "outputPerMTokens": 0.28
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "xiaomi/mimo-v2.5-pro-20260422",
+        "catalogModelId": "xiaomi/mimo-v2.5-pro",
+        "responseModelId": "xiaomi/mimo-v2.5-pro",
+        "lookupModelId": "xiaomi/mimo-v2.5-pro-20260422",
+        "providerRoute": "xiaomi/fp8",
+        "providerDisplay": "Xiaomi",
+        "priceCeiling": {
+          "inputPerMTokens": 0.435,
+          "outputPerMTokens": 0.87
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "minimax/minimax-m3-20260531",
+        "catalogModelId": "minimax/minimax-m3",
+        "responseModelId": "minimax/minimax-m3",
+        "lookupModelId": "minimax/minimax-m3-20260531",
+        "providerRoute": "minimax/fp8",
+        "providerDisplay": "Minimax",
+        "priceCeiling": {
+          "inputPerMTokens": 0.3,
+          "outputPerMTokens": 1.2
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "meta/muse-glimmer-30b-20260810",
+        "catalogModelId": "meta/muse-glimmer-30b",
+        "responseModelId": "meta/muse-glimmer-30b",
+        "lookupModelId": "meta/muse-glimmer-30b-20260810",
+        "providerRoute": "parasail/bf16",
+        "providerDisplay": "Parasail",
+        "priceCeiling": {
+          "inputPerMTokens": 0.3,
+          "outputPerMTokens": 1.1
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "qwen/qwen3.8-27b-20260814",
+        "catalogModelId": "qwen/qwen3.8-27b",
+        "responseModelId": "qwen/qwen3.8-27b",
+        "lookupModelId": "qwen/qwen3.8-27b-20260814",
+        "providerRoute": "alibaba",
+        "providerDisplay": "Alibaba",
+        "priceCeiling": {
+          "inputPerMTokens": 0.425,
+          "outputPerMTokens": 2.55
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "google/gemma-4-31b-it-20260402",
+        "catalogModelId": "google/gemma-4-31b-it",
+        "responseModelId": "google/gemma-4-31b-it",
+        "lookupModelId": "google/gemma-4-31b-it-20260402",
+        "providerRoute": "novita/bf16",
+        "providerDisplay": "Novita",
+        "priceCeiling": {
+          "inputPerMTokens": 0.14,
+          "outputPerMTokens": 0.4
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      }
+    ],
+    "sentinelScope": "per-model"
+  }
+}
