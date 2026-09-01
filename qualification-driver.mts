@@ -2996,12 +2996,63 @@ export interface PaidCostCoverage {
   complete: boolean;
 }
 
+const BROAD_MODEL_CONCURRENCY_LIMIT = 2;
+const PAID_PROVIDER_CONCURRENCY_LIMIT = 1;
+
+interface PaidExecutionSummary {
+  scheduler: "sequential" | "model-groups";
+  modelConcurrencyLimit: number;
+  providerConcurrencyLimit: number;
+  sameModelSequential: true;
+  sentinelFirst: true;
+  budgetReservation: "catalog-cell-ceiling";
+  osForks: 0;
+  peakActiveModels: number;
+  peakConcurrentDispatches: number;
+  peakPerProviderDispatches: number;
+  peakReservedUsd: number;
+}
+
+/** Fair in-process permit pool. Paid execution never creates an OS worker/fork. */
+class PaidPermitPool {
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+  peak = 0;
+
+  constructor(private readonly limit: number) {
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("paid permit limit invalid");
+  }
+
+  async acquire(): Promise<() => void> {
+    await new Promise<void>((resolve) => {
+      if (this.active < this.limit) {
+        this.active++;
+        this.peak = Math.max(this.peak, this.active);
+        resolve();
+      } else {
+        this.waiters.push(resolve);
+      }
+    });
+    let released = false;
+    return () => {
+      if (released) throw new Error("paid permit released twice");
+      released = true;
+      const next = this.waiters.shift();
+      if (next) next(); // Transfer the occupied slot without exposing a false vacancy.
+      else this.active--;
+    };
+  }
+}
+
 /**
  * Run a paid pass. Per the paid contract there is NO resume/retry/fallback: a
  * fresh empty output root is required, each cell is dispatched at most once, and a
  * process that dies after a request never re-dispatches. Before every dispatch the
- * cumulative actual spend plus the next cell's catalog-ceiling estimate is checked
- * against the per-run and total caps (stop before the provider call on breach). The
+ * cumulative actual spend plus every in-flight catalog-ceiling reservation and the
+ * next cell's ceiling are checked against the per-run and total caps. Broad mode runs
+ * at most two model groups asynchronously, while preserving sentinel-first sequential
+ * execution within a model and one in-flight request per provider. A fatal result stops
+ * new dispatches; already in-flight calls are sealed without retry. The
  * request wire is re-derived and its model + full provider routing must match the
  * plan exactly. The billed cost must resolve after each response — an unknown cost
  * stops the pass and is never backfilled as 0. A global sentinel failure stops the
@@ -3040,6 +3091,54 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
   let failed = 0;
   let stopped: string | null = null;
   let manifestFile: string | null = null;
+  let schedulingStopped = false;
+  let reservedUsd = 0;
+  let peakReservedUsd = 0;
+  let activeModels = 0;
+  let peakActiveModels = 0;
+  let activeDispatches = 0;
+  let peakConcurrentDispatches = 0;
+  const orderByRunId = new Map<string, number>();
+  const budgetWaiters: Array<() => void> = [];
+  const providerPools = new Map<string, PaidPermitPool>();
+  const modelConcurrencyLimit = opts.pass.mode === "diagnostic-broad-paid-r1" ? BROAD_MODEL_CONCURRENCY_LIMIT : 1;
+
+  const wakeBudgetWaiters = (): void => {
+    for (const wake of budgetWaiters.splice(0)) wake();
+  };
+  const stopScheduling = (reason?: string): void => {
+    schedulingStopped = true;
+    if (reason !== undefined && stopped === null) stopped = reason;
+    wakeBudgetWaiters();
+  };
+  const waitForBudgetChange = (): Promise<void> => new Promise((resolve) => budgetWaiters.push(resolve));
+  const reserveBudget = async (estimate: number): Promise<{ ok: true } | { ok: false; aborted: boolean; reasons: string[] }> => {
+    for (;;) {
+      if (schedulingStopped) return { ok: false, aborted: true, reasons: [] };
+      const withInflight = checkBudgetBeforeDispatch(spentUsd + reservedUsd, estimate, opts.pass.budget);
+      if (withInflight.ok) {
+        reservedUsd += estimate;
+        peakReservedUsd = Math.max(peakReservedUsd, reservedUsd);
+        return { ok: true };
+      }
+      const withoutInflight = checkBudgetBeforeDispatch(spentUsd, estimate, opts.pass.budget);
+      if (!withoutInflight.ok) return { ok: false, aborted: false, reasons: withoutInflight.reasons };
+      await waitForBudgetChange();
+    }
+  };
+  const releaseBudgetReservation = (estimate: number): void => {
+    reservedUsd -= estimate;
+    if (Math.abs(reservedUsd) < 1e-15) reservedUsd = 0;
+    if (reservedUsd < 0) throw new Error("paid budget reservation underflow");
+    wakeBudgetWaiters();
+  };
+  const providerPool = (provider: string): PaidPermitPool => {
+    const existing = providerPools.get(provider);
+    if (existing) return existing;
+    const created = new PaidPermitPool(PAID_PROVIDER_CONCURRENCY_LIMIT);
+    providerPools.set(provider, created);
+    return created;
+  };
 
   // Finalize a content-addressed artifact whose FILENAME is the SHA of the EXACT
   // bytes written, so the name and the body digest can never disagree. Returns a
@@ -3052,23 +3151,37 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
   };
 
   try {
-    for (let i = 0; i < opts.cells.length; i++) {
+    const runCell = async (i: number): Promise<void> => {
+      if (schedulingStopped) return;
       const cell = opts.cells[i];
       const orderIndex = i + 1;
       const plan = await opts.planCell(cell, orderIndex);
+      orderByRunId.set(plan.runId, orderIndex);
       if (skippedGroups.has(cell.group)) {
         skippedRunIds.push(plan.runId);
-        continue;
+        return;
       }
+      if (schedulingStopped) return;
       const routing = buildProviderRouting(plan.target);
 
-      // Budget gate BEFORE dispatch: ceiling estimate within per-run, cumulative within total.
+      // Reserve the catalog-derived worst-case cell ceiling before dispatch. The
+      // reservation includes every in-flight cell, so two workers cannot both pass
+      // a stale spentUsd check and over-commit the campaign budget.
       const estimate = estimateCellCeilingUsd(plan.target, plan.promptTokensEstimate, plan.maxTokens);
-      const bc = checkBudgetBeforeDispatch(spentUsd, estimate, opts.pass.budget);
-      if (!bc.ok) {
-        stopped = `budget_exceeded:${bc.reasons.join(",")}`;
-        break;
+      const reservation = await reserveBudget(estimate);
+      if (!reservation.ok) {
+        if (!reservation.aborted) stopScheduling(`budget_exceeded:${reservation.reasons.join(",")}`);
+        return;
       }
+      let reservationHeld = true;
+      let dispatchActive = false;
+      let releaseProvider: (() => void) | null = null;
+      try {
+        releaseProvider = await providerPool(plan.target.providerDisplay).acquire();
+        if (schedulingStopped) return;
+        activeDispatches++;
+        dispatchActive = true;
+        peakConcurrentDispatches = Math.max(peakConcurrentDispatches, activeDispatches);
 
       // Durable intent + dispatch_started BEFORE the provider call.
       const timestamp = now();
@@ -3177,8 +3290,8 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
         // exists. Never present this as a settled zero-cost request.
         unknownCostRunIds.push(plan.runId);
         failed++;
-        stopped = `dispatch_exception:${plan.runId}`;
-        break;
+        stopScheduling(`dispatch_exception:${plan.runId}`);
+        return;
       }
       // NOTE: `facts` is now consulted ONLY for non-authoritative timing (latencyMs).
       // Every authoritative value below is re-derived from the durable sink on disk.
@@ -3197,6 +3310,8 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       // number — even when it will trip a cap — so the summary never understates.
       const spentBefore = spentUsd;
       const billed = rederive.billedCostUsd;
+      releaseBudgetReservation(estimate);
+      reservationHeld = false;
       if (typeof billed === "number" && Number.isFinite(billed) && billed >= 0) {
         spentUsd += billed;
         settledCostRunIds.push(plan.runId);
@@ -3214,7 +3329,14 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
         temperature: plan.target.sampling.temperature, topP: plan.target.sampling.topP, seed: plan.target.sampling.seed,
         messages: plan.messages, providerDisplay: opts.providerDisplay[plan.target.slug] ?? "", costLookupBaseUrl: OR_BASE,
       });
-      const costCheck = validatePaidActualCost(billed, spentBefore, opts.pass.budget);
+      const actualCostCheck = validatePaidActualCost(billed, spentBefore, opts.pass.budget);
+      const reservationCostReasons = spentUsd + reservedUsd > opts.pass.budget.totalCapUsd
+        ? ["total_cap_exceeded_actual_with_inflight_reservations"]
+        : [];
+      const costCheck = {
+        ok: actualCostCheck.ok && reservationCostReasons.length === 0,
+        reasons: [...actualCostCheck.reasons, ...reservationCostReasons],
+      };
       const respParse = readBack.responseBody ? parseWireJson(readBack.responseBody) : { ok: false as const, reason: "no_response_wire" };
       const parsedResponse = respParse.ok ? respParse.value : null;
       const wireUsage = parsedResponse != null && typeof parsedResponse === "object" ? (parsedResponse as Record<string, unknown>).usage ?? null : null;
@@ -3267,25 +3389,117 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
 
       // (F) Stop decisions AFTER the verdict record is durable.
       if (!rederive.ok) {
-        stopped = `wire_integrity_failed:${plan.runId}:${rederive.reasons.join(",")}`;
-        break;
+        stopScheduling(`wire_integrity_failed:${plan.runId}:${rederive.reasons.join(",")}`);
+        return;
       }
       if (!dispatchCheck.ok) {
-        stopped = `request_wire_mismatch:${plan.runId}:${dispatchCheck.reasons.join(",")}`;
-        break;
+        stopScheduling(`request_wire_mismatch:${plan.runId}:${dispatchCheck.reasons.join(",")}`);
+        return;
       }
       if (!costCheck.ok) {
-        stopped = `actual_cost_rejected:${plan.runId}:${costCheck.reasons.join(",")}`;
-        break;
+        stopScheduling(`actual_cost_rejected:${plan.runId}:${costCheck.reasons.join(",")}`);
+        return;
       }
       if (cell.sentinel && !responseQualified) {
         if (opts.pass.sentinelScope === "global") {
-          stopped = `campaign_sentinel_not_accepted:${cell.target}`;
-          break;
+          stopScheduling(`campaign_sentinel_not_accepted:${cell.target}`);
+          return;
         }
         skippedGroups.add(cell.group); // per-model: skip this model's remaining cells only
       }
+      } finally {
+        if (dispatchActive) activeDispatches--;
+        releaseProvider?.();
+        if (reservationHeld) releaseBudgetReservation(estimate);
+      }
+    };
+
+    if (opts.pass.mode === "diagnostic-broad-paid-r1") {
+      const grouped = new Map<string, number[]>();
+      for (let i = 0; i < opts.cells.length; i++) {
+        const cell = opts.cells[i];
+        const indices = grouped.get(cell.group) ?? [];
+        indices.push(i);
+        grouped.set(cell.group, indices);
+      }
+      const expectedGroups = opts.pass.targets.map((target) => target.slug);
+      if (JSON.stringify([...grouped.keys()]) !== JSON.stringify(expectedGroups)) throw new Error("broad paid model-group order mismatch");
+      for (const [group, indices] of grouped) {
+        const cells = indices.map((index) => opts.cells[index]);
+        if (cells.length === 0 || cells[0].sentinel !== true || cells.filter((cell) => cell.sentinel).length !== 1 || cells.some((cell) => cell.target !== group)) {
+          throw new Error(`broad paid sentinel-first group layout mismatch:${group}`);
+        }
+      }
+
+      const groups = [...grouped.values()];
+      let nextGroup = 0;
+      const worker = async (): Promise<void> => {
+        try {
+          while (!schedulingStopped) {
+            const groupIndex = nextGroup++;
+            const indices = groups[groupIndex];
+            if (!indices) return;
+            activeModels++;
+            peakActiveModels = Math.max(peakActiveModels, activeModels);
+            try {
+              for (const index of indices) {
+                if (schedulingStopped) break;
+                await runCell(index);
+              }
+            } finally {
+              activeModels--;
+            }
+          }
+        } catch (error) {
+          stopScheduling();
+          throw error;
+        }
+      };
+      const workers = Array.from({ length: Math.min(modelConcurrencyLimit, groups.length) }, () => worker());
+      const outcomes = await Promise.allSettled(workers);
+      const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+      if (rejected) throw rejected.reason;
+    } else {
+      activeModels = 1;
+      peakActiveModels = 1;
+      try {
+        for (let i = 0; i < opts.cells.length && !schedulingStopped; i++) await runCell(i);
+      } finally {
+        activeModels = 0;
+      }
     }
+
+    if (reservedUsd !== 0) throw new Error(`paid budget reservation leak:${reservedUsd}`);
+    const runOrder = (runId: string | undefined): number => runId === undefined ? Number.MAX_SAFE_INTEGER : (orderByRunId.get(runId) ?? Number.MAX_SAFE_INTEGER);
+    const sortRunIds = (runIds: string[]): void => {
+      runIds.sort((a, b) => runOrder(a) - runOrder(b) || a.localeCompare(b));
+    };
+    const sortRefs = (refs: PaidManifestRef[]): void => {
+      refs.sort((a, b) => runOrder(a.runId) - runOrder(b.runId) || a.file.localeCompare(b.file));
+    };
+    sortRunIds(dispatchedRunIds);
+    sortRunIds(skippedRunIds);
+    sortRunIds(settledCostRunIds);
+    sortRunIds(unknownCostRunIds);
+    sortRunIds(invalidCostRunIds);
+    sortRefs(recordRefs);
+    sortRefs(rawObsRefs);
+    sortRefs(wireRefs);
+    const groupOrder = new Map(opts.pass.targets.map((target, index) => [target.slug, index]));
+    const orderedSkippedGroups = [...skippedGroups].sort((a, b) => (groupOrder.get(a) ?? Number.MAX_SAFE_INTEGER) - (groupOrder.get(b) ?? Number.MAX_SAFE_INTEGER));
+    const execution: PaidExecutionSummary = {
+      scheduler: opts.pass.mode === "diagnostic-broad-paid-r1" ? "model-groups" : "sequential",
+      modelConcurrencyLimit,
+      providerConcurrencyLimit: PAID_PROVIDER_CONCURRENCY_LIMIT,
+      sameModelSequential: true,
+      sentinelFirst: true,
+      budgetReservation: "catalog-cell-ceiling",
+      osForks: 0,
+      peakActiveModels,
+      peakConcurrentDispatches,
+      peakPerProviderDispatches: Math.max(0, ...[...providerPools.values()].map((pool) => pool.peak)),
+      peakReservedUsd,
+    };
 
     const costCoverage: PaidCostCoverage = {
       settledRunIds: settledCostRunIds,
@@ -3309,15 +3523,21 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       costCoverage,
       budget: opts.pass.budget,
       policyId: opts.pass.policyId,
-      skippedGroups: [...skippedGroups],
+      skippedGroups: orderedSkippedGroups,
+      execution,
     };
     const summaryHandle = finalizeCA(opts.outputRoot, `paid-pass-summary`, JSON.stringify(summary, null, 2));
 
     // Intent refs with digest + bytes (not filename-only).
+    const intentSuffix = ".intent.json";
     const intentRefs: PaidManifestRef[] = existsSync(runsDir)
       ? readdirSync(runsDir)
-          .filter((f) => f.endsWith(".intent.json"))
-          .sort()
+          .filter((f) => f.endsWith(intentSuffix))
+          .sort((a, b) => {
+            const aRunId = a.slice(0, -intentSuffix.length);
+            const bRunId = b.slice(0, -intentSuffix.length);
+            return runOrder(aRunId) - runOrder(bRunId) || a.localeCompare(b);
+          })
           .map((f) => {
             const b = readFileSync(join(runsDir, f), "utf-8");
             return { file: `runs/${f}`, sha256: "sha256:" + fullSha(b), bytes: Buffer.byteLength(b, "utf-8") };
@@ -3343,7 +3563,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       summary: { file: summaryHandle.file, sha256: summaryHandle.sha256, bytes: summaryHandle.bytes },
     };
     const candidateManifest = {
-      manifestSchemaVersion: 7,
+      manifestSchemaVersion: 8,
       campaignId: opts.pass.campaignId,
       stageId: opts.pass.stageId,
       policyId: opts.pass.policyId,
@@ -3388,7 +3608,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       diskFiles: diskFilesAcc,
       statFile: statForVerify,
       executingUid: typeof process.getuid === "function" ? process.getuid() : undefined,
-      expectedSchemaVersion: 7,
+      expectedSchemaVersion: 8,
       expectedCampaignId: opts.pass.campaignId,
       expectedStageId: opts.pass.stageId,
     });
@@ -3453,7 +3673,9 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
     stageId: opts.pass.stageId,
     stopped,
     dispatchedRunIds,
-    skippedGroups: [...skippedGroups],
+    skippedGroups: [...skippedGroups].sort(
+      (a, b) => opts.pass.targets.findIndex((target) => target.slug === a) - opts.pass.targets.findIndex((target) => target.slug === b),
+    ),
     skippedRunIds,
     spentUsd,
     costCoverage: {

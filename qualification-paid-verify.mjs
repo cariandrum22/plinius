@@ -8,7 +8,7 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-export const EVIDENCE_SCHEMA_VERSION = 7;
+export const EVIDENCE_SCHEMA_VERSION = 8;
 export const EXECUTION_SCHEMA_VERSION = 1;
 export const EXECUTION_ARTIFACT_TYPE = "plinius-paid-pass-v3";
 export const PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
@@ -677,6 +677,29 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       require("summary_budget", summary.budget?.totalCapUsd === identity.totalCapUsd && summary.budget?.perRunCapUsd === identity.perRunCapUsd);
       require("summary_counts", summary.totalCells === identity.totalCells && summary.dispatched === records.size && summary.passed === passed && summary.failed === failed && summary.dispatched === summary.passed + summary.failed);
       require("summary_cost", finiteNonnegative(summary.spentUsd) && Math.abs(summary.spentUsd - billedTotal) < 1e-12 && summary.spentUsd <= identity.totalCapUsd);
+      const execution = summary.execution;
+      const executionKeys = object(execution) ? Object.keys(execution).sort() : [];
+      const expectedModelConcurrency = identity.mode === "diagnostic-broad-paid-r1" ? 2 : 1;
+      const expectedScheduler = identity.mode === "diagnostic-broad-paid-r1" ? "model-groups" : "sequential";
+      require("summary_execution_shape", json(executionKeys) === json([
+        "budgetReservation", "modelConcurrencyLimit", "osForks", "peakActiveModels",
+        "peakConcurrentDispatches", "peakPerProviderDispatches", "peakReservedUsd",
+        "providerConcurrencyLimit", "sameModelSequential", "scheduler", "sentinelFirst",
+      ].sort()));
+      require("summary_execution_policy",
+        execution?.scheduler === expectedScheduler &&
+        execution?.modelConcurrencyLimit === expectedModelConcurrency &&
+        execution?.providerConcurrencyLimit === 1 &&
+        execution?.sameModelSequential === true &&
+        execution?.sentinelFirst === true &&
+        execution?.budgetReservation === "catalog-cell-ceiling" &&
+        execution?.osForks === 0);
+      require("summary_execution_peaks",
+        Number.isSafeInteger(execution?.peakActiveModels) && execution.peakActiveModels >= 0 && execution.peakActiveModels <= expectedModelConcurrency &&
+        Number.isSafeInteger(execution?.peakConcurrentDispatches) && execution.peakConcurrentDispatches >= 0 && execution.peakConcurrentDispatches <= expectedModelConcurrency &&
+        Number.isSafeInteger(execution?.peakPerProviderDispatches) && execution.peakPerProviderDispatches >= 0 && execution.peakPerProviderDispatches <= 1 &&
+        (summary.dispatched === 0 || (execution.peakActiveModels >= 1 && execution.peakConcurrentDispatches >= 1 && execution.peakPerProviderDispatches === 1)) &&
+        finiteNonnegative(execution?.peakReservedUsd) && execution.peakReservedUsd <= identity.totalCapUsd);
       const coverage = summary.costCoverage;
       const coverageKeys = object(coverage) ? Object.keys(coverage).sort() : [];
       require("summary_cost_coverage_shape", json(coverageKeys) === json(["complete", "invalidCostRunIds", "settledRunIds", "settledTotalUsd", "unknownCostRunIds"].sort()));

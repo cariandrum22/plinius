@@ -1446,6 +1446,180 @@ describe("runPaidPass orchestration", () => {
     expect(independent.ok, independent.reasons.join("\n")).toBe(true);
   }, 20_000);
 
+  it("runs at most two broad models concurrently while keeping each model sentinel-first and sequential", async () => {
+    const pass = broadPass(3);
+    const cells = buildPerModelPaidCells(pass.targets);
+    const root = freshRoot("broad-concurrency-two");
+    const sentinelFinished = new Set<string>();
+    const activeByModel = new Map<string, number>();
+    const violations: string[] = [];
+    let active = 0;
+    let peak = 0;
+    let peakSameModel = 0;
+    const generate = async (cell: any, plan: any, _req: any, onWire: OnWire) => {
+      if (!cell.sentinel && !sentinelFinished.has(cell.target)) violations.push(`body_before_sentinel:${cell.target}`);
+      active++;
+      peak = Math.max(peak, active);
+      const sameModel = (activeByModel.get(cell.target) ?? 0) + 1;
+      activeByModel.set(cell.target, sameModel);
+      peakSameModel = Math.max(peakSameModel, sameModel);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const facts = factsFor(plan, { costUsd: 0.001, genId: `gen-${plan.runId}` });
+        emitWire(facts, onWire);
+        if (cell.sentinel) sentinelFinished.add(cell.target);
+        return facts;
+      } finally {
+        active--;
+        activeByModel.set(cell.target, (activeByModel.get(cell.target) ?? 1) - 1);
+      }
+    };
+    const result = await runPaidPass(await setupPaidRun(pass, cells, root, generate));
+    expect(result.stopped).toBeNull();
+    expect(result.dispatchedRunIds).toHaveLength(12);
+    expect(violations).toEqual([]);
+    expect(peak).toBe(2);
+    expect(peakSameModel).toBe(1);
+    const manifest = JSON.parse(await readFile(join(root, result.manifestFile!), "utf-8"));
+    const summary = JSON.parse(await readFile(join(root, manifest.summary.file), "utf-8"));
+    expect(summary.execution).toMatchObject({
+      scheduler: "model-groups",
+      modelConcurrencyLimit: 2,
+      providerConcurrencyLimit: 1,
+      peakActiveModels: 2,
+      peakConcurrentDispatches: 2,
+      peakPerProviderDispatches: 1,
+      budgetReservation: "catalog-cell-ceiling",
+      osForks: 0,
+    });
+    const expectedRunIds = cells.map((cell: any, index: number) =>
+      paidPlanCell(pass, cell, index + 1).then((plan) => plan.runId));
+    const orderedRunIds = await Promise.all(expectedRunIds);
+    expect(manifest.records.map((ref: any) => ref.runId)).toEqual(orderedRunIds);
+    expect(manifest.rawObservations.map((ref: any) => ref.runId)).toEqual(orderedRunIds);
+    expect(manifest.intents.map((ref: any) => basename(ref.file, ".intent.json"))).toEqual(orderedRunIds);
+    expect(manifest.wires.map((ref: any) => ref.runId)).toEqual([...manifest.wires.map((ref: any) => ref.runId)].sort(
+      (a: string, b: string) => orderedRunIds.indexOf(a) - orderedRunIds.indexOf(b),
+    ));
+  }, 20_000);
+
+  it("serializes broad dispatches that share a provider", async () => {
+    const pass = broadPass(2);
+    for (const target of pass.targets) target.providerDisplay = "Shared Provider";
+    const cells = buildPerModelPaidCells(pass.targets);
+    const root = freshRoot("broad-provider-one");
+    let activeProvider = 0;
+    let peakProvider = 0;
+    const generate = async (_cell: any, plan: any, _req: any, onWire: OnWire) => {
+      activeProvider++;
+      peakProvider = Math.max(peakProvider, activeProvider);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const facts = factsFor(plan, { costUsd: 0.001, genId: `gen-${plan.runId}` });
+        emitWire(facts, onWire);
+        return facts;
+      } finally {
+        activeProvider--;
+      }
+    };
+    const result = await runPaidPass(await setupPaidRun(pass, cells, root, generate));
+    expect(result.stopped).toBeNull();
+    expect(result.dispatchedRunIds).toHaveLength(8);
+    expect(peakProvider).toBe(1);
+    const manifest = JSON.parse(await readFile(join(root, result.manifestFile!), "utf-8"));
+    const summary = JSON.parse(await readFile(join(root, manifest.summary.file), "utf-8"));
+    expect(summary.execution.peakActiveModels).toBe(2);
+    expect(summary.execution.peakConcurrentDispatches).toBe(1);
+    expect(summary.execution.peakPerProviderDispatches).toBe(1);
+  }, 20_000);
+
+  it("atomically reserves in-flight cell ceilings before broad dispatch", async () => {
+    const pass = broadPass(2);
+    pass.budget = { totalCapUsd: 0.05, perRunCapUsd: 0.75 };
+    for (const target of pass.targets) target.priceCeiling = { inputPerMTokens: 0.1, outputPerMTokens: 1.5 };
+    const cells = buildPerModelPaidCells(pass.targets);
+    let active = 0;
+    let peak = 0;
+    const generate = async (_cell: any, plan: any, _req: any, onWire: OnWire) => {
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        const facts = factsFor(plan, { costUsd: 0.04, genId: `gen-${plan.runId}` });
+        emitWire(facts, onWire);
+        return facts;
+      } finally {
+        active--;
+      }
+    };
+    const result = await runPaidPass(await setupPaidRun(pass, cells, freshRoot("broad-budget-reservation"), generate));
+    expect(result.stopped).toMatch(/^budget_exceeded:/);
+    expect(result.dispatchedRunIds).toHaveLength(1);
+    expect(result.spentUsd).toBe(0.04);
+    expect(peak).toBe(1);
+  }, 20_000);
+
+  it("stops scheduling new broad models after a fatal result but seals already in-flight Evidence", async () => {
+    const pass = broadPass(3);
+    const cells = buildPerModelPaidCells(pass.targets);
+    const startedTargets: string[] = [];
+    const generate = async (cell: any, plan: any, _req: any, onWire: OnWire) => {
+      startedTargets.push(cell.target);
+      await new Promise((resolve) => setTimeout(resolve, cell.target === pass.targets[0].slug ? 5 : 30));
+      const facts = factsFor(plan, {
+        costUsd: 0.001,
+        display: cell.target === pass.targets[0].slug ? "Wrong Provider" : plan.target.providerDisplay,
+        genId: `gen-${plan.runId}`,
+      });
+      emitWire(facts, onWire);
+      return facts;
+    };
+    const result = await runPaidPass(await setupPaidRun(pass, cells, freshRoot("broad-fatal-inflight"), generate));
+    expect(result.stopped).toMatch(/^request_wire_mismatch:/);
+    expect(result.dispatchedRunIds).toHaveLength(2);
+    expect(new Set(startedTargets)).toEqual(new Set([pass.targets[0].slug, pass.targets[1].slug]));
+    expect(startedTargets).not.toContain(pass.targets[2].slug);
+    expect(result.manifestFile).toMatch(/paid-pass-manifest-[0-9a-f]{64}\.json$/);
+  }, 20_000);
+
+  it("independent verifier rejects a re-addressed broad execution-policy escalation", async () => {
+    const pass = broadPass(1);
+    const cells = buildPerModelPaidCells(pass.targets);
+    const root = freshRoot("broad-execution-policy-tamper");
+    const result = await runPaidPass(await setupPaidRun(
+      pass,
+      cells,
+      root,
+      withWire((_cell: any, plan: any) => factsFor(plan, { costUsd: 0.001, genId: `gen-${plan.runId}` })),
+    ));
+    const manifestPath = join(root, result.manifestFile!);
+    const manifest = JSON.parse(await readFile(manifestPath, "utf-8"));
+    const oldSummaryPath = join(root, manifest.summary.file);
+    const summary = JSON.parse(await readFile(oldSummaryPath, "utf-8"));
+    summary.execution.modelConcurrencyLimit = 3;
+    const hostileSummaryBody = JSON.stringify(summary, null, 2);
+    const hostileSummaryHash = sha256Hex(hostileSummaryBody);
+    const hostileSummaryFile = `paid-pass-summary-${hostileSummaryHash}.json`;
+    await writeFile(join(root, hostileSummaryFile), hostileSummaryBody, { mode: 0o600 });
+    await rm(oldSummaryPath);
+    manifest.summary = {
+      file: hostileSummaryFile,
+      sha256: `sha256:${hostileSummaryHash}`,
+      bytes: Buffer.byteLength(hostileSummaryBody),
+    };
+    await rm(manifestPath);
+    const hostileManifestBody = JSON.stringify(manifest, null, 2);
+    const hostileManifestFile = `paid-pass-manifest-${sha256Hex(hostileManifestBody)}.json`;
+    await writeFile(join(root, hostileManifestFile), hostileManifestBody, { mode: 0o600 });
+    const independent = verifyPaidEvidence(root, {
+      manifestFile: hostileManifestFile,
+      verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER,
+      parentDigests: await Promise.all(anchorPaths.parentInputPaths.map(fileSha)),
+    });
+    expect(independent.ok).toBe(false);
+    expect(independent.reasons).toContain("summary_execution_policy");
+  }, 20_000);
+
   it("rejects response/lookup identities swapped on the durable wire", async () => {
     const root = freshRoot("hosted-swapped-provenance");
     const cells = buildHostedPaidCells(HOSTED_PAID_TARGETS);
@@ -1694,7 +1868,7 @@ describe("runPaidPass orchestration", () => {
     expect(manifestName).toBeTruthy();
     const originalManifestBody = await readFile(join(root, manifestName!), "utf-8");
     const manifest = JSON.parse(originalManifestBody);
-    expect(manifest.manifestSchemaVersion).toBe(7);
+    expect(manifest.manifestSchemaVersion).toBe(8);
     expect(manifest.records.length).toBe(16);
     expect(manifest.rawObservations.length).toBe(16);
     expect(manifest.wires.length).toBe(48);

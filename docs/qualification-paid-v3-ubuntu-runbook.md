@@ -1,4 +1,4 @@
-# Paid Pass v3.4 broad-screening Ubuntu runbook
+# Paid Pass v3.5 broad-screening Ubuntu runbook
 
 ## 0. Authorization boundary
 
@@ -6,13 +6,19 @@ This runbook is not a `PAID_GO`. It prepares and verifies one signed broad
 campaign, then stops at `READY_FOR_EXPLICIT_PAID_GO`. A separate authorization
 is required for each of H1, H2, and H3.
 
-The v3.4 engine adds `diagnostic-broad-paid-r1` with these immutable engine
+The v3.5 engine runs `diagnostic-broad-paid-r1` with these immutable engine
 limits:
 
 - 1 through 24 targets;
 - four frozen benchmarks per target and at most 96 logical cells;
 - one OIDC sentinel per model;
 - `MAX_TOTAL_USD <= 12.00` and `MAX_PER_RUN_USD <= 2.00`;
+- at most two asynchronous model groups, with each model remaining sequential
+  and sentinel-first;
+- at most one in-flight request per provider display identity;
+- an atomic catalog-cell-ceiling reservation for every in-flight request;
+- no OS process fork; a fatal result blocks new dispatch while already
+  in-flight Evidence is finalized;
 - no resume, retry, model substitution, alias, automatic fallback, or direct
   driver execution.
 
@@ -46,7 +52,7 @@ umask 077
 PACKAGE_ARCHIVE='<AUTHORITY_ISSUED_LOCAL_ARCHIVE_PATH>'
 PACKAGE_ARCHIVE_SHA256='<64_HEX_DIGEST>'
 PACKAGE_NAME='<AUTHORITY_ISSUED_PACKAGE_DIRECTORY_NAME>'
-PACKAGE_PARENT='/home/ubuntu/plinius-paid-v3.4/packages'
+PACKAGE_PARENT='/home/ubuntu/plinius-paid-v3.5/packages'
 PACKAGE_ROOT="$PACKAGE_PARENT/$PACKAGE_NAME"
 ARTIFACT_ROOT="$PACKAGE_ROOT/engine"
 POLICY_PATH="$PACKAGE_ROOT/policy/<AUTHORITY_ISSUED_POLICY_FILENAME>.json"
@@ -245,7 +251,7 @@ gzip --test "$EVIDENCE_ARCHIVE"
 tar -tzf "$EVIDENCE_ARCHIVE" >/dev/null
 ```
 
-Transfer the archive, checksum, and exact signed v3.4 package to the Mac. The Mac
+Transfer the archive, checksum, and exact signed v3.5 package to the Mac. The Mac
 authority rechecks the archive digest, extracts to a fresh directory, reruns the
 signed independent verifier, recomputes every manifest entry, and reconciles
 generation IDs and settled costs with OpenRouter Activity before authorizing the
