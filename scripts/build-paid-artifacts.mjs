@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-/** Build a source-tree-independent Paid Pass v3.4 engine package on the Mac authority. */
+/** Build a source-tree-independent Paid Pass v3.5 engine package on the Mac authority. */
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -62,7 +62,7 @@ function git(args) {
 
 /** @param {string[]} argv */
 function parseArgs(argv) {
-  let output = join(REPO, "build", "qualification-paid-v3.4-release");
+  let output = join(REPO, "build", "qualification-paid-v3.5-release");
   let policy = "";
   let sign = true;
   for (let i = 0; i < argv.length; i++) {
@@ -130,7 +130,7 @@ async function main() {
     define: { __PLINIUS_PAID_BUNDLE__: "true" },
     banner: {
       js: [
-        "// Plinius Paid Pass v3.4 isolated driver bundle.",
+        "// Plinius Paid Pass v3.5 isolated driver bundle.",
         'import { createRequire as __pliniusCreateRequire } from "node:module";',
         'const require = __pliniusCreateRequire(process.cwd() + "/qualification-driver.mjs");',
       ].join("\n"),
