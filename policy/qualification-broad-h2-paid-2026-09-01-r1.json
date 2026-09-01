@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 2,
+  "policyType": "plinius-paid-campaign-policy-v2",
+  "policyId": "plinius-broad-paid-h2-2026-09-01-r1",
+  "issuedAtUtc": "2026-09-01T06:42:00Z",
+  "catalogObservedAtUtc": "2026-09-01T06:40:27Z",
+  "expiresAtUtc": "2026-09-08T06:42:00Z",
+  "requiredSignerFingerprint": "435C9CF0DE7A2C3900FB24357E622B43290C285E",
+  "pass": {
+    "mode": "diagnostic-broad-paid-r1",
+    "campaignId": "plinius-qualification-broad-h2-2026-09-01-r1",
+    "stageId": "plinius-qualification-diagnostic-broad-h2-2026-09-01-r1",
+    "budget": {
+      "totalCapUsd": 5,
+      "perRunCapUsd": 1
+    },
+    "targets": [
+      {
+        "slug": "deepseek/deepseek-v4-pro-20260813",
+        "catalogModelId": "deepseek/deepseek-v4-pro-0813",
+        "responseModelId": "deepseek/deepseek-v4-pro-0813",
+        "lookupModelId": "deepseek/deepseek-v4-pro-20260813",
+        "providerRoute": "streamlake",
+        "providerDisplay": "StreamLake",
+        "priceCeiling": {
+          "inputPerMTokens": 1.1154,
+          "outputPerMTokens": 3.3462
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "qwen/qwen3.8-2.4t-a95b-20260812",
+        "catalogModelId": "qwen/qwen3.8-2.4t-a95b",
+        "responseModelId": "qwen/qwen3.8-2.4t-a95b",
+        "lookupModelId": "qwen/qwen3.8-2.4t-a95b-20260812",
+        "providerRoute": "deepinfra/fp4",
+        "providerDisplay": "DeepInfra",
+        "priceCeiling": {
+          "inputPerMTokens": 2,
+          "outputPerMTokens": 6
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "qwen/qwen3.8-flash-20260826",
+        "catalogModelId": "qwen/qwen3.8-flash",
+        "responseModelId": "qwen/qwen3.8-flash",
+        "lookupModelId": "qwen/qwen3.8-flash-20260826",
+        "providerRoute": "alibaba",
+        "providerDisplay": "Alibaba",
+        "priceCeiling": {
+          "inputPerMTokens": 0.15,
+          "outputPerMTokens": 0.47
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "tencent/hy3-20260706",
+        "catalogModelId": "tencent/hy3",
+        "responseModelId": "tencent/hy3",
+        "lookupModelId": "tencent/hy3-20260706",
+        "providerRoute": "gmicloud/bf16",
+        "providerDisplay": "GMICloud",
+        "priceCeiling": {
+          "inputPerMTokens": 0.126,
+          "outputPerMTokens": 0.522
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "tencent/hy4-preview-20260827",
+        "catalogModelId": "tencent/hy4-preview",
+        "responseModelId": "tencent/hy4-preview",
+        "lookupModelId": "tencent/hy4-preview-20260827",
+        "providerRoute": "tencent/fp8",
+        "providerDisplay": "Tencent",
+        "priceCeiling": {
+          "inputPerMTokens": 0.834,
+          "outputPerMTokens": 2.501
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "nvidia/nemotron-3-ultra-550b-a55b-20260604",
+        "catalogModelId": "nvidia/nemotron-3-ultra-550b-a55b",
+        "responseModelId": "nvidia/nemotron-3-ultra-550b-a55b",
+        "lookupModelId": "nvidia/nemotron-3-ultra-550b-a55b-20260604",
+        "providerRoute": "baseten/fp4",
+        "providerDisplay": "BaseTen",
+        "priceCeiling": {
+          "inputPerMTokens": 0.6,
+          "outputPerMTokens": 2.4
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "bytedance-seed/seed-2.0-code-20260730",
+        "catalogModelId": "bytedance-seed/seed-2.0-code",
+        "responseModelId": "bytedance-seed/seed-2.0-code",
+        "lookupModelId": "bytedance-seed/seed-2.0-code-20260730",
+        "providerRoute": "seed/fp8",
+        "providerDisplay": "Seed",
+        "priceCeiling": {
+          "inputPerMTokens": 0.5,
+          "outputPerMTokens": 3
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "bytedance-seed/seed-2-1-turbo-20260810",
+        "catalogModelId": "bytedance-seed/seed-2-1-turbo",
+        "responseModelId": "bytedance-seed/seed-2-1-turbo",
+        "lookupModelId": "bytedance-seed/seed-2-1-turbo-20260810",
+        "providerRoute": "seed/fp8",
+        "providerDisplay": "Seed",
+        "priceCeiling": {
+          "inputPerMTokens": 0.5,
+          "outputPerMTokens": 2.5
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      }
+    ],
+    "sentinelScope": "per-model"
+  }
+}
