@@ -354,12 +354,29 @@ function broadPass(targetCount: number): any {
   };
 }
 
+function perMillionToPerTokenDecimal(value: number): string {
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(value.toString());
+  if (!match) throw new Error(`unsupported test price: ${value}`);
+  const fraction = match[2] ?? "";
+  const digits = `${match[1]}${fraction}`.replace(/^0+/, "") || "0";
+  const scale = fraction.length + 6;
+  if (digits === "0") return "0";
+  if (digits.length <= scale) return `0.${"0".repeat(scale - digits.length)}${digits}`;
+  return `${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
+}
+
 // Mirror the production bootstrap: acquire a lock on a fresh root, finalize the catalog +
 // the campaign/stage-bound source attestation in-root, and hand runPaidPass the same lock
 // plus the external anchor PATHS (which it copies in). The attestation records the ACTUAL
 // anchor digests and the parent expected digests are the ACTUAL anchor digests, so the
 // copy-vs-verify TOCTOU checks pass on genuine (unmodified) anchors.
-async function setupPaidRun(pass: any, cells: any[], root: string, gen: any) {
+async function setupPaidRun(
+  pass: any,
+  cells: any[],
+  root: string,
+  gen: any,
+  catalogPricing: Record<string, { prompt: number | string; completion: number | string }> = {},
+) {
   await mkdir(root, { recursive: true });
   await chmod(root, 0o700); // the hardened journal requires a 0700 output root
   const lock = acquireInvocationLock(root, { stageId: pass.stageId, invocationId: `${pass.stageId}#test`, startedAt: "2026-08-28T00:00:00Z" });
@@ -382,15 +399,16 @@ async function setupPaidRun(pass: any, cells: any[], root: string, gen: any) {
   };
   addCatalogEvidence(`${OR_BASE}/models`, { data: pass.targets.map((target: PaidTarget) => ({ id: target.catalogModelId, canonical_slug: target.slug })) });
   for (const target of pass.targets as PaidTarget[]) {
+    const pricing = catalogPricing[target.slug] ?? {
+      prompt: perMillionToPerTokenDecimal(target.priceCeiling.inputPerMTokens),
+      completion: perMillionToPerTokenDecimal(target.priceCeiling.outputPerMTokens),
+    };
     addCatalogEvidence(`${OR_BASE}/models/${target.slug}/endpoints`, {
       data: {
         endpoints: [{
           tag: target.providerRoute,
           provider_name: target.providerDisplay,
-          pricing: {
-            prompt: target.priceCeiling.inputPerMTokens / 1_000_000,
-            completion: target.priceCeiling.outputPerMTokens / 1_000_000,
-          },
+          pricing,
           context_length: 200_000,
           max_completion_tokens: 64_000,
           supported_parameters: ["max_tokens", "temperature", "top_p", "seed"],
@@ -1408,9 +1426,16 @@ describe("runPaidPass orchestration", () => {
 
   it("runs a signed-policy broad layout and passes independent Evidence verification", async () => {
     const pass = broadPass(2);
+    pass.targets[1].priceCeiling = { inputPerMTokens: 0.425, outputPerMTokens: 2.55 };
     const cells = buildPerModelPaidCells(pass.targets);
     const root = freshRoot("broad-happy");
-    const result = await runPaidPass(await setupPaidRun(pass, cells, root, withWire((_cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 0.01 }))));
+    const result = await runPaidPass(await setupPaidRun(
+      pass,
+      cells,
+      root,
+      withWire((_cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 0.01 })),
+      { [pass.targets[1].slug]: { prompt: "0.000000425", completion: "0.00000255" } },
+    ));
     expect(result.stopped).toBeNull();
     expect(result.dispatchedRunIds).toHaveLength(8);
     expect(result.passed).toBe(8);

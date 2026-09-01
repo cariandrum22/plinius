@@ -68,6 +68,31 @@ const object = (value) => value != null && typeof value === "object" && !Array.i
 const finiteNonnegative = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
 /** @param {unknown} value */
 const catalogPrice = (value) => (typeof value === "number" || (typeof value === "string" && value.length > 0)) && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
+
+/** @param {number | string} value */
+function decimalFraction(value) {
+  const text = typeof value === "number" ? value.toString() : value;
+  const match = /^([+-]?)(\d+)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(text);
+  if (!match) return null;
+  const sign = match[1] === "-" ? -1n : 1n;
+  const fraction = match[3] ?? "";
+  const exponent = Number(match[4] ?? "0");
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 1000) return null;
+  let numerator = sign * BigInt(`${match[2]}${fraction}`);
+  const scale = fraction.length - exponent;
+  if (scale < 0) numerator *= 10n ** BigInt(-scale);
+  return { numerator, denominator: scale > 0 ? 10n ** BigInt(scale) : 1n };
+}
+
+/** Compare a catalog per-token decimal with a policy per-million-token ceiling exactly.
+ * @param {number | string} catalogPerToken @param {number} policyPerMillion */
+function exceedsPerMillionCeiling(catalogPerToken, policyPerMillion) {
+  const catalog = decimalFraction(catalogPerToken);
+  const ceiling = decimalFraction(policyPerMillion);
+  if (!catalog || !ceiling || catalog.numerator < 0n || ceiling.numerator < 0n) return null;
+  return catalog.numerator * 1_000_000n * ceiling.denominator >
+    ceiling.numerator * catalog.denominator;
+}
 const NORMAL_TERMINATION = new Set(["stop", "stop_sequence", "end_turn", "eos", "eos_token", "complete", "completed", "finish_reason_stop"]);
 const THINK_BLOCK = /<think>([\s\S]*?)<\/think>/gi;
 const OPEN_THINK = /<think>([\s\S]*)$/i;
@@ -467,7 +492,9 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
         const endpoint = matches[0];
         const promptPrice = catalogPrice(endpoint.pricing?.prompt);
         const completionPrice = catalogPrice(endpoint.pricing?.completion);
-        require(`catalog_price:${slug}`, promptPrice != null && promptPrice <= target.prompt / 1_000_000 && completionPrice != null && completionPrice <= target.completion / 1_000_000 && !(promptPrice === 0 && completionPrice === 0));
+        const promptOver = promptPrice == null ? null : exceedsPerMillionCeiling(endpoint.pricing.prompt, target.prompt);
+        const completionOver = completionPrice == null ? null : exceedsPerMillionCeiling(endpoint.pricing.completion, target.completion);
+        require(`catalog_price:${slug}`, promptOver === false && completionOver === false && !(promptPrice === 0 && completionPrice === 0));
         const display = typeof endpoint.provider_name === "string" ? endpoint.provider_name : typeof endpoint.name === "string" ? endpoint.name : "";
         require(`catalog_provider_display:${slug}`, display.length > 0 && display === target.providerDisplay);
         if (display.length > 0) providerDisplay[slug] = display;
