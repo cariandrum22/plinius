@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 2,
+  "policyType": "plinius-paid-campaign-policy-v2",
+  "policyId": "plinius-broad-paid-h3-2026-09-01-r1",
+  "issuedAtUtc": "2026-09-01T16:38:06Z",
+  "catalogObservedAtUtc": "2026-09-01T16:36:58Z",
+  "expiresAtUtc": "2026-09-08T16:38:06Z",
+  "requiredSignerFingerprint": "435C9CF0DE7A2C3900FB24357E622B43290C285E",
+  "pass": {
+    "mode": "diagnostic-broad-paid-r1",
+    "campaignId": "plinius-qualification-broad-h3-2026-09-01-r1",
+    "stageId": "plinius-qualification-diagnostic-broad-h3-2026-09-01-r1",
+    "budget": {
+      "totalCapUsd": 12,
+      "perRunCapUsd": 2
+    },
+    "targets": [
+      {
+        "slug": "anthropic/claude-5-fable-20260609",
+        "catalogModelId": "anthropic/claude-fable-5",
+        "responseModelId": "anthropic/claude-fable-5",
+        "lookupModelId": "anthropic/claude-5-fable-20260609",
+        "providerRoute": "anthropic",
+        "providerDisplay": "Anthropic",
+        "priceCeiling": {
+          "inputPerMTokens": 10,
+          "outputPerMTokens": 50
+        },
+        "sampling": {
+          "temperature": null,
+          "topP": null,
+          "seed": null
+        }
+      },
+      {
+        "slug": "x-ai/grok-4.6-20260810",
+        "catalogModelId": "x-ai/grok-4.6",
+        "responseModelId": "x-ai/grok-4.6",
+        "lookupModelId": "x-ai/grok-4.6-20260810",
+        "providerRoute": "xai/zdr",
+        "providerDisplay": "xAI",
+        "priceCeiling": {
+          "inputPerMTokens": 2,
+          "outputPerMTokens": 6
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": 1,
+          "seed": 1
+        }
+      },
+      {
+        "slug": "google/gemini-3.1-pro-preview-20260219",
+        "catalogModelId": "google/gemini-3.1-pro-preview",
+        "responseModelId": "google/gemini-3.1-pro-preview",
+        "lookupModelId": "google/gemini-3.1-pro-preview-20260219",
+        "providerRoute": "google-vertex/global",
+        "providerDisplay": "Google",
+        "priceCeiling": {
+          "inputPerMTokens": 2,
+          "outputPerMTokens": 12
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": 1,
+          "seed": 1
+        }
+      },
+      {
+        "slug": "openai/gpt-5.6-luna-20260709",
+        "catalogModelId": "openai/gpt-5.6-luna",
+        "responseModelId": "openai/gpt-5.6-luna",
+        "lookupModelId": "openai/gpt-5.6-luna-20260709",
+        "providerRoute": "openai",
+        "providerDisplay": "OpenAI",
+        "priceCeiling": {
+          "inputPerMTokens": 0.2,
+          "outputPerMTokens": 1.2
+        },
+        "sampling": {
+          "temperature": null,
+          "topP": null,
+          "seed": 1
+        }
+      },
+      {
+        "slug": "openai/gpt-5.6-terra-20260709",
+        "catalogModelId": "openai/gpt-5.6-terra",
+        "responseModelId": "openai/gpt-5.6-terra",
+        "lookupModelId": "openai/gpt-5.6-terra-20260709",
+        "providerRoute": "openai",
+        "providerDisplay": "OpenAI",
+        "priceCeiling": {
+          "inputPerMTokens": 2,
+          "outputPerMTokens": 12
+        },
+        "sampling": {
+          "temperature": null,
+          "topP": null,
+          "seed": 1
+        }
+      },
+      {
+        "slug": "meta/muse-spark-1.2-20260805",
+        "catalogModelId": "meta/muse-spark-1.2",
+        "responseModelId": "meta/muse-spark-1.2",
+        "lookupModelId": "meta/muse-spark-1.2-20260805",
+        "providerRoute": "meta",
+        "providerDisplay": "Meta",
+        "priceCeiling": {
+          "inputPerMTokens": 1.25,
+          "outputPerMTokens": 4.25
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": 1,
+          "seed": null
+        }
+      }
+    ],
+    "sentinelScope": "per-model"
+  }
+}
