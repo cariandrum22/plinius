@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 3,
+  "policyType": "plinius-paid-campaign-policy-v3",
+  "policyId": "plinius-selective-paid-h3r2a-2026-09-02-r1",
+  "issuedAtUtc": "2026-09-02T10:50:47Z",
+  "catalogObservedAtUtc": "2026-09-02T10:50:27Z",
+  "expiresAtUtc": "2026-09-09T10:50:47Z",
+  "requiredSignerFingerprint": "435C9CF0DE7A2C3900FB24357E622B43290C285E",
+  "pass": {
+    "mode": "diagnostic-selective-paid-r1",
+    "campaignId": "plinius-qualification-selective-h3r2a-2026-09-02-r1",
+    "stageId": "plinius-qualification-diagnostic-selective-h3r2a-2026-09-02-r1",
+    "budget": {
+      "totalCapUsd": 1,
+      "perRunCapUsd": 0.5
+    },
+    "targets": [
+      {
+        "slug": "openai/gpt-5.6-terra-20260709",
+        "catalogModelId": "openai/gpt-5.6-terra",
+        "responseModelId": "openai/gpt-5.6-terra",
+        "lookupModelId": "openai/gpt-5.6-terra-20260709",
+        "providerRoute": "openai",
+        "providerDisplay": "OpenAI",
+        "priceCeiling": {
+          "inputPerMTokens": 2,
+          "outputPerMTokens": 12
+        },
+        "sampling": {
+          "temperature": null,
+          "topP": null,
+          "seed": 1
+        }
+      }
+    ],
+    "sentinelScope": "per-model",
+    "selectedCells": [
+      {
+        "target": "openai/gpt-5.6-terra-20260709",
+        "benchmark": "arch-exactly-once-003",
+        "sentinelKind": "none"
+      },
+      {
+        "target": "openai/gpt-5.6-terra-20260709",
+        "benchmark": "formal-spec-idempotent-api-003",
+        "sentinelKind": "none"
+      }
+    ],
+    "historicalSentinel": {
+      "kind": "historical",
+      "target": "openai/gpt-5.6-terra-20260709",
+      "benchmark": "sec-oidc-id-token-validation-001",
+      "runId": "run-a106d10f86ba6150",
+      "generationId": "gen-1788326362-zDGlJvUhpDo7ZkCzKBBR",
+      "settledCostUsd": 0.062572,
+      "parentEvidence": {
+        "campaignId": "plinius-qualification-broad-h3r-2026-09-02-r1",
+        "stageId": "plinius-qualification-diagnostic-broad-h3r-2026-09-02-r1",
+        "evidenceArchive": {
+          "file": "diagnostic-broad-paid-r1-evidence.tar.gz",
+          "sha256": "sha256:2674b22a9e92842a68b4461683c9606ea7d4352d78cdb2d6665e3951da3baaa1"
+        },
+        "finalManifest": {
+          "file": "paid-pass-manifest-ef6687fbf4ab05da4a9258ffdbc85081abb9ed5d3d68e73314b369b6af332a7b.json",
+          "sha256": "sha256:ef6687fbf4ab05da4a9258ffdbc85081abb9ed5d3d68e73314b369b6af332a7b"
+        },
+        "runRecord": {
+          "file": "runs/run-a106d10f86ba6150.json",
+          "sha256": "sha256:4ae6e721294429a3f5d0ba4e92b07e9637278de01737199e55b3f3b3b77bed15"
+        },
+        "verifyReport": {
+          "file": "diagnostic-broad-paid-r1-verify-v3.5.json",
+          "sha256": "sha256:50e622252c927ad1dca0bfa3f374a339b5d56bf010a339d4309bc839777145d5"
+        },
+        "gateILedger": {
+          "file": "diagnostic-broad-paid-r1-h3r1-gateI-ledger.csv",
+          "sha256": "sha256:f768628c07d72dcd63f1f6f745eb88ce5fbfcba4304b642c1eb59d4538ee3a80"
+        }
+      }
+    }
+  }
+}

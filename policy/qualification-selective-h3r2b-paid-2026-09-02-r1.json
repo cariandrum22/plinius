@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 3,
+  "policyType": "plinius-paid-campaign-policy-v3",
+  "policyId": "plinius-selective-paid-h3r2b-2026-09-02-r1",
+  "issuedAtUtc": "2026-09-02T10:50:47Z",
+  "catalogObservedAtUtc": "2026-09-02T10:50:27Z",
+  "expiresAtUtc": "2026-09-09T10:50:47Z",
+  "requiredSignerFingerprint": "435C9CF0DE7A2C3900FB24357E622B43290C285E",
+  "pass": {
+    "mode": "diagnostic-selective-paid-r1",
+    "campaignId": "plinius-qualification-selective-h3r2b-2026-09-02-r1",
+    "stageId": "plinius-qualification-diagnostic-selective-h3r2b-2026-09-02-r1",
+    "budget": {
+      "totalCapUsd": 1,
+      "perRunCapUsd": 0.25
+    },
+    "targets": [
+      {
+        "slug": "meta/muse-spark-1.2-20260805",
+        "catalogModelId": "meta/muse-spark-1.2",
+        "responseModelId": "meta/muse-spark-1.2",
+        "lookupModelId": "meta/muse-spark-1.2-20260805",
+        "providerRoute": "meta",
+        "providerDisplay": "Meta",
+        "priceCeiling": {
+          "inputPerMTokens": 1.25,
+          "outputPerMTokens": 4.25
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": 1,
+          "seed": null
+        }
+      }
+    ],
+    "sentinelScope": "per-model",
+    "selectedCells": [
+      {
+        "target": "meta/muse-spark-1.2-20260805",
+        "benchmark": "sec-oidc-id-token-validation-001",
+        "sentinelKind": "live"
+      },
+      {
+        "target": "meta/muse-spark-1.2-20260805",
+        "benchmark": "se-concurrency-atomic-stats-012",
+        "sentinelKind": "none"
+      },
+      {
+        "target": "meta/muse-spark-1.2-20260805",
+        "benchmark": "arch-exactly-once-003",
+        "sentinelKind": "none"
+      },
+      {
+        "target": "meta/muse-spark-1.2-20260805",
+        "benchmark": "formal-spec-idempotent-api-003",
+        "sentinelKind": "none"
+      }
+    ],
+    "historicalSentinel": null
+  }
+}

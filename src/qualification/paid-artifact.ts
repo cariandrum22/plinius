@@ -22,7 +22,8 @@ export const PAID_EXECUTION_MANIFEST = "qualification-paid-execution-manifest.js
 export type PaidArtifactMode =
   | "diagnostic-hosted-paid-r1"
   | "diagnostic-candidate-paid-r1"
-  | "diagnostic-broad-paid-r1";
+  | "diagnostic-broad-paid-r1"
+  | "diagnostic-selective-paid-r1";
 
 export interface PaidExecutionFile {
   path: string;

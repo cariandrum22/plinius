@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-/** Build a source-tree-independent Paid Pass v3.5 engine package on the Mac authority. */
+/** Build a source-tree-independent Paid Pass v3.6 engine package on the Mac authority. */
 import { build } from "esbuild";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -62,7 +62,7 @@ function git(args) {
 
 /** @param {string[]} argv */
 function parseArgs(argv) {
-  let output = join(REPO, "build", "qualification-paid-v3.5-release");
+  let output = join(REPO, "build", "qualification-paid-v3.6-release");
   let policy = "";
   let sign = true;
   for (let i = 0; i < argv.length; i++) {
@@ -90,7 +90,10 @@ async function main() {
   const policyBytes = readFileSync(policyPath);
   const policyDocument = JSON.parse(policyBytes.toString("utf-8"));
   if (!Buffer.from(`${JSON.stringify(policyDocument, null, 2)}\n`, "utf-8").equals(policyBytes)) throw new Error("policy must be canonical pretty JSON");
-  if (policyDocument.schemaVersion !== 2 || policyDocument.policyType !== "plinius-paid-campaign-policy-v2" || policyDocument.requiredSignerFingerprint !== PINNED_SIGNER) {
+  const policyIdentityOk =
+    (policyDocument.schemaVersion === 2 && policyDocument.policyType === "plinius-paid-campaign-policy-v2") ||
+    (policyDocument.schemaVersion === 3 && policyDocument.policyType === "plinius-paid-campaign-policy-v3");
+  if (!policyIdentityOk || policyDocument.requiredSignerFingerprint !== PINNED_SIGNER) {
     throw new Error("policy identity or signer mismatch");
   }
   parseCampaignPolicy(policyBytes);
@@ -130,7 +133,7 @@ async function main() {
     define: { __PLINIUS_PAID_BUNDLE__: "true" },
     banner: {
       js: [
-        "// Plinius Paid Pass v3.5 isolated driver bundle.",
+        "// Plinius Paid Pass v3.6 isolated driver bundle.",
         'import { createRequire as __pliniusCreateRequire } from "node:module";',
         'const require = __pliniusCreateRequire(process.cwd() + "/qualification-driver.mjs");',
       ].join("\n"),
@@ -164,7 +167,7 @@ async function main() {
     createdAtUtc: new Date().toISOString(),
     source: { commit: git(["rev-parse", "HEAD"]), tree: git(["rev-parse", "HEAD^{tree}"]) },
     requiredSignerFingerprint: PINNED_SIGNER,
-    allowedModes: ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1"],
+    allowedModes: ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1", "diagnostic-selective-paid-r1"],
     launcher: "qualification-paid-launch.mjs",
     runner: "qualification-driver.mjs",
     verifier: "qualification-paid-verify.mjs",

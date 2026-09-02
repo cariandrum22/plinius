@@ -191,7 +191,8 @@ export type SentinelScope = "global" | "per-model";
 export type PaidPassMode =
   | "diagnostic-hosted-paid-r1"
   | "diagnostic-candidate-paid-r1"
-  | "diagnostic-broad-paid-r1";
+  | "diagnostic-broad-paid-r1"
+  | "diagnostic-selective-paid-r1";
 
 export const BROAD_PAID_MAX_TARGETS = 24;
 export const BROAD_PAID_MAX_CELLS = 96;
@@ -230,7 +231,48 @@ const PAID_MODE_CONSTRAINTS: Record<PaidPassMode, PaidModeConstraints> = {
     maxTargets: BROAD_PAID_MAX_TARGETS,
     maxCells: BROAD_PAID_MAX_CELLS,
   },
+  "diagnostic-selective-paid-r1": {
+    totalCapUsd: 2,
+    perRunCapUsd: 0.5,
+    sentinelScope: "per-model",
+    minTargets: 1,
+    maxTargets: 1,
+    maxCells: 4,
+  },
 };
+
+export type SelectiveSentinelKind = "live" | "none";
+
+export interface SelectivePaidCell {
+  target: string;
+  benchmark: string;
+  sentinelKind: SelectiveSentinelKind;
+}
+
+export interface HistoricalEvidenceFile {
+  file: string;
+  sha256: string;
+}
+
+export interface HistoricalSentinelEvidence {
+  campaignId: string;
+  stageId: string;
+  evidenceArchive: HistoricalEvidenceFile;
+  finalManifest: HistoricalEvidenceFile;
+  runRecord: HistoricalEvidenceFile;
+  verifyReport: HistoricalEvidenceFile;
+  gateILedger: HistoricalEvidenceFile;
+}
+
+export interface HistoricalSentinelRequirement {
+  kind: "historical";
+  target: string;
+  benchmark: typeof OIDC_BENCHMARK_ID;
+  runId: string;
+  generationId: string;
+  settledCostUsd: number;
+  parentEvidence: HistoricalSentinelEvidence;
+}
 
 export interface PaidPassDefinition {
   mode: PaidPassMode;
@@ -241,15 +283,21 @@ export interface PaidPassDefinition {
   sentinelScope: SentinelScope;
   /** Detached-signature policy identity bound into all resulting Evidence. */
   policyId: string;
+  /** Present only for policy-v3 selective campaigns. Order is authoritative. */
+  selectedCells?: SelectivePaidCell[];
+  /** A verified prior sentinel may replace a live sentinel only in selective mode. */
+  historicalSentinel?: HistoricalSentinelRequirement | null;
 }
 
 export const PAID_CAMPAIGN_POLICY_SCHEMA_VERSION = 2;
 export const PAID_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v2";
+export const SELECTIVE_PAID_CAMPAIGN_POLICY_SCHEMA_VERSION = 3;
+export const SELECTIVE_PAID_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v3";
 export const PAID_CAMPAIGN_POLICY_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 const PAID_POLICY_MAX_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
 const PAID_POLICY_MAX_CATALOG_AGE_AT_ISSUE_MS = 24 * 60 * 60 * 1000;
 
-export interface PaidCampaignPolicyDocument {
+export interface LegacyPaidCampaignPolicyDocument {
   schemaVersion: 2;
   policyType: typeof PAID_CAMPAIGN_POLICY_TYPE;
   policyId: string;
@@ -259,6 +307,23 @@ export interface PaidCampaignPolicyDocument {
   requiredSignerFingerprint: typeof PAID_CAMPAIGN_POLICY_SIGNER;
   pass: Omit<PaidPassDefinition, "policyId">;
 }
+
+export interface SelectivePaidCampaignPolicyDocument {
+  schemaVersion: 3;
+  policyType: typeof SELECTIVE_PAID_CAMPAIGN_POLICY_TYPE;
+  policyId: string;
+  issuedAtUtc: string;
+  catalogObservedAtUtc: string;
+  expiresAtUtc: string;
+  requiredSignerFingerprint: typeof PAID_CAMPAIGN_POLICY_SIGNER;
+  pass: Omit<PaidPassDefinition, "policyId"> & {
+    mode: "diagnostic-selective-paid-r1";
+    selectedCells: SelectivePaidCell[];
+    historicalSentinel: HistoricalSentinelRequirement | null;
+  };
+}
+
+export type PaidCampaignPolicyDocument = LegacyPaidCampaignPolicyDocument | SelectivePaidCampaignPolicyDocument;
 
 export interface LoadedPaidCampaignPolicy {
   document: PaidCampaignPolicyDocument;
@@ -278,6 +343,16 @@ function finitePositive(value: unknown): value is number {
 
 function nullableFinite(value: unknown): value is number | null {
   return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+function sha256Identity(value: unknown): value is string {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+}
+
+function safeEvidenceFile(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 240 &&
+    !value.includes("\\") && !value.startsWith("/") &&
+    !value.split("/").some((part) => part === "" || part === "." || part === "..");
 }
 
 function parseCanonicalUtc(value: unknown): number | null {
@@ -310,7 +385,11 @@ export function parsePaidCampaignPolicy(
   if (!exactObjectKeys(value, ["schemaVersion", "policyType", "policyId", "issuedAtUtc", "catalogObservedAtUtc", "expiresAtUtc", "requiredSignerFingerprint", "pass"])) {
     throw new Error("paid campaign policy field set mismatch");
   }
-  if (value.schemaVersion !== PAID_CAMPAIGN_POLICY_SCHEMA_VERSION || value.policyType !== PAID_CAMPAIGN_POLICY_TYPE) {
+  const selective = expectedMode === "diagnostic-selective-paid-r1";
+  const policyIdentityOk = selective
+    ? value.schemaVersion === SELECTIVE_PAID_CAMPAIGN_POLICY_SCHEMA_VERSION && value.policyType === SELECTIVE_PAID_CAMPAIGN_POLICY_TYPE
+    : value.schemaVersion === PAID_CAMPAIGN_POLICY_SCHEMA_VERSION && value.policyType === PAID_CAMPAIGN_POLICY_TYPE;
+  if (!policyIdentityOk) {
     throw new Error("paid campaign policy identity mismatch");
   }
   if (value.requiredSignerFingerprint !== PAID_CAMPAIGN_POLICY_SIGNER) throw new Error("paid campaign policy signer mismatch");
@@ -325,7 +404,10 @@ export function parsePaidCampaignPolicy(
   if (expires <= now || expires <= issued || expires - issued > PAID_POLICY_MAX_VALIDITY_MS) throw new Error("paid campaign policy expired or overlong");
 
   const passValue = value.pass;
-  if (!exactObjectKeys(passValue, ["mode", "campaignId", "stageId", "budget", "targets", "sentinelScope"])) throw new Error("paid campaign pass field set mismatch");
+  const expectedPassKeys = selective
+    ? ["mode", "campaignId", "stageId", "budget", "targets", "sentinelScope", "selectedCells", "historicalSentinel"]
+    : ["mode", "campaignId", "stageId", "budget", "targets", "sentinelScope"];
+  if (!exactObjectKeys(passValue, expectedPassKeys)) throw new Error("paid campaign pass field set mismatch");
   if (passValue.mode !== expectedMode) throw new Error("paid campaign policy mode mismatch");
   if (typeof passValue.campaignId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(passValue.campaignId)) throw new Error("paid campaign id invalid");
   if (typeof passValue.stageId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,159}$/.test(passValue.stageId)) throw new Error("paid campaign stage invalid");
@@ -389,7 +471,70 @@ export function parsePaidCampaignPolicy(
     sentinelScope: constraints.sentinelScope,
     policyId: value.policyId,
   };
-  const cells = constraints.sentinelScope === "global" ? buildHostedPaidCells(targets) : buildPerModelPaidCells(targets);
+  let cells: PaidCell[];
+  if (selective) {
+    if (!Array.isArray(passValue.selectedCells)) throw new Error("paid selective cells missing");
+    const selectedCells: SelectivePaidCell[] = passValue.selectedCells.map((raw, index) => {
+      if (!exactObjectKeys(raw, ["target", "benchmark", "sentinelKind"])) throw new Error(`paid selective cell ${index} field set mismatch`);
+      if (typeof raw.target !== "string" || typeof raw.benchmark !== "string" || (raw.sentinelKind !== "live" && raw.sentinelKind !== "none")) {
+        throw new Error(`paid selective cell ${index} invalid`);
+      }
+      return { target: raw.target, benchmark: raw.benchmark, sentinelKind: raw.sentinelKind };
+    });
+    let historicalSentinel: HistoricalSentinelRequirement | null = null;
+    if (passValue.historicalSentinel !== null) {
+      const raw = passValue.historicalSentinel;
+      if (!exactObjectKeys(raw, ["kind", "target", "benchmark", "runId", "generationId", "settledCostUsd", "parentEvidence"])) {
+        throw new Error("paid historical sentinel field set mismatch");
+      }
+      if (raw.kind !== "historical" || typeof raw.target !== "string" || raw.benchmark !== OIDC_BENCHMARK_ID ||
+        typeof raw.runId !== "string" || !/^run-[0-9a-f]{16}$/.test(raw.runId) ||
+        typeof raw.generationId !== "string" || !/^gen-[A-Za-z0-9_-]{8,160}$/.test(raw.generationId) ||
+        !finitePositive(raw.settledCostUsd)) {
+        throw new Error("paid historical sentinel identity invalid");
+      }
+      const pe = raw.parentEvidence;
+      if (!exactObjectKeys(pe, ["campaignId", "stageId", "evidenceArchive", "finalManifest", "runRecord", "verifyReport", "gateILedger"]) ||
+        typeof pe.campaignId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(pe.campaignId) ||
+        typeof pe.stageId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,159}$/.test(pe.stageId)) {
+        throw new Error("paid historical sentinel parent Evidence invalid");
+      }
+      const parseEvidenceFile = (file: unknown, label: string): HistoricalEvidenceFile => {
+        if (!exactObjectKeys(file, ["file", "sha256"]) || !safeEvidenceFile(file.file) || !sha256Identity(file.sha256)) {
+          throw new Error(`paid historical sentinel ${label} invalid`);
+        }
+        return { file: file.file, sha256: file.sha256 };
+      };
+      historicalSentinel = {
+        kind: "historical",
+        target: raw.target,
+        benchmark: OIDC_BENCHMARK_ID,
+        runId: raw.runId,
+        generationId: raw.generationId,
+        settledCostUsd: raw.settledCostUsd,
+        parentEvidence: {
+          campaignId: pe.campaignId,
+          stageId: pe.stageId,
+          evidenceArchive: parseEvidenceFile(pe.evidenceArchive, "archive"),
+          finalManifest: parseEvidenceFile(pe.finalManifest, "final manifest"),
+          runRecord: parseEvidenceFile(pe.runRecord, "run record"),
+          verifyReport: parseEvidenceFile(pe.verifyReport, "verify report"),
+          gateILedger: parseEvidenceFile(pe.gateILedger, "Gate I ledger"),
+        },
+      };
+      const parentFiles = historicalSentinelParentFiles(historicalSentinel);
+      if (new Set(parentFiles.map((file) => file.file)).size !== parentFiles.length) throw new Error("paid historical sentinel duplicate parent file");
+      if (historicalSentinel.parentEvidence.runRecord.file !== `runs/${historicalSentinel.runId}.json`) throw new Error("paid historical sentinel run record path mismatch");
+      if (historicalSentinel.parentEvidence.finalManifest.file !== `paid-pass-manifest-${historicalSentinel.parentEvidence.finalManifest.sha256.slice(7)}.json`) {
+        throw new Error("paid historical sentinel final manifest path mismatch");
+      }
+    }
+    cells = buildSelectivePaidCells(targets, selectedCells, historicalSentinel);
+    pass.selectedCells = selectedCells;
+    pass.historicalSentinel = historicalSentinel;
+  } else {
+    cells = constraints.sentinelScope === "global" ? buildHostedPaidCells(targets) : buildPerModelPaidCells(targets);
+  }
   if (cells.length > constraints.maxCells) throw new Error(`paid campaign exceeds ${constraints.maxCells} logical cells`);
   return {
     document: value as unknown as PaidCampaignPolicyDocument,
@@ -532,6 +677,153 @@ export function buildPerModelPaidCells(targets: PaidTarget[]): PaidCell[] {
   return cells;
 }
 
+/**
+ * Policy-v3 selective layout. It is deliberately limited to one target and the
+ * four frozen benchmarks so recovery campaigns cannot accidentally combine
+ * models or re-expand a target to the broad four-cell matrix.
+ */
+export function buildSelectivePaidCells(
+  targets: PaidTarget[],
+  selectedCells: SelectivePaidCell[],
+  historicalSentinel: HistoricalSentinelRequirement | null,
+): PaidCell[] {
+  if (targets.length !== 1) throw new Error("selective paid policy must define exactly one target");
+  if (selectedCells.length < 1 || selectedCells.length > PAID_BENCHMARKS.length) {
+    throw new Error(`selective paid selection must define 1-${PAID_BENCHMARKS.length} cells`);
+  }
+  const target = targets[0];
+  const seen = new Set<string>();
+  const cells = selectedCells.map((selected, index): PaidCell => {
+    if (selected.target !== target.slug) throw new Error(`selective paid cell ${index} references a policy-external target`);
+    if (!BENCHMARK_ORDER.includes(selected.benchmark as (typeof BENCHMARK_ORDER)[number])) {
+      throw new Error(`selective paid cell ${index} references an unknown benchmark`);
+    }
+    const key = `${selected.target}\u0000${selected.benchmark}`;
+    if (seen.has(key)) throw new Error(`selective paid cell ${index} duplicates a selected cell`);
+    seen.add(key);
+    return { target: selected.target, benchmark: selected.benchmark, sentinel: selected.sentinelKind === "live", group: selected.target };
+  });
+  const liveSentinels = selectedCells.filter((cell) => cell.sentinelKind === "live");
+  if (historicalSentinel == null) {
+    if (liveSentinels.length !== 1 || selectedCells[0].sentinelKind !== "live" || selectedCells[0].benchmark !== OIDC_BENCHMARK_ID) {
+      throw new Error("selective paid live sentinel must be the first OIDC cell");
+    }
+  } else {
+    if (historicalSentinel.target !== target.slug || historicalSentinel.benchmark !== OIDC_BENCHMARK_ID) {
+      throw new Error("selective paid historical sentinel target or benchmark mismatch");
+    }
+    if (liveSentinels.length !== 0) throw new Error("selective paid historical campaign cannot include a live sentinel");
+    if (selectedCells.some((cell) => cell.target === historicalSentinel.target && cell.benchmark === historicalSentinel.benchmark)) {
+      throw new Error("selective paid historical sentinel cannot be redispatched");
+    }
+  }
+  return cells;
+}
+
+export const HISTORICAL_SENTINEL_PARENT_ORDER = [
+  "evidenceArchive",
+  "finalManifest",
+  "runRecord",
+  "verifyReport",
+  "gateILedger",
+] as const;
+
+export type HistoricalSentinelParentRole = (typeof HISTORICAL_SENTINEL_PARENT_ORDER)[number];
+
+export type HistoricalSentinelEvidenceBodies = Record<HistoricalSentinelParentRole, Buffer>;
+
+/** Ordered parent files copied into selective Evidence and checked independently. */
+export function historicalSentinelParentFiles(requirement: HistoricalSentinelRequirement): HistoricalEvidenceFile[] {
+  return HISTORICAL_SENTINEL_PARENT_ORDER.map((role) => requirement.parentEvidence[role]);
+}
+
+/**
+ * Re-derive an accepted historical sentinel from pinned parent bytes. This does
+ * not trust the prior verifier's `ok`; the final manifest, run record, and Gate I
+ * ledger are checked against each other and against the signed requirement.
+ */
+export function verifyHistoricalSentinelEvidence(
+  requirement: HistoricalSentinelRequirement,
+  target: PaidTarget,
+  bodies: HistoricalSentinelEvidenceBodies,
+): { ok: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  const require = (reason: string, condition: boolean): void => {
+    if (!condition) reasons.push(reason);
+  };
+  for (const role of HISTORICAL_SENTINEL_PARENT_ORDER) {
+    const expected = requirement.parentEvidence[role];
+    require(`${role}_digest`, `sha256:${createHash("sha256").update(bodies[role]).digest("hex")}` === expected.sha256);
+  }
+  let manifest: Record<string, unknown> | null = null;
+  let record: Record<string, unknown> | null = null;
+  let report: Record<string, unknown> | null = null;
+  try {
+    manifest = JSON.parse(bodies.finalManifest.toString("utf-8")) as Record<string, unknown>;
+    require("final_manifest_content_address", requirement.parentEvidence.finalManifest.file === `paid-pass-manifest-${requirement.parentEvidence.finalManifest.sha256.slice(7)}.json`);
+    require("final_manifest_campaign", manifest.campaignId === requirement.parentEvidence.campaignId);
+    require("final_manifest_stage", manifest.stageId === requirement.parentEvidence.stageId);
+    const records = Array.isArray(manifest.records) ? manifest.records as Array<Record<string, unknown>> : [];
+    const ref = records.find((item) => item.runId === requirement.runId);
+    require("final_manifest_run_ref", ref?.file === requirement.parentEvidence.runRecord.file && ref?.sha256 === requirement.parentEvidence.runRecord.sha256);
+  } catch {
+    reasons.push("final_manifest_parse");
+  }
+  try {
+    record = JSON.parse(bodies.runRecord.toString("utf-8")) as Record<string, unknown>;
+    const status = record.status as Record<string, unknown> | undefined;
+    const verdict = record.paidVerdict as Record<string, unknown> | undefined;
+    const raw = record.rawResponse as Record<string, unknown> | undefined;
+    const choices = Array.isArray(raw?.choices) ? raw.choices as Array<Record<string, unknown>> : [];
+    const attempt = Array.isArray(record.attempts) ? record.attempts[0] as Record<string, unknown> | undefined : undefined;
+    const finish = attempt?.finishReasonMapping as Record<string, unknown> | undefined;
+    const provenance = attempt?.generationProvenance as Record<string, unknown> | undefined;
+    require("run_identity", record.runId === requirement.runId && record.campaignId === requirement.parentEvidence.campaignId);
+    require("run_target", record.requestedSlug === requirement.target && record.resolvedSlug === requirement.target && target.slug === requirement.target);
+    require("run_benchmark", record.benchmarkId === requirement.benchmark && record.sentinel === true);
+    require("run_no_substitution", record.substitutionUsed === false && record.fallbackUsed === false);
+    require("run_status", status?.qualification === "pass" && Array.isArray(status.failureReasons) && status.failureReasons.length === 0);
+    require("run_paid_integrity", verdict?.ok === true && verdict.responseQualified === true && Array.isArray(verdict.validationReasons) && verdict.validationReasons.length === 0);
+    require("run_finish", choices[0]?.finish_reason === "stop" && finish?.canonical === "stop" && finish?.accepted === true);
+    require("run_generation", raw?.id === requirement.generationId && provenance?.generationId === requirement.generationId);
+    require("run_model", raw?.model === target.responseModelId && provenance?.requestedSlug === target.slug && provenance?.responseModelId === target.responseModelId);
+    require("run_provider", raw?.provider === target.providerDisplay);
+    require("run_cost", record.billedCostUsd === requirement.settledCostUsd && provenance?.actualCostUsd === requirement.settledCostUsd);
+  } catch {
+    reasons.push("run_record_parse");
+  }
+  try {
+    report = JSON.parse(bodies.verifyReport.toString("utf-8")) as Record<string, unknown>;
+    const summary = report.summary as Record<string, unknown> | undefined;
+    const coverage = summary?.costCoverage as Record<string, unknown> | undefined;
+    require("verify_report_ok", report.ok === true && Array.isArray(report.reasons) && report.reasons.length === 0);
+    require("verify_report_manifest", report.manifestFile === requirement.parentEvidence.finalManifest.file);
+    require("verify_report_identity", summary?.campaignId === requirement.parentEvidence.campaignId && summary?.stageId === requirement.parentEvidence.stageId);
+    require("verify_report_settled", Array.isArray(coverage?.settledRunIds) && coverage.settledRunIds.includes(requirement.runId));
+  } catch {
+    reasons.push("verify_report_parse");
+  }
+  try {
+    const lines = bodies.gateILedger.toString("utf-8").trimEnd().split("\n");
+    const header = lines.shift()?.replace(/\r$/, "").split(",") ?? [];
+    if (header.some((field) => field.includes('"')) || new Set(header).size !== header.length) throw new Error("ledger header");
+    const rows = lines.map((line) => line.replace(/\r$/, "").split(","));
+    if (rows.some((row) => row.length !== header.length || row.some((field) => field.includes('"')))) throw new Error("ledger row");
+    const entries = rows.map((row) => Object.fromEntries(header.map((key, index) => [key, row[index]])));
+    const matches = entries.filter((entry) => entry.run_id === requirement.runId);
+    require("gate_i_unique_run", matches.length === 1);
+    const entry = matches[0];
+    require("gate_i_identity", entry?.requested_model === target.slug && entry?.response_model === target.responseModelId && entry?.lookup_model === target.lookupModelId && entry?.benchmark_id === requirement.benchmark && entry?.sentinel === "true");
+    require("gate_i_generation", entry?.response_generation_id === requirement.generationId && entry?.lookup_generation_id === requirement.generationId);
+    require("gate_i_provider", entry?.response_provider === target.providerDisplay && entry?.lookup_provider === target.providerDisplay);
+    require("gate_i_settled", entry?.cost_state === "settled" && Number(entry?.settled_cost_usd) === requirement.settledCostUsd);
+    require("gate_i_verdict", entry?.status === "pass" && entry?.finish_reason === "stop" && entry?.validation_reasons === "" && entry?.cost_lookup_final_ok === "true");
+  } catch {
+    reasons.push("gate_i_ledger_parse");
+  }
+  return { ok: reasons.length === 0, reasons };
+}
+
 /** Compatibility name for the original four-target Candidate Pass. */
 export const buildCandidatePaidCells = buildPerModelPaidCells;
 
@@ -540,6 +832,7 @@ export function paidPassFor(mode: PaidPassDefinition["mode"]): { pass: PaidPassD
   if (mode === "diagnostic-hosted-paid-r1") return { pass: HOSTED_PAID_PASS, cells: buildHostedPaidCells(HOSTED_PAID_TARGETS) };
   if (mode === "diagnostic-candidate-paid-r1") return { pass: CANDIDATE_PAID_PASS, cells: buildCandidatePaidCells(CANDIDATE_PAID_TARGETS) };
   if (mode === "diagnostic-broad-paid-r1") throw new Error("broad paid mode requires a signed campaign policy");
+  if (mode === "diagnostic-selective-paid-r1") throw new Error("selective paid mode requires a signed campaign policy");
   throw new Error(`unknown paid mode ${mode}`);
 }
 
@@ -1110,6 +1403,8 @@ export interface PaidManifestVerifyOptions {
   expectedSchemaVersion?: number;
   expectedCampaignId?: string;
   expectedStageId?: string;
+  /** Policy-derived parent cardinality. Legacy policy-v2 defaults to three. */
+  expectedParentInputCount?: number;
 }
 
 /**
@@ -1134,7 +1429,7 @@ function isSafeRefPath(file: string): boolean {
  *  - a null execution manifest / signature / attestation / catalog artifact / summary;
  *  - empty records / wires / raw observations / intents (a paid pass that dispatched
  *    nothing must not certify as complete);
- *  - a parent-input count other than exactly PAID_PARENT_INPUT_COUNT;
+ *  - a parent-input count different from the policy-derived expectation;
  *  - a duplicate `file` anywhere across the whole manifest;
  *  - ANY absolute or traversal path (the Evidence must be a self-contained relative tree);
  *  - when `diskFiles` is given, any surplus (a bound file not on disk, or a disk file —
@@ -1203,8 +1498,9 @@ export function verifyPaidManifest(
   check("execution_attestation", manifest.executionAttestation, true);
   check("campaign_policy", manifest.campaignPolicy, true);
   check("campaign_policy_signature", manifest.campaignPolicySignature, true);
-  if ((manifest.parentInputs ?? []).length !== PAID_PARENT_INPUT_COUNT) reasons.push(`parent_input_count:${(manifest.parentInputs ?? []).length}`);
-  checkList("parent_input", manifest.parentInputs, true);
+  const expectedParentInputCount = opts.expectedParentInputCount ?? PAID_PARENT_INPUT_COUNT;
+  if ((manifest.parentInputs ?? []).length !== expectedParentInputCount) reasons.push(`parent_input_count:${(manifest.parentInputs ?? []).length}`);
+  checkList("parent_input", manifest.parentInputs, expectedParentInputCount > 0);
   check("catalog", manifest.catalogArtifact, true);
   checkList("raw_observation", manifest.rawObservations, true);
   checkList("record", manifest.records, true);

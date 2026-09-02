@@ -12,7 +12,7 @@
  * make a run pass.
  */
 import { mkdir, writeFile } from "fs/promises";
-import { readFileSync, readdirSync, existsSync, lstatSync, mkdirSync } from "fs";
+import { readFileSync, readdirSync, existsSync, lstatSync, mkdirSync, realpathSync } from "fs";
 import { join, resolve, basename } from "path";
 import { createHash } from "crypto";
 import { fileURLToPath } from "url";
@@ -121,6 +121,10 @@ import {
   tokenUpperBound,
   PAID_BENCHMARKS,
   PAID_REASONING_BUDGET,
+  HISTORICAL_SENTINEL_PARENT_ORDER,
+  historicalSentinelParentFiles,
+  verifyHistoricalSentinelEvidence,
+  buildSelectivePaidCells,
 } from "./src/qualification/paid-campaign.js";
 import {
   verifyPaidLaunchGrant,
@@ -143,6 +147,8 @@ import type {
   PaidManifestRef,
   PaidBindingManifest,
   PaidArtifactStat,
+  HistoricalSentinelRequirement,
+  HistoricalSentinelEvidenceBodies,
 } from "./src/qualification/paid-campaign.js";
 
 const CAMPAIGN_ID = "plinius-qualification-2026-08-22-v1";
@@ -670,6 +676,44 @@ export function verifyHistoricalDigestsFromFiles(exp: HistoricalDigestExpectatio
     check("historicalRun", exp.historicalRunPath, exp.historicalRunSha256),
   ];
   return { ok: details.every((d) => d.match), details };
+}
+
+export type HistoricalSentinelFilePaths = Record<(typeof HISTORICAL_SENTINEL_PARENT_ORDER)[number], string>;
+
+/** Read secure parent files and independently re-derive a policy-v3 sentinel. */
+export function verifyHistoricalSentinelFromFiles(
+  requirement: HistoricalSentinelRequirement,
+  target: PaidTarget,
+  paths: HistoricalSentinelFilePaths,
+): DigestVerifyResult & { reasons: string[] } {
+  const details: DigestVerifyResult["details"] = [];
+  const reasons: string[] = [];
+  const bodies = {} as HistoricalSentinelEvidenceBodies;
+  for (const role of HISTORICAL_SENTINEL_PARENT_ORDER) {
+    const path = paths[role];
+    const expectedFile = requirement.parentEvidence[role];
+    try {
+      const st = lstatSync(path);
+      if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1 || resolve(path) !== realpathSync(path)) {
+        reasons.push(`${role}_insecure_file`);
+        continue;
+      }
+      if (typeof process.getuid === "function" && st.uid !== process.getuid()) reasons.push(`${role}_owner_mismatch`);
+      if (basename(path) !== basename(expectedFile.file)) reasons.push(`${role}_basename_mismatch`);
+      const body = readFileSync(path);
+      bodies[role] = body;
+      const actual = createHash("sha256").update(body).digest("hex");
+      const expected = expectedFile.sha256.slice("sha256:".length);
+      details.push({ name: role, path, expected, actual, match: actual === expected });
+      if (actual !== expected) reasons.push(`${role}_digest`);
+    } catch {
+      reasons.push(`${role}_unreadable`);
+    }
+  }
+  if (HISTORICAL_SENTINEL_PARENT_ORDER.every((role) => bodies[role] != null)) {
+    reasons.push(...verifyHistoricalSentinelEvidence(requirement, target, bodies).reasons);
+  }
+  return { ok: reasons.length === 0, details, reasons };
 }
 
 /** Everything the record builders need for one cell, computed without network. */
@@ -2808,7 +2852,7 @@ export interface PaidBootstrapDeps {
    * the bootstrap can bind it durably into the final Evidence. */
   verifyExecution: () => { ok: boolean; reasons: string[]; attestation?: Record<string, unknown> };
   /** Gates 2-3 — parent Evidence bundle + frozen definition + historical run. Required. */
-  verifyParentEvidence: () => DigestVerifyResult;
+  verifyParentEvidence: () => { ok: boolean };
   /** Gate 4 — campaign definition + benchmark content hashes. Required. */
   verifyCampaignBenchmarks: (pass: PaidPassDefinition, cells: PaidCell[]) => Promise<{ ok: boolean; reasons: string[] }>;
   /** Gates 6-10 — anonymous public catalog fetch + verification (NO credential). Required. */
@@ -3059,6 +3103,14 @@ class PaidPermitPool {
  * pass; a per-model sentinel failure skips only that model's remaining cells.
  */
 export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPassResult> {
+  if (opts.pass.mode === "diagnostic-selective-paid-r1") {
+    const expected = buildSelectivePaidCells(
+      opts.pass.targets,
+      opts.pass.selectedCells ?? [],
+      opts.pass.historicalSentinel ?? null,
+    );
+    if (JSON.stringify(opts.cells) !== JSON.stringify(expected)) throw new Error("selective paid cell layout mismatch");
+  }
   const now = opts.now ?? (() => new Date().toISOString());
   const runsDir = join(opts.outputRoot, "runs");
   // The lock is the bootstrap's when given (the empty-root check already ran
@@ -3525,6 +3577,18 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       policyId: opts.pass.policyId,
       skippedGroups: orderedSkippedGroups,
       execution,
+      ...(opts.pass.mode === "diagnostic-selective-paid-r1"
+        ? {
+            selection: {
+              cells: opts.cells.map((cell) => ({
+                target: cell.target,
+                benchmark: cell.benchmark,
+                sentinelKind: cell.sentinel ? "live" : "none",
+              })),
+              historicalSentinel: opts.pass.historicalSentinel ?? null,
+            },
+          }
+        : {}),
     };
     const summaryHandle = finalizeCA(opts.outputRoot, `paid-pass-summary`, JSON.stringify(summary, null, 2));
 
@@ -3563,10 +3627,22 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       summary: { file: summaryHandle.file, sha256: summaryHandle.sha256, bytes: summaryHandle.bytes },
     };
     const candidateManifest = {
-      manifestSchemaVersion: 8,
+      manifestSchemaVersion: opts.pass.mode === "diagnostic-selective-paid-r1" ? 9 : 8,
       campaignId: opts.pass.campaignId,
       stageId: opts.pass.stageId,
       policyId: opts.pass.policyId,
+      ...(opts.pass.mode === "diagnostic-selective-paid-r1"
+        ? {
+            selection: {
+              cells: opts.cells.map((cell) => ({
+                target: cell.target,
+                benchmark: cell.benchmark,
+                sentinelKind: cell.sentinel ? "live" : "none",
+              })),
+              historicalSentinel: opts.pass.historicalSentinel ?? null,
+            },
+          }
+        : {}),
       ...binding,
     };
 
@@ -3608,9 +3684,10 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       diskFiles: diskFilesAcc,
       statFile: statForVerify,
       executingUid: typeof process.getuid === "function" ? process.getuid() : undefined,
-      expectedSchemaVersion: 8,
+      expectedSchemaVersion: opts.pass.mode === "diagnostic-selective-paid-r1" ? 9 : 8,
       expectedCampaignId: opts.pass.campaignId,
       expectedStageId: opts.pass.stageId,
+      expectedParentInputCount: opts.parentInputExpectedSha256?.length ?? 0,
     });
     if (!mv.ok) throw new Error(`paid pre-seal binding verification failed: ${mv.reasons.join(",")}`);
 
@@ -3719,18 +3796,57 @@ async function paidMain(
   if (loadedPolicy.sha256 !== launchGrant.campaignPolicySha256) throw new Error("campaign policy retained-byte digest mismatch");
   // Anchor paths + pinned parent digests are handed to the bootstrap so it copies and
   // digest-verifies them before the credential read.
-  const parentRoot = process.env.PARENT_EVIDENCE_ROOT ?? "";
   const manifestPath = launchGrant.executionManifestPath;
-  const parentInputPaths = [
-    process.env.PARENT_BUNDLE_PATH ?? "",
-    join(parentRoot, "campaign", "frozen-campaign-definition.json"),
-    join(parentRoot, "campaign", "runs", "run-d43bb9bcd2a03c20.json"),
-  ];
-  const parentInputExpectedSha256 = [
-    "sha256:" + HISTORICAL_DIGESTS.parentBundleSha256,
-    "sha256:" + HISTORICAL_DIGESTS.frozenDefinitionSha256,
-    "sha256:" + HISTORICAL_DIGESTS.historicalRunSha256,
-  ];
+  let parentInputPaths: string[];
+  let parentInputExpectedSha256: string[];
+  let verifyParentEvidence: () => { ok: boolean };
+  if (mode === "diagnostic-selective-paid-r1") {
+    const historical = loadedPolicy.pass.historicalSentinel ?? null;
+    if (historical == null) {
+      parentInputPaths = [];
+      parentInputExpectedSha256 = [];
+      verifyParentEvidence = () => ({ ok: true });
+    } else {
+      const parentRoot = process.env.PARENT_EVIDENCE_ROOT ?? "";
+      const parentBundlePath = process.env.PARENT_BUNDLE_PATH ?? "";
+      const parentVerifyReportPath = process.env.PARENT_VERIFY_REPORT_PATH ?? "";
+      const parentGateILedgerPath = process.env.PARENT_GATE_I_LEDGER_PATH ?? "";
+      if (!parentRoot || !parentBundlePath || !parentVerifyReportPath || !parentGateILedgerPath) {
+        throw new Error("selective historical sentinel parent environment is incomplete");
+      }
+      const paths: HistoricalSentinelFilePaths = {
+        evidenceArchive: parentBundlePath,
+        finalManifest: join(parentRoot, historical.parentEvidence.finalManifest.file),
+        runRecord: join(parentRoot, historical.parentEvidence.runRecord.file),
+        verifyReport: parentVerifyReportPath,
+        gateILedger: parentGateILedgerPath,
+      };
+      parentInputPaths = HISTORICAL_SENTINEL_PARENT_ORDER.map((role) => paths[role]);
+      parentInputExpectedSha256 = historicalSentinelParentFiles(historical).map((file) => file.sha256);
+      const target = loadedPolicy.pass.targets[0];
+      verifyParentEvidence = () => verifyHistoricalSentinelFromFiles(historical, target, paths);
+    }
+  } else {
+    const parentRoot = process.env.PARENT_EVIDENCE_ROOT ?? "";
+    parentInputPaths = [
+      process.env.PARENT_BUNDLE_PATH ?? "",
+      join(parentRoot, "campaign", "frozen-campaign-definition.json"),
+      join(parentRoot, "campaign", "runs", "run-d43bb9bcd2a03c20.json"),
+    ];
+    parentInputExpectedSha256 = [
+      "sha256:" + HISTORICAL_DIGESTS.parentBundleSha256,
+      "sha256:" + HISTORICAL_DIGESTS.frozenDefinitionSha256,
+      "sha256:" + HISTORICAL_DIGESTS.historicalRunSha256,
+    ];
+    verifyParentEvidence = () => verifyHistoricalDigestsFromFiles({
+      parentBundlePath: process.env.PARENT_BUNDLE_PATH ?? "",
+      parentBundleSha256: HISTORICAL_DIGESTS.parentBundleSha256,
+      frozenDefinitionPath: join(parentRoot, "campaign", "frozen-campaign-definition.json"),
+      frozenDefinitionSha256: HISTORICAL_DIGESTS.frozenDefinitionSha256,
+      historicalRunPath: join(parentRoot, "campaign", "runs", "run-d43bb9bcd2a03c20.json"),
+      historicalRunSha256: HISTORICAL_DIGESTS.historicalRunSha256,
+    });
+  }
   const boot = await preparePaidBootstrap({
     mode,
     pass: loadedPolicy.pass,
@@ -3769,19 +3885,8 @@ async function paidMain(
         campaignPolicySignerFingerprint: launchGrant.campaignPolicySignerFingerprint,
       },
     }),
-    // Gates 2-3 — parent Evidence bundle + frozen definition + historical run.
-    verifyParentEvidence: () => {
-      const parentRoot = process.env.PARENT_EVIDENCE_ROOT ?? "";
-      const bundlePath = process.env.PARENT_BUNDLE_PATH ?? "";
-      return verifyHistoricalDigestsFromFiles({
-        parentBundlePath: bundlePath,
-        parentBundleSha256: HISTORICAL_DIGESTS.parentBundleSha256,
-        frozenDefinitionPath: join(parentRoot, "campaign", "frozen-campaign-definition.json"),
-        frozenDefinitionSha256: HISTORICAL_DIGESTS.frozenDefinitionSha256,
-        historicalRunPath: join(parentRoot, "campaign", "runs", "run-d43bb9bcd2a03c20.json"),
-        historicalRunSha256: HISTORICAL_DIGESTS.historicalRunSha256,
-      });
-    },
+    // Gates 2-3 — legacy parents or a policy-v3 historical sentinel.
+    verifyParentEvidence,
     // Gate 4 — campaign definition + benchmark content hashes.
     verifyCampaignBenchmarks: async (_pass, cells) => {
       const reasons: string[] = [];
@@ -3989,8 +4094,9 @@ export function resolveDriverMode(
   if (raw === "diagnostic-hosted-paid-r1") return "diagnostic-hosted-paid-r1";
   if (raw === "diagnostic-candidate-paid-r1") return "diagnostic-candidate-paid-r1";
   if (raw === "diagnostic-broad-paid-r1") return "diagnostic-broad-paid-r1";
+  if (raw === "diagnostic-selective-paid-r1") return "diagnostic-selective-paid-r1";
   throw new Error(
-    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default, diagnostic-one-shot-r1, diagnostic-hosted-paid-r1, diagnostic-candidate-paid-r1 or diagnostic-broad-paid-r1`,
+    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default, diagnostic-one-shot-r1, diagnostic-hosted-paid-r1, diagnostic-candidate-paid-r1, diagnostic-broad-paid-r1 or diagnostic-selective-paid-r1`,
   );
 }
 
@@ -4014,7 +4120,7 @@ if (typeof __PLINIUS_PAID_BUNDLE__ === "undefined" && invokedDirectly()) {
   const mode = resolveDriverMode(process.env.PLINIUS_DRIVER_MODE);
   // A paid bundle is imported by the externally verified artifact launcher. Executing
   // the source or bundle directly never reaches the paid entrypoint.
-  if (mode === "diagnostic-hosted-paid-r1" || mode === "diagnostic-candidate-paid-r1" || mode === "diagnostic-broad-paid-r1") {
+  if (mode === "diagnostic-hosted-paid-r1" || mode === "diagnostic-candidate-paid-r1" || mode === "diagnostic-broad-paid-r1" || mode === "diagnostic-selective-paid-r1") {
     console.error(`DRIVER ERROR: paid mode ${mode} must be launched through qualification-paid-launch.mjs, not the driver directly`);
     process.exit(1);
   }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-/** Independent post-transfer verifier for policy-driven Paid Pass v3.4 Evidence. */
+/** Independent post-transfer verifier for policy-driven Paid Pass v3.6 Evidence. */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -8,12 +8,15 @@ import { basename, join, relative, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-export const EVIDENCE_SCHEMA_VERSION = 8;
+export const EVIDENCE_SCHEMA_VERSION = 9;
+export const LEGACY_EVIDENCE_SCHEMA_VERSION = 8;
 export const EXECUTION_SCHEMA_VERSION = 1;
 export const EXECUTION_ARTIFACT_TYPE = "plinius-paid-pass-v3";
 export const PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 export const CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v2";
 export const CAMPAIGN_POLICY_SCHEMA_VERSION = 2;
+export const SELECTIVE_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v3";
+export const SELECTIVE_CAMPAIGN_POLICY_SCHEMA_VERSION = 3;
 export const HISTORICAL_PARENT_DIGESTS = [
   "sha256:5464aac6862ee2b001cae40ac861d43b64abb9b0cd705bfa539252104963c66e",
   "sha256:eba5485902b6fa8307dc4cf1e3ff4c4bf99175f9e63eaedd0c81102332fae86d",
@@ -28,14 +31,23 @@ const BENCHMARKS = new Map([
 ]);
 const BENCHMARK_ORDER = [...BENCHMARKS.keys()];
 const OIDC_BENCHMARK = "sec-oidc-id-token-validation-001";
-const ALLOWED_MODES = ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1"];
+const SELECTIVE_MODE = "diagnostic-selective-paid-r1";
+const ALLOWED_MODES = ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1", SELECTIVE_MODE];
 const MODE_CONSTRAINTS = new Map([
   ["diagnostic-hosted-paid-r1", { totalCapUsd: 5, perRunCapUsd: 1, sentinelScope: "global", minTargets: 4, maxTargets: 4, maxCells: 15 }],
   ["diagnostic-candidate-paid-r1", { totalCapUsd: 6, perRunCapUsd: 0.75, sentinelScope: "per-model", minTargets: 4, maxTargets: 4, maxCells: 16 }],
   ["diagnostic-broad-paid-r1", { totalCapUsd: 12, perRunCapUsd: 2, sentinelScope: "per-model", minTargets: 1, maxTargets: 24, maxCells: 96 }],
+  [SELECTIVE_MODE, { totalCapUsd: 2, perRunCapUsd: 0.5, sentinelScope: "per-model", minTargets: 1, maxTargets: 1, maxCells: 4 }],
 ]);
 /** @param {any} policy */
 function cellsForPolicy(policy) {
+  if (policy.pass.mode === SELECTIVE_MODE) {
+    return policy.pass.selectedCells.map((/** @type {any} */ cell) => ({
+      target: cell.target,
+      benchmark: cell.benchmark,
+      sentinel: cell.sentinelKind === "live",
+    }));
+  }
   const targets = policy.pass.targets.map((/** @type {any} */ target) => target.slug);
   if (policy.pass.mode === "diagnostic-hosted-paid-r1") {
     const cells = [{ target: targets[0], benchmark: OIDC_BENCHMARK, sentinel: true }];
@@ -227,14 +239,20 @@ export function parseCampaignPolicy(body) {
   const policy = JSON.parse(body.toString("utf-8"));
   if (Buffer.from(`${JSON.stringify(policy, null, 2)}\n`, "utf-8").compare(body) !== 0) throw new Error("policy_noncanonical");
   if (!exactKeys(policy, ["schemaVersion", "policyType", "policyId", "issuedAtUtc", "catalogObservedAtUtc", "expiresAtUtc", "requiredSignerFingerprint", "pass"])) throw new Error("policy_fields");
-  if (policy.schemaVersion !== CAMPAIGN_POLICY_SCHEMA_VERSION || policy.policyType !== CAMPAIGN_POLICY_TYPE || policy.requiredSignerFingerprint !== PINNED_SIGNER) throw new Error("policy_identity");
+  const selective = policy.schemaVersion === SELECTIVE_CAMPAIGN_POLICY_SCHEMA_VERSION && policy.policyType === SELECTIVE_CAMPAIGN_POLICY_TYPE;
+  const legacy = policy.schemaVersion === CAMPAIGN_POLICY_SCHEMA_VERSION && policy.policyType === CAMPAIGN_POLICY_TYPE;
+  if ((!legacy && !selective) || policy.requiredSignerFingerprint !== PINNED_SIGNER) throw new Error("policy_identity");
   if (typeof policy.policyId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(policy.policyId)) throw new Error("policy_id");
   const issued = canonicalUtc(policy.issuedAtUtc);
   const observed = canonicalUtc(policy.catalogObservedAtUtc);
   const expires = canonicalUtc(policy.expiresAtUtc);
   if (issued == null || observed == null || expires == null || observed > issued || issued - observed > 24 * 60 * 60 * 1000 || expires <= issued || expires - issued > 7 * 24 * 60 * 60 * 1000) throw new Error("policy_time");
   const pass = policy.pass;
-  if (!exactKeys(pass, ["mode", "campaignId", "stageId", "budget", "targets", "sentinelScope"])) throw new Error("policy_pass_fields");
+  const passFields = selective
+    ? ["mode", "campaignId", "stageId", "budget", "targets", "sentinelScope", "selectedCells", "historicalSentinel"]
+    : ["mode", "campaignId", "stageId", "budget", "targets", "sentinelScope"];
+  if (!exactKeys(pass, passFields)) throw new Error("policy_pass_fields");
+  if (selective !== (pass.mode === SELECTIVE_MODE)) throw new Error("policy_mode_identity");
   if (typeof pass.campaignId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(pass.campaignId) || typeof pass.stageId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,159}$/.test(pass.stageId)) throw new Error("policy_pass_identity");
   const caps = MODE_CONSTRAINTS.get(pass.mode);
   if (caps == null || pass.sentinelScope !== caps.sentinelScope) throw new Error("policy_mode");
@@ -267,14 +285,124 @@ export function parseCampaignPolicy(body) {
   for (const field of ["catalogModelId", "responseModelId", "lookupModelId"]) {
     if (new Set(pass.targets.map((/** @type {any} */ target) => target[field])).size !== pass.targets.length) throw new Error(`policy_target_duplicate_${field}`);
   }
+  let historicalSentinel = null;
+  /** @type {Array<{file:string, sha256:string}>} */
+  let parentInputs = HISTORICAL_PARENT_DIGESTS.map((sha256, index) => ({ file: `legacy-parent-${index}`, sha256 }));
+  if (selective) {
+    if (!Array.isArray(pass.selectedCells) || pass.selectedCells.length < 1 || pass.selectedCells.length > caps.maxCells) throw new Error("policy_selective_cells");
+    const selected = new Set();
+    for (const [index, cell] of pass.selectedCells.entries()) {
+      if (!exactKeys(cell, ["target", "benchmark", "sentinelKind"])) throw new Error("policy_selective_cell_fields");
+      if (cell.target !== pass.targets[0].slug || !BENCHMARKS.has(cell.benchmark) || (cell.sentinelKind !== "live" && cell.sentinelKind !== "none")) throw new Error("policy_selective_cell");
+      const key = `${cell.target}\u0000${cell.benchmark}`;
+      if (selected.has(key)) throw new Error("policy_selective_cell_duplicate");
+      selected.add(key);
+      if (index > 0 && cell.sentinelKind === "live") throw new Error("policy_selective_sentinel_order");
+    }
+    const live = pass.selectedCells.filter((/** @type {any} */ cell) => cell.sentinelKind === "live");
+    if (pass.historicalSentinel === null) {
+      if (live.length !== 1 || pass.selectedCells[0].benchmark !== OIDC_BENCHMARK || pass.selectedCells[0].sentinelKind !== "live") throw new Error("policy_selective_live_sentinel");
+      parentInputs = [];
+    } else {
+      const historical = pass.historicalSentinel;
+      if (!exactKeys(historical, ["kind", "target", "benchmark", "runId", "generationId", "settledCostUsd", "parentEvidence"])) throw new Error("policy_historical_fields");
+      if (historical.kind !== "historical" || historical.target !== pass.targets[0].slug || historical.benchmark !== OIDC_BENCHMARK ||
+          typeof historical.runId !== "string" || !/^run-[0-9a-f]{16}$/.test(historical.runId) ||
+          typeof historical.generationId !== "string" || !/^gen-[A-Za-z0-9_-]{8,160}$/.test(historical.generationId) ||
+          !Number.isFinite(historical.settledCostUsd) || historical.settledCostUsd <= 0 || live.length !== 0 ||
+          pass.selectedCells.some((/** @type {any} */ cell) => cell.benchmark === OIDC_BENCHMARK)) throw new Error("policy_historical_identity");
+      const pe = historical.parentEvidence;
+      if (!exactKeys(pe, ["campaignId", "stageId", "evidenceArchive", "finalManifest", "runRecord", "verifyReport", "gateILedger"]) ||
+          typeof pe.campaignId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(pe.campaignId) ||
+          typeof pe.stageId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,159}$/.test(pe.stageId)) throw new Error("policy_historical_parent");
+      const fileFields = ["evidenceArchive", "finalManifest", "runRecord", "verifyReport", "gateILedger"];
+      parentInputs = fileFields.map((field) => {
+        const item = pe[field];
+        if (!exactKeys(item, ["file", "sha256"]) || typeof item.file !== "string" || !safeRelative(item.file) || item.file.length > 240 || typeof item.sha256 !== "string" || !/^sha256:[0-9a-f]{64}$/.test(item.sha256)) throw new Error(`policy_historical_${field}`);
+        return { file: item.file, sha256: item.sha256 };
+      });
+      if (new Set(parentInputs.map((item) => item.file)).size !== parentInputs.length) throw new Error("policy_historical_duplicate_parent");
+      if (pe.runRecord.file !== `runs/${historical.runId}.json`) throw new Error("policy_historical_run_path");
+      if (pe.finalManifest.file !== `paid-pass-manifest-${pe.finalManifest.sha256.slice(7)}.json`) throw new Error("policy_historical_manifest_path");
+      historicalSentinel = historical;
+    }
+  }
   const cells = cellsForPolicy(policy);
   if (cells.length > caps.maxCells) throw new Error("policy_cells");
   return {
     policy,
     targets,
     cells,
-    identity: { campaignId: pass.campaignId, stageId: pass.stageId, policyId: policy.policyId, mode: pass.mode, totalCells: cells.length, totalCapUsd: pass.budget.totalCapUsd, perRunCapUsd: pass.budget.perRunCapUsd, issued, expires },
+    historicalSentinel,
+    parentInputs,
+    identity: { campaignId: pass.campaignId, stageId: pass.stageId, policyId: policy.policyId, mode: pass.mode, totalCells: cells.length, totalCapUsd: pass.budget.totalCapUsd, perRunCapUsd: pass.budget.perRunCapUsd, issued, expires, parentInputCount: parentInputs.length, evidenceSchemaVersion: selective ? EVIDENCE_SCHEMA_VERSION : LEGACY_EVIDENCE_SCHEMA_VERSION },
   };
+}
+
+/** Independently re-derive a policy-v3 historical sentinel from bound parents.
+ * @param {any} requirement @param {any} target @param {Buffer[]} parents */
+function verifyHistoricalSentinelParents(requirement, target, parents) {
+  /** @type {string[]} */ const reasons = [];
+  /** @param {string} reason @param {boolean} condition */
+  const require = (reason, condition) => { if (!condition) reasons.push(`historical_${reason}`); };
+  const [, manifestBody, recordBody, reportBody, ledgerBody] = parents;
+  try {
+    const manifest = JSON.parse(manifestBody.toString("utf-8"));
+    const pe = requirement.parentEvidence;
+    require("manifest_content_address", pe.finalManifest.file === `paid-pass-manifest-${pe.finalManifest.sha256.slice(7)}.json`);
+    require("manifest_identity", manifest.campaignId === pe.campaignId && manifest.stageId === pe.stageId);
+    const refs = Array.isArray(manifest.records) ? manifest.records : [];
+    const ref = refs.find((/** @type {any} */ item) => item.runId === requirement.runId);
+    require("manifest_run_ref", ref?.file === pe.runRecord.file && ref?.sha256 === pe.runRecord.sha256);
+  } catch {
+    reasons.push("historical_manifest_parse");
+  }
+  try {
+    const record = JSON.parse(recordBody.toString("utf-8"));
+    const attempt = Array.isArray(record.attempts) ? record.attempts[0] : null;
+    const response = record.rawResponse;
+    require("run_identity", record.runId === requirement.runId && record.campaignId === requirement.parentEvidence.campaignId);
+    require("run_target", record.requestedSlug === requirement.target && record.resolvedSlug === requirement.target);
+    require("run_benchmark", record.benchmarkId === requirement.benchmark && record.sentinel === true);
+    require("run_no_substitution", record.substitutionUsed === false && record.fallbackUsed === false);
+    require("run_status", record.status?.qualification === "pass" && Array.isArray(record.status?.failureReasons) && record.status.failureReasons.length === 0);
+    require("run_paid_integrity", record.paidVerdict?.ok === true && record.paidVerdict?.responseQualified === true && Array.isArray(record.paidVerdict?.validationReasons) && record.paidVerdict.validationReasons.length === 0);
+    require("run_finish", response?.choices?.[0]?.finish_reason === "stop" && attempt?.finishReasonMapping?.canonical === "stop" && attempt?.finishReasonMapping?.accepted === true);
+    require("run_generation", response?.id === requirement.generationId && attempt?.generationProvenance?.generationId === requirement.generationId);
+    require("run_model", target != null && response?.model === target.responseModelId && attempt?.generationProvenance?.requestedSlug === requirement.target && attempt?.generationProvenance?.responseModelId === target.responseModelId);
+    require("run_provider", target != null && response?.provider === target.providerDisplay);
+    require("run_cost", record.billedCostUsd === requirement.settledCostUsd && attempt?.generationProvenance?.actualCostUsd === requirement.settledCostUsd);
+  } catch {
+    reasons.push("historical_run_parse");
+  }
+  try {
+    const report = JSON.parse(reportBody.toString("utf-8"));
+    require("report_ok", report.ok === true && Array.isArray(report.reasons) && report.reasons.length === 0);
+    require("report_manifest", report.manifestFile === requirement.parentEvidence.finalManifest.file);
+    require("report_identity", report.summary?.campaignId === requirement.parentEvidence.campaignId && report.summary?.stageId === requirement.parentEvidence.stageId);
+    require("report_settled", Array.isArray(report.summary?.costCoverage?.settledRunIds) && report.summary.costCoverage.settledRunIds.includes(requirement.runId));
+  } catch {
+    reasons.push("historical_report_parse");
+  }
+  try {
+    const lines = ledgerBody.toString("utf-8").trimEnd().split("\n");
+    const header = (lines.shift() ?? "").replace(/\r$/, "").split(",");
+    if (header.some((field) => field.includes('"')) || new Set(header).size !== header.length) throw new Error("header");
+    const rows = lines.map((line) => line.replace(/\r$/, "").split(","));
+    if (rows.some((row) => row.length !== header.length || row.some((field) => field.includes('"')))) throw new Error("row");
+    const entries = rows.map((row) => Object.fromEntries(header.map((key, index) => [key, row[index]])));
+    const matches = entries.filter((entry) => entry.run_id === requirement.runId);
+    require("ledger_unique", matches.length === 1);
+    const entry = matches[0];
+    require("ledger_identity", target != null && entry?.requested_model === requirement.target && entry?.response_model === target.responseModelId && entry?.lookup_model === target.lookupModelId && entry?.benchmark_id === requirement.benchmark && entry?.sentinel === "true");
+    require("ledger_generation", entry?.response_generation_id === requirement.generationId && entry?.lookup_generation_id === requirement.generationId);
+    require("ledger_provider", target != null && entry?.response_provider === target.providerDisplay && entry?.lookup_provider === target.providerDisplay);
+    require("ledger_cost", entry?.cost_state === "settled" && Number(entry?.settled_cost_usd) === requirement.settledCostUsd);
+    require("ledger_verdict", entry?.status === "pass" && entry?.finish_reason === "stop" && entry?.validation_reasons === "" && entry?.cost_lookup_final_ok === "true");
+  } catch {
+    reasons.push("historical_ledger_parse");
+  }
+  return reasons;
 }
 
 /**
@@ -314,7 +442,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
     const manifestBytes = readFileSync(manifestPath);
     require("manifest_content_address", manifestFile.endsWith(`${sha256(manifestBytes).slice(7)}.json`));
     const manifest = JSON.parse(manifestBytes.toString("utf-8"));
-    require("manifest_schema", manifest.manifestSchemaVersion === EVIDENCE_SCHEMA_VERSION);
+    require("manifest_schema", manifest.manifestSchemaVersion === EVIDENCE_SCHEMA_VERSION || manifest.manifestSchemaVersion === LEGACY_EVIDENCE_SCHEMA_VERSION);
     let identity = null;
     let policyDocument = null;
     let policyTargets = new Map();
@@ -323,7 +451,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
     /** @type {Array<[string, boolean | number]>} */
     const specs = [
       ["executionManifest", true], ["executionSignature", true], ["executionAttestation", true], ["campaignPolicy", true], ["campaignPolicySignature", true], ["catalogArtifact", true], ["summary", true],
-      ["parentInputs", 3], ["rawObservations", -1], ["records", -1], ["wires", -1], ["intents", -1],
+      ["parentInputs", -2], ["rawObservations", -1], ["records", -1], ["wires", -1], ["intents", -1],
     ];
     /** @type {Map<string, Buffer>} */ const bodies = new Map();
     /** @type {Set<string>} */ const bound = new Set();
@@ -353,7 +481,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       const value = manifest[field];
       if (Array.isArray(value)) {
         if (cardinality === -1) require(`${field}_empty`, value.length > 0);
-        else require(`${field}_count`, value.length === cardinality);
+        else if (typeof cardinality === "number" && cardinality >= 0) require(`${field}_count`, value.length === cardinality);
         for (const ref of value) checkRef(field, ref);
       } else {
         require(`${field}_absent`, cardinality === true && object(value));
@@ -409,9 +537,19 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       policyTargets = parsed.targets;
       passCells = parsed.cells;
       identity = parsed.identity;
+      require("manifest_policy_schema", manifest.manifestSchemaVersion === identity.evidenceSchemaVersion);
       require("manifest_policy", manifest.policyId === identity.policyId);
       require("manifest_stage", manifest.stageId === identity.stageId);
       require("manifest_campaign", manifest.campaignId === identity.campaignId);
+      if (identity.mode === SELECTIVE_MODE) {
+        const expectedSelection = {
+          cells: parsed.cells.map((/** @type {any} */ cell) => ({ target: cell.target, benchmark: cell.benchmark, sentinelKind: cell.sentinel ? "live" : "none" })),
+          historicalSentinel: parsed.historicalSentinel,
+        };
+        require("manifest_selection", json(manifest.selection) === json(expectedSelection));
+      } else {
+        require("manifest_legacy_selection_absent", !Object.hasOwn(manifest, "selection"));
+      }
     } catch (error) {
       reasons.push(`campaign_policy_envelope:${error instanceof Error ? error.message : String(error)}`);
     }
@@ -433,19 +571,29 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
     } catch (error) {
       reasons.push(`execution_attestation_parse:${error instanceof Error ? error.message : String(error)}`);
     }
-    const expectedParentDigests = options.parentDigests ?? HISTORICAL_PARENT_DIGESTS;
-    require("parent_digest_policy", expectedParentDigests.length === 3);
-    for (let index = 0; index < 3; index++) {
+    const parsedPolicy = parseCampaignPolicy(campaignPolicyInner ?? Buffer.alloc(0));
+    const expectedParentInputs = identity.mode === SELECTIVE_MODE
+      ? parsedPolicy.parentInputs
+      : (options.parentDigests ?? HISTORICAL_PARENT_DIGESTS).map((sha256, index) => ({ file: `legacy-parent-${index}`, sha256 }));
+    require("parent_digest_policy", expectedParentInputs.length === identity.parentInputCount);
+    require("parent_input_count", manifest.parentInputs.length === expectedParentInputs.length);
+    /** @type {Buffer[]} */ const parentInnerBodies = [];
+    for (let index = 0; index < expectedParentInputs.length; index++) {
       try {
         const parentRef = manifest.parentInputs[index];
         if (parentRef == null) throw new Error("parent ref missing");
         const body = bodies.get(parentRef.file);
         if (body == null) throw new Error("parent body missing");
         const decoded = decodeEnvelope(body);
-        require(`parent_digest:${index}`, decoded.envelope.sha256 === expectedParentDigests[index]);
+        parentInnerBodies.push(decoded.inner);
+        require(`parent_digest:${index}`, decoded.envelope.sha256 === expectedParentInputs[index].sha256);
+        if (identity.mode === SELECTIVE_MODE) require(`parent_basename:${index}`, decoded.envelope.sourceBasename === basename(expectedParentInputs[index].file));
       } catch (error) {
         reasons.push(`parent_envelope:${index}:${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+    if (identity.mode === SELECTIVE_MODE && parsedPolicy.historicalSentinel != null && parentInnerBodies.length === expectedParentInputs.length) {
+      reasons.push(...verifyHistoricalSentinelParents(parsedPolicy.historicalSentinel, policyTargets.get(parsedPolicy.historicalSentinel.target), parentInnerBodies));
     }
 
     /** @type {Record<string, string>} */ let providerDisplay = {};
@@ -557,6 +705,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
     /** @type {string[]} */ const invalidCostRunIds = [];
     let passed = 0;
     let failed = 0;
+    const failedLiveSentinelGroups = new Set();
     const expectedCells = passCells;
     const observedCells = new Set();
     for (const [runId, recordRef] of records) {
@@ -655,7 +804,10 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
           require(`passing_cost:${runId}`, finiteNonnegative(billed) && billed <= identity.perRunCapUsd);
           require(`passing_completion:${runId}`, responsePass);
           passed++;
-        } else failed++;
+        } else {
+          failed++;
+          if (expectedCell?.sentinel === true && !responsePass) failedLiveSentinelGroups.add(expectedCell.target);
+        }
       } catch (error) {
         reasons.push(`run_verify:${String(runId)}:${error instanceof Error ? error.message : String(error)}`);
       }
@@ -676,6 +828,21 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       require("summary_identity", summary.campaignId === manifest.campaignId && summary.stageId === manifest.stageId && summary.mode === identity.mode && summary.policyId === identity.policyId);
       require("summary_budget", summary.budget?.totalCapUsd === identity.totalCapUsd && summary.budget?.perRunCapUsd === identity.perRunCapUsd);
       require("summary_counts", summary.totalCells === identity.totalCells && summary.dispatched === records.size && summary.passed === passed && summary.failed === failed && summary.dispatched === summary.passed + summary.failed);
+      require("summary_skipped", Number.isSafeInteger(summary.skipped) && summary.skipped >= 0 && summary.dispatched + summary.skipped <= identity.totalCells);
+      if (identity.mode === SELECTIVE_MODE) {
+        const expectedSelection = {
+          cells: passCells.map((cell) => ({ target: cell.target, benchmark: cell.benchmark, sentinelKind: cell.sentinel ? "live" : "none" })),
+          historicalSentinel: parsedPolicy.historicalSentinel,
+        };
+        require("summary_selection", json(summary.selection) === json(expectedSelection));
+        const expectedSkipped = summary.stopped == null
+          ? passCells.filter((cell) => !cell.sentinel && failedLiveSentinelGroups.has(cell.target)).length
+          : 0;
+        const expectedSkippedGroups = summary.stopped == null ? [...failedLiveSentinelGroups] : [];
+        require("summary_selective_skipped", summary.skipped === expectedSkipped && json(summary.skippedGroups) === json(expectedSkippedGroups));
+      } else {
+        require("summary_legacy_selection_absent", !Object.hasOwn(summary, "selection"));
+      }
       require("summary_cost", finiteNonnegative(summary.spentUsd) && Math.abs(summary.spentUsd - billedTotal) < 1e-12 && summary.spentUsd <= identity.totalCapUsd);
       const execution = summary.execution;
       const executionKeys = object(execution) ? Object.keys(execution).sort() : [];

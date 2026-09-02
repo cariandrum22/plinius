@@ -64,6 +64,8 @@ import {
   PAID_CAMPAIGN_POLICY_SIGNER,
   BROAD_PAID_MAX_CELLS,
   BROAD_PAID_MAX_TARGETS,
+  buildSelectivePaidCells,
+  verifyHistoricalSentinelEvidence,
 } from "../src/qualification/paid-campaign.js";
 import type {
   CatalogModelInfo,
@@ -74,6 +76,8 @@ import type {
   PaidRawObservation,
   PaidBindingManifest,
   PaidManifestRef,
+  HistoricalSentinelRequirement,
+  HistoricalSentinelEvidenceBodies,
 } from "../src/qualification/paid-campaign.js";
 
 import { dispatchViaBackend, preparePaidBootstrap, runPaidPass, paidPlanCell, verifyPaidCatalog, resolveDriverMode, generationCost, copyPaidAnchorsIntoRoot, validatePaidOpenRouterCredential, PAID_TIMEOUT_MS } from "../qualification-driver.mjs";
@@ -83,7 +87,7 @@ import type { FetchFn } from "../src/backends/openai-compatible.js";
 const OR_BASE = "https://openrouter.ai/api/v1";
 const CHAT_URL = `${OR_BASE}/chat/completions`;
 const DISPLAY = "TestProvider";
-const ALL_PAID_MODES = ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1"] as const;
+const ALL_PAID_MODES = ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1", "diagnostic-selective-paid-r1"] as const;
 
 // --- helpers -----------------------------------------------------------------
 
@@ -317,9 +321,10 @@ const fileSha = async (p: string) => "sha256:" + createHash("sha256").update(awa
 
 function policyBodyFor(pass: any): string {
   const { policyId, ...unsignedPass } = pass;
+  const selective = pass.mode === "diagnostic-selective-paid-r1";
   return `${JSON.stringify({
-    schemaVersion: 2,
-    policyType: "plinius-paid-campaign-policy-v2",
+    schemaVersion: selective ? 3 : 2,
+    policyType: selective ? "plinius-paid-campaign-policy-v3" : "plinius-paid-campaign-policy-v2",
     policyId,
     issuedAtUtc: "2026-08-28T00:00:00Z",
     catalogObservedAtUtc: "2026-08-28T00:00:00Z",
@@ -354,6 +359,106 @@ function broadPass(targetCount: number): any {
   };
 }
 
+function selectivePass(
+  target: PaidTarget,
+  selectedCells: Array<{ target: string; benchmark: string; sentinelKind: "live" | "none" }>,
+  historicalSentinel: HistoricalSentinelRequirement | null,
+): any {
+  return {
+    mode: "diagnostic-selective-paid-r1",
+    campaignId: "plinius-qualification-selective-test-r1",
+    stageId: "plinius-qualification-diagnostic-selective-test-r1",
+    budget: { totalCapUsd: 1, perRunCapUsd: 0.5 },
+    targets: [target],
+    sentinelScope: "per-model",
+    selectedCells,
+    historicalSentinel,
+    policyId: "plinius-selective-paid-test-r1",
+  };
+}
+
+async function historicalSentinelFixture(target: PaidTarget): Promise<{
+  requirement: HistoricalSentinelRequirement;
+  bodies: HistoricalSentinelEvidenceBodies;
+  paths: string[];
+}> {
+  const campaignId = "plinius-qualification-broad-parent-r1";
+  const stageId = "plinius-qualification-diagnostic-broad-parent-r1";
+  const runId = "run-a106d10f86ba6150";
+  const generationId = "gen-1788326362-zDGlJvUhpDo7ZkCzKBBR";
+  const settledCostUsd = 0.062572;
+  const runRecord = Buffer.from(JSON.stringify({
+    runId,
+    campaignId,
+    sentinel: true,
+    benchmarkId: OIDC_BENCHMARK_ID,
+    requestedSlug: target.slug,
+    resolvedSlug: target.slug,
+    substitutionUsed: false,
+    fallbackUsed: false,
+    status: { qualification: "pass", failureReasons: [] },
+    paidVerdict: { ok: true, validationReasons: [], responseQualified: true },
+    billedCostUsd: settledCostUsd,
+    rawResponse: { id: generationId, model: target.responseModelId, provider: target.providerDisplay, choices: [{ finish_reason: "stop" }] },
+    attempts: [{
+      status: { qualification: "pass" },
+      finishReasonMapping: { canonical: "stop", accepted: true },
+      generationProvenance: { generationId, requestedSlug: target.slug, responseModelId: target.responseModelId, actualCostUsd: settledCostUsd },
+    }],
+  }, null, 2));
+  const runSha = `sha256:${createHash("sha256").update(runRecord).digest("hex")}`;
+  const manifest = Buffer.from(JSON.stringify({
+    manifestSchemaVersion: 8,
+    campaignId,
+    stageId,
+    records: [{ file: `runs/${runId}.json`, sha256: runSha, bytes: runRecord.length, runId }],
+  }, null, 2));
+  const manifestSha = `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
+  const manifestFile = `paid-pass-manifest-${manifestSha.slice(7)}.json`;
+  const report = Buffer.from(JSON.stringify({
+    ok: true,
+    reasons: [],
+    manifestFile,
+    summary: { campaignId, stageId, costCoverage: { settledRunIds: [runId] } },
+  }, null, 2));
+  const ledger = Buffer.from([
+    "order_index,run_id,requested_model,response_model,benchmark_id,sentinel,response_created_utc,response_generation_id,response_provider,response_http_status,lookup_generation_id,lookup_provider,lookup_model,cost_state,settled_cost_usd,status,finish_reason,validation_reasons,cost_poll_count,cost_lookup_final_ok",
+    `1,${runId},${target.slug},${target.responseModelId},${OIDC_BENCHMARK_ID},true,2026-09-02T05:19:22.000Z,${generationId},${target.providerDisplay},200,${generationId},${target.providerDisplay},${target.lookupModelId},settled,${settledCostUsd},pass,stop,,4,true`,
+    "",
+  ].join("\n"));
+  const archive = Buffer.from("deterministic-parent-evidence-archive");
+  const sha = (body: Buffer) => `sha256:${createHash("sha256").update(body).digest("hex")}`;
+  const requirement: HistoricalSentinelRequirement = {
+    kind: "historical",
+    target: target.slug,
+    benchmark: OIDC_BENCHMARK_ID,
+    runId,
+    generationId,
+    settledCostUsd,
+    parentEvidence: {
+      campaignId,
+      stageId,
+      evidenceArchive: { file: "diagnostic-broad-paid-r1-evidence.tar.gz", sha256: sha(archive) },
+      finalManifest: { file: manifestFile, sha256: manifestSha },
+      runRecord: { file: `runs/${runId}.json`, sha256: runSha },
+      verifyReport: { file: "diagnostic-broad-paid-r1-verify-v3.5.json", sha256: sha(report) },
+      gateILedger: { file: "diagnostic-broad-paid-r1-h3r1-gateI-ledger.csv", sha256: sha(ledger) },
+    },
+  };
+  const bodies = { evidenceArchive: archive, finalManifest: manifest, runRecord, verifyReport: report, gateILedger: ledger };
+  const dir = await mkdtemp(join(anchorDir, "historical-"));
+  await mkdir(join(dir, "runs"));
+  const paths = [
+    join(dir, requirement.parentEvidence.evidenceArchive.file),
+    join(dir, requirement.parentEvidence.finalManifest.file),
+    join(dir, requirement.parentEvidence.runRecord.file),
+    join(dir, requirement.parentEvidence.verifyReport.file),
+    join(dir, requirement.parentEvidence.gateILedger.file),
+  ];
+  await Promise.all(paths.map((path, index) => writeFile(path, Object.values(bodies)[index], { mode: 0o600 })));
+  return { requirement, bodies, paths };
+}
+
 function perMillionToPerTokenDecimal(value: number): string {
   const match = /^(\d+)(?:\.(\d+))?$/.exec(value.toString());
   if (!match) throw new Error(`unsupported test price: ${value}`);
@@ -376,6 +481,7 @@ async function setupPaidRun(
   root: string,
   gen: any,
   catalogPricing: Record<string, { prompt: number | string; completion: number | string }> = {},
+  parentInputPathsOverride?: string[],
 ) {
   await mkdir(root, { recursive: true });
   await chmod(root, 0o700); // the hardened journal requires a 0700 output root
@@ -459,14 +565,15 @@ async function setupPaidRun(
     campaignPolicySignerFingerprint: PAID_CAMPAIGN_POLICY_SIGNER,
   });
   const att = finalizeArtifact(root, `paid-execution-attestation-${sha256Hex(attBody)}.json`, attBody, lock);
-  const parentInputExpectedSha256 = await Promise.all(anchorPaths.parentInputPaths.map(fileSha));
+  const parentInputPaths = parentInputPathsOverride ?? (pass.mode === "diagnostic-selective-paid-r1" ? [] : anchorPaths.parentInputPaths);
+  const parentInputExpectedSha256 = await Promise.all(parentInputPaths.map(fileSha));
   // Mirror the bootstrap: COPY + digest-verify the anchors into the root before the run.
   const anchors = copyPaidAnchorsIntoRoot(lock, root, {
     executionManifestPath: anchorPaths.executionManifestPath,
     executionSignaturePath: anchorPaths.executionSignaturePath,
     campaignPolicyPath: policyPath,
     campaignPolicySignaturePath: policySignaturePath,
-    parentInputPaths: anchorPaths.parentInputPaths,
+    parentInputPaths,
     expectedManifestSha256: await fileSha(anchorPaths.executionManifestPath),
     expectedSignatureSha256: await fileSha(anchorPaths.executionSignaturePath),
     expectedCampaignPolicySha256: await fileSha(policyPath),
@@ -524,6 +631,7 @@ describe("paid pass fixed definitions", () => {
     expect(resolveDriverMode("diagnostic-hosted-paid-r1")).toBe("diagnostic-hosted-paid-r1");
     expect(resolveDriverMode("diagnostic-candidate-paid-r1")).toBe("diagnostic-candidate-paid-r1");
     expect(resolveDriverMode("diagnostic-broad-paid-r1")).toBe("diagnostic-broad-paid-r1");
+    expect(resolveDriverMode("diagnostic-selective-paid-r1")).toBe("diagnostic-selective-paid-r1");
     expect(() => resolveDriverMode(undefined)).toThrow();
   });
 });
@@ -634,6 +742,90 @@ describe("detached-signature campaign policy", () => {
     expect(() => parseCampaignPolicy(Buffer.from(policyBodyFor({ ...broadPass(1), sentinelScope: "global" })))).toThrow(/policy_mode/);
     expect(() => parseCampaignPolicy(Buffer.from(policyBodyFor({ ...broadPass(1), budget: { totalCapUsd: 12, perRunCapUsd: 2.01 } })))).toThrow(/policy_budget/);
     expect(() => parseCampaignPolicy(Buffer.from(policyBodyFor(broadPass(BROAD_PAID_MAX_TARGETS + 1))))).toThrow(/policy_targets/);
+  });
+
+  it("loads a two-cell historical selective campaign without broad re-expansion", async () => {
+    const target = broadTarget(1);
+    const fixture = await historicalSentinelFixture(target);
+    const pass = selectivePass(target, [
+      { target: target.slug, benchmark: "arch-exactly-once-003", sentinelKind: "none" },
+      { target: target.slug, benchmark: "formal-spec-idempotent-api-003", sentinelKind: "none" },
+    ], fixture.requirement);
+    const bytes = Buffer.from(policyBodyFor(pass));
+    const loaded = parsePaidCampaignPolicy(bytes, "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z");
+    expect(loaded.cells).toEqual([
+      { target: target.slug, benchmark: "arch-exactly-once-003", sentinel: false, group: target.slug },
+      { target: target.slug, benchmark: "formal-spec-idempotent-api-003", sentinel: false, group: target.slug },
+    ]);
+    expect(loaded.cells).toHaveLength(2);
+    expect(parseCampaignPolicy(bytes).identity).toMatchObject({ totalCells: 2, parentInputCount: 5, evidenceSchemaVersion: 9 });
+  });
+
+  it("requires a first live OIDC sentinel when no historical sentinel is signed", () => {
+    const target = broadTarget(1);
+    const good = selectivePass(target, [
+      { target: target.slug, benchmark: OIDC_BENCHMARK_ID, sentinelKind: "live" },
+      { target: target.slug, benchmark: "se-concurrency-atomic-stats-012", sentinelKind: "none" },
+    ], null);
+    expect(parsePaidCampaignPolicy(Buffer.from(policyBodyFor(good)), "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z").cells).toHaveLength(2);
+    expect(parseCampaignPolicy(Buffer.from(policyBodyFor(good))).identity.parentInputCount).toBe(0);
+    expect(() => parsePaidCampaignPolicy(Buffer.from(policyBodyFor({ ...good, selectedCells: good.selectedCells.slice(1) })), "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/live sentinel/);
+  });
+
+  it("rejects empty, duplicate, unknown, external, and extra-field selective cells", () => {
+    const target = broadTarget(1);
+    const cell = { target: target.slug, benchmark: OIDC_BENCHMARK_ID, sentinelKind: "live" as const };
+    const encode = (cells: any[]) => Buffer.from(policyBodyFor(selectivePass(target, cells, null)));
+    expect(() => parsePaidCampaignPolicy(encode([]), "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/selection/);
+    expect(() => parsePaidCampaignPolicy(encode([cell, { ...cell, sentinelKind: "none" }]), "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/duplicates/);
+    expect(() => parsePaidCampaignPolicy(encode([{ ...cell, benchmark: "unknown-benchmark" }]), "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/unknown benchmark/);
+    expect(() => parsePaidCampaignPolicy(encode([{ ...cell, target: "vendor/other" }]), "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/external target/);
+    expect(() => parsePaidCampaignPolicy(encode([{ ...cell, group: target.slug }]), "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/field set/);
+    expect(() => parseCampaignPolicy(encode([cell, { ...cell, sentinelKind: "none" }]))).toThrow(/duplicate/);
+    const accidentalBroadExpansion = {
+      ...selectivePass(target, [cell], null),
+      targets: [target, broadTarget(2)],
+      selectedCells: buildPerModelPaidCells([target, broadTarget(2)]).map((item) => ({
+        target: item.target,
+        benchmark: item.benchmark,
+        sentinelKind: item.sentinel ? "live" : "none",
+      })),
+    };
+    expect(() => parsePaidCampaignPolicy(Buffer.from(policyBodyFor(accidentalBroadExpansion)), "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/target count/);
+  });
+
+  it("re-derives historical sentinel integrity and rejects digest or verdict tampering", async () => {
+    const target = broadTarget(1);
+    const fixture = await historicalSentinelFixture(target);
+    expect(verifyHistoricalSentinelEvidence(fixture.requirement, target, fixture.bodies)).toEqual({ ok: true, reasons: [] });
+    const digestTamper = { ...fixture.bodies, evidenceArchive: Buffer.from("tampered") };
+    expect(verifyHistoricalSentinelEvidence(fixture.requirement, target, digestTamper).reasons).toContain("evidenceArchive_digest");
+    const record = JSON.parse(fixture.bodies.runRecord.toString("utf-8"));
+    record.paidVerdict.validationReasons = ["forged"];
+    const verdictTamper = { ...fixture.bodies, runRecord: Buffer.from(JSON.stringify(record, null, 2)) };
+    const result = verifyHistoricalSentinelEvidence(fixture.requirement, target, verdictTamper);
+    expect(result.ok).toBe(false);
+    expect(result.reasons).toContain("run_paid_integrity");
+  });
+
+  it("loads the checked-in H3R2A and H3R2B policies as separate selective campaigns", async () => {
+    const h3r2a = parsePaidCampaignPolicy(
+      await readFile(join(process.cwd(), "policy", "qualification-selective-h3r2a-paid-2026-09-02-r1.json")),
+      "diagnostic-selective-paid-r1",
+      "2026-09-02T11:00:00Z",
+    );
+    const h3r2b = parsePaidCampaignPolicy(
+      await readFile(join(process.cwd(), "policy", "qualification-selective-h3r2b-paid-2026-09-02-r1.json")),
+      "diagnostic-selective-paid-r1",
+      "2026-09-02T11:00:00Z",
+    );
+    expect(h3r2a.pass.campaignId).not.toBe(h3r2b.pass.campaignId);
+    expect(h3r2a.pass.stageId).not.toBe(h3r2b.pass.stageId);
+    expect(h3r2a.cells.map((cell) => cell.benchmark)).toEqual(["arch-exactly-once-003", "formal-spec-idempotent-api-003"]);
+    expect(h3r2a.pass.historicalSentinel?.runId).toBe("run-a106d10f86ba6150");
+    expect(h3r2b.cells).toHaveLength(4);
+    expect(h3r2b.cells[0]).toMatchObject({ benchmark: OIDC_BENCHMARK_ID, sentinel: true });
+    expect(h3r2b.pass.historicalSentinel).toBeNull();
   });
 });
 
@@ -1445,6 +1637,70 @@ describe("runPaidPass orchestration", () => {
     });
     expect(independent.ok, independent.reasons.join("\n")).toBe(true);
   }, 20_000);
+
+  it("dispatches only the two selected Terra cells after binding a historical sentinel", async () => {
+    const target = broadTarget(41);
+    const fixture = await historicalSentinelFixture(target);
+    const selectedCells = [
+      { target: target.slug, benchmark: "arch-exactly-once-003", sentinelKind: "none" as const },
+      { target: target.slug, benchmark: "formal-spec-idempotent-api-003", sentinelKind: "none" as const },
+    ];
+    const pass = selectivePass(target, selectedCells, fixture.requirement);
+    const cells = buildSelectivePaidCells(pass.targets, selectedCells, fixture.requirement);
+    const root = freshRoot("selective-historical-two");
+    const result = await runPaidPass(await setupPaidRun(
+      pass,
+      cells,
+      root,
+      withWire((_cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 0.01, genId: `gen-${plan.runId}` })),
+      {},
+      fixture.paths,
+    ));
+    expect(result.stopped).toBeNull();
+    expect(result.dispatchedRunIds).toHaveLength(2);
+    expect(result.passed).toBe(2);
+    const manifest = JSON.parse(await readFile(join(root, result.manifestFile!), "utf-8"));
+    expect(manifest.manifestSchemaVersion).toBe(9);
+    expect(manifest.selection.cells).toEqual(selectedCells);
+    const independent = verifyPaidEvidence(root, { verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER });
+    expect(independent.ok, independent.reasons.join("\n")).toBe(true);
+  }, 20_000);
+
+  it("uses a live selective OIDC sentinel and skips the remaining three cells on content failure", async () => {
+    const target = broadTarget(42);
+    const selectedCells = [
+      { target: target.slug, benchmark: OIDC_BENCHMARK_ID, sentinelKind: "live" as const },
+      { target: target.slug, benchmark: "se-concurrency-atomic-stats-012", sentinelKind: "none" as const },
+      { target: target.slug, benchmark: "arch-exactly-once-003", sentinelKind: "none" as const },
+      { target: target.slug, benchmark: "formal-spec-idempotent-api-003", sentinelKind: "none" as const },
+    ];
+    const pass = selectivePass(target, selectedCells, null);
+    const cells = buildSelectivePaidCells(pass.targets, selectedCells, null);
+    const root = freshRoot("selective-live-sentinel-fail");
+    const result = await runPaidPass(await setupPaidRun(pass, cells, root, withWire((_cell: any, plan: any) => factsFor(plan, { ok: false, costUsd: 0.01 }))));
+    expect(result.stopped).toBeNull();
+    expect(result.dispatchedRunIds).toHaveLength(1);
+    expect(result.failed).toBe(1);
+    expect(result.skippedRunIds).toHaveLength(3);
+    expect(result.skippedGroups).toEqual([target.slug]);
+    const independent = verifyPaidEvidence(root, { verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER });
+    expect(independent.ok, independent.reasons.join("\n")).toBe(true);
+  });
+
+  it("keeps a selective live-sentinel unknown cost explicit and stops without zero-fill", async () => {
+    const target = broadTarget(43);
+    const selectedCells = [
+      { target: target.slug, benchmark: OIDC_BENCHMARK_ID, sentinelKind: "live" as const },
+      { target: target.slug, benchmark: "se-concurrency-atomic-stats-012", sentinelKind: "none" as const },
+    ];
+    const pass = selectivePass(target, selectedCells, null);
+    const cells = buildSelectivePaidCells(pass.targets, selectedCells, null);
+    const result = await runPaidPass(await setupPaidRun(pass, cells, freshRoot("selective-unknown-cost"), withWire((_cell: any, plan: any) => factsFor(plan, { costUsd: null }))));
+    expect(result.stopped).toMatch(/wire_integrity_failed|actual_cost_rejected/);
+    expect(result.spentUsd).toBe(0);
+    expect(result.costCoverage.complete).toBe(false);
+    expect(result.costCoverage.unknownCostRunIds).toEqual(result.dispatchedRunIds);
+  });
 
   it("runs at most two broad models concurrently while keeping each model sentinel-first and sequential", async () => {
     const pass = broadPass(3);

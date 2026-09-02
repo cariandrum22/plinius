@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // @ts-check
 /**
- * Dependency-free Paid Pass v3.4 launcher.
+ * Dependency-free Paid Pass v3.6 launcher.
  *
  * Fable must verify the signed execution manifest and launcher digest before
  * invoking `/usr/bin/node qualification-paid-launch.mjs`. This launcher then
@@ -21,12 +21,15 @@ export const ARTIFACT_TYPE = "plinius-paid-pass-v3";
 export const PINNED_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 export const CAMPAIGN_POLICY_SCHEMA_VERSION = 2;
 export const CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v2";
+export const SELECTIVE_CAMPAIGN_POLICY_SCHEMA_VERSION = 3;
+export const SELECTIVE_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v3";
 export const MANIFEST_NAME = "qualification-paid-execution-manifest.json";
 export const SIGNATURE_NAME = `${MANIFEST_NAME}.sig`;
 export const LAUNCHER_NAME = "qualification-paid-launch.mjs";
 export const RUNNER_NAME = "qualification-driver.mjs";
 export const VERIFIER_NAME = "qualification-paid-verify.mjs";
-const MODES = new Set(["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1"]);
+const SELECTIVE_MODE = "diagnostic-selective-paid-r1";
+const MODES = new Set(["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1", SELECTIVE_MODE]);
 const GPG_CANDIDATES = ["/usr/bin/gpg", "/bin/gpg", "/opt/homebrew/bin/gpg", "/usr/local/bin/gpg", join(homedir(), ".nix-profile/bin/gpg")];
 
 /** @param {Buffer | Uint8Array | string} bytes */
@@ -183,7 +186,10 @@ export function verifyCampaignPolicy(policyPath, signaturePath, mode, options = 
   const policyBytes = readFileSync(realPolicyPath);
   const signatureBytes = readFileSync(realSignaturePath);
   const policy = JSON.parse(policyBytes.toString("utf-8"));
-  if (policy.schemaVersion !== CAMPAIGN_POLICY_SCHEMA_VERSION || policy.policyType !== CAMPAIGN_POLICY_TYPE) throw new Error("campaign policy identity mismatch");
+  const identityOk = mode === SELECTIVE_MODE
+    ? policy.schemaVersion === SELECTIVE_CAMPAIGN_POLICY_SCHEMA_VERSION && policy.policyType === SELECTIVE_CAMPAIGN_POLICY_TYPE
+    : policy.schemaVersion === CAMPAIGN_POLICY_SCHEMA_VERSION && policy.policyType === CAMPAIGN_POLICY_TYPE;
+  if (!identityOk) throw new Error("campaign policy identity mismatch");
   if (policy.requiredSignerFingerprint !== PINNED_SIGNER) throw new Error("campaign policy signer mismatch");
   if (policy.pass?.mode !== mode || !MODES.has(mode)) throw new Error("campaign policy mode mismatch");
   /** @param {unknown} value */
