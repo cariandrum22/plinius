@@ -827,6 +827,34 @@ describe("detached-signature campaign policy", () => {
     expect(h3r2b.cells[0]).toMatchObject({ benchmark: OIDC_BENCHMARK_ID, sentinel: true });
     expect(h3r2b.pass.historicalSentinel).toBeNull();
   });
+
+  it("loads H3R3A and H3R3B as isolated recovery campaigns", async () => {
+    const h3r3a = parsePaidCampaignPolicy(
+      await readFile(join(process.cwd(), "policy", "qualification-selective-h3r3a-paid-2026-09-03-r1.json")),
+      "diagnostic-selective-paid-r1",
+      "2026-09-03T00:05:00Z",
+    );
+    const h3r3b = parsePaidCampaignPolicy(
+      await readFile(join(process.cwd(), "policy", "qualification-broad-h3r3b-paid-2026-09-03-r1.json")),
+      "diagnostic-broad-paid-r1",
+      "2026-09-03T00:05:00Z",
+    );
+    expect(h3r3a.pass.campaignId).not.toBe(h3r3b.pass.campaignId);
+    expect(h3r3a.pass.stageId).not.toBe(h3r3b.pass.stageId);
+    expect(h3r3a.pass.budget).toEqual({ totalCapUsd: 0.5, perRunCapUsd: 0.25 });
+    expect(h3r3a.cells.map((cell) => cell.benchmark)).toEqual(["arch-exactly-once-003", "formal-spec-idempotent-api-003"]);
+    expect(h3r3a.pass.historicalSentinel).toMatchObject({
+      target: "meta/muse-spark-1.2-20260805",
+      runId: "run-d7ef9dfa8031eec2",
+      generationId: "gen-1788378543-OO5i8vJSMdeDYgMEdFH8",
+      settledCostUsd: 0.022657,
+    });
+    expect(h3r3b.pass.budget).toEqual({ totalCapUsd: 6, perRunCapUsd: 2 });
+    expect(h3r3b.pass.targets.map((target) => target.slug)).toEqual(["anthropic/claude-5-fable-20260609"]);
+    expect(h3r3b.cells).toHaveLength(4);
+    expect(h3r3b.cells[0]).toMatchObject({ benchmark: OIDC_BENCHMARK_ID, sentinel: true });
+    expect(h3r3b.pass.historicalSentinel).toBeUndefined();
+  });
 });
 
 // --- 2. routing + wire tamper ------------------------------------------------

@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 3,
+  "policyType": "plinius-paid-campaign-policy-v3",
+  "policyId": "plinius-selective-paid-h3r3a-2026-09-03-r1",
+  "issuedAtUtc": "2026-09-03T00:03:57Z",
+  "catalogObservedAtUtc": "2026-09-03T00:01:48Z",
+  "expiresAtUtc": "2026-09-10T00:03:57Z",
+  "requiredSignerFingerprint": "435C9CF0DE7A2C3900FB24357E622B43290C285E",
+  "pass": {
+    "mode": "diagnostic-selective-paid-r1",
+    "campaignId": "plinius-qualification-selective-h3r3a-2026-09-03-r1",
+    "stageId": "plinius-qualification-diagnostic-selective-h3r3a-2026-09-03-r1",
+    "budget": {
+      "totalCapUsd": 0.5,
+      "perRunCapUsd": 0.25
+    },
+    "targets": [
+      {
+        "slug": "meta/muse-spark-1.2-20260805",
+        "catalogModelId": "meta/muse-spark-1.2",
+        "responseModelId": "meta/muse-spark-1.2",
+        "lookupModelId": "meta/muse-spark-1.2-20260805",
+        "providerRoute": "meta",
+        "providerDisplay": "Meta",
+        "priceCeiling": {
+          "inputPerMTokens": 1.25,
+          "outputPerMTokens": 4.25
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": 1,
+          "seed": null
+        }
+      }
+    ],
+    "sentinelScope": "per-model",
+    "selectedCells": [
+      {
+        "target": "meta/muse-spark-1.2-20260805",
+        "benchmark": "arch-exactly-once-003",
+        "sentinelKind": "none"
+      },
+      {
+        "target": "meta/muse-spark-1.2-20260805",
+        "benchmark": "formal-spec-idempotent-api-003",
+        "sentinelKind": "none"
+      }
+    ],
+    "historicalSentinel": {
+      "kind": "historical",
+      "target": "meta/muse-spark-1.2-20260805",
+      "benchmark": "sec-oidc-id-token-validation-001",
+      "runId": "run-d7ef9dfa8031eec2",
+      "generationId": "gen-1788378543-OO5i8vJSMdeDYgMEdFH8",
+      "settledCostUsd": 0.022657,
+      "parentEvidence": {
+        "campaignId": "plinius-qualification-selective-h3r2b-2026-09-02-r1",
+        "stageId": "plinius-qualification-diagnostic-selective-h3r2b-2026-09-02-r1",
+        "evidenceArchive": {
+          "file": "diagnostic-selective-paid-r1-evidence.tar.gz",
+          "sha256": "sha256:4d7685e364a151452fdd6a8aea46151100143c33ca44cb0418c5b6b29ac64788"
+        },
+        "finalManifest": {
+          "file": "paid-pass-manifest-46a1732f350ceb8e7faff9a20cbb455593a05fa7549289add39c578e0e7ba012.json",
+          "sha256": "sha256:46a1732f350ceb8e7faff9a20cbb455593a05fa7549289add39c578e0e7ba012"
+        },
+        "runRecord": {
+          "file": "runs/run-d7ef9dfa8031eec2.json",
+          "sha256": "sha256:21cb6a60c59f2d67daff86b1e844a1c7496c452d560539423f6656ff223f2067"
+        },
+        "verifyReport": {
+          "file": "diagnostic-selective-paid-r1-verify-v3.6.json",
+          "sha256": "sha256:0ffbe1c7cbe8947c60892dbfd482f736a040d9908b174de4078cd311517a1625"
+        },
+        "gateILedger": {
+          "file": "diagnostic-selective-paid-r1-h3r2b-gateI-ledger.csv",
+          "sha256": "sha256:817139526b8147dfd19c5a99fa0a66cee3b98154e71cfcfce1576e3bfbd4a0ba"
+        }
+      }
+    }
+  }
+}

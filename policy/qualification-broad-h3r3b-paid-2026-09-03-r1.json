@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 2,
+  "policyType": "plinius-paid-campaign-policy-v2",
+  "policyId": "plinius-broad-paid-h3r3b-2026-09-03-r1",
+  "issuedAtUtc": "2026-09-03T00:03:57Z",
+  "catalogObservedAtUtc": "2026-09-03T00:01:48Z",
+  "expiresAtUtc": "2026-09-10T00:03:57Z",
+  "requiredSignerFingerprint": "435C9CF0DE7A2C3900FB24357E622B43290C285E",
+  "pass": {
+    "mode": "diagnostic-broad-paid-r1",
+    "campaignId": "plinius-qualification-broad-h3r3b-2026-09-03-r1",
+    "stageId": "plinius-qualification-diagnostic-broad-h3r3b-2026-09-03-r1",
+    "budget": {
+      "totalCapUsd": 6,
+      "perRunCapUsd": 2
+    },
+    "targets": [
+      {
+        "slug": "anthropic/claude-5-fable-20260609",
+        "catalogModelId": "anthropic/claude-fable-5",
+        "responseModelId": "anthropic/claude-fable-5",
+        "lookupModelId": "anthropic/claude-5-fable-20260609",
+        "providerRoute": "anthropic",
+        "providerDisplay": "Anthropic",
+        "priceCeiling": {
+          "inputPerMTokens": 10,
+          "outputPerMTokens": 50
+        },
+        "sampling": {
+          "temperature": null,
+          "topP": null,
+          "seed": null
+        }
+      }
+    ],
+    "sentinelScope": "per-model"
+  }
+}
