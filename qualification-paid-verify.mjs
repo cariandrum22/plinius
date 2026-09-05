@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // @ts-check
-/** Independent post-transfer verifier for policy-driven Paid Pass v3.6 Evidence. */
+/** Independent post-transfer verifier for policy-driven Paid Pass v3.7 Evidence. */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -9,6 +9,7 @@ import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 export const EVIDENCE_SCHEMA_VERSION = 9;
+export const BOUNDED_EVIDENCE_SCHEMA_VERSION = 10;
 export const LEGACY_EVIDENCE_SCHEMA_VERSION = 8;
 export const EXECUTION_SCHEMA_VERSION = 1;
 export const EXECUTION_ARTIFACT_TYPE = "plinius-paid-pass-v3";
@@ -17,6 +18,8 @@ export const CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v2";
 export const CAMPAIGN_POLICY_SCHEMA_VERSION = 2;
 export const SELECTIVE_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v3";
 export const SELECTIVE_CAMPAIGN_POLICY_SCHEMA_VERSION = 3;
+export const BOUNDED_SELECTIVE_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v4";
+export const BOUNDED_SELECTIVE_CAMPAIGN_POLICY_SCHEMA_VERSION = 4;
 export const HISTORICAL_PARENT_DIGESTS = [
   "sha256:5464aac6862ee2b001cae40ac861d43b64abb9b0cd705bfa539252104963c66e",
   "sha256:eba5485902b6fa8307dc4cf1e3ff4c4bf99175f9e63eaedd0c81102332fae86d",
@@ -32,42 +35,59 @@ const BENCHMARKS = new Map([
 const BENCHMARK_ORDER = [...BENCHMARKS.keys()];
 const OIDC_BENCHMARK = "sec-oidc-id-token-validation-001";
 const SELECTIVE_MODE = "diagnostic-selective-paid-r1";
-const ALLOWED_MODES = ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1", SELECTIVE_MODE];
+const BOUNDED_SELECTIVE_MODE = "diagnostic-selective-paid-r2";
+const BOUNDED_SELECTIVE_MAX_TOKENS = 65536;
+const LEGACY_ALLOWED_MODES = ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1", SELECTIVE_MODE];
+const ALLOWED_MODES = [...LEGACY_ALLOWED_MODES, BOUNDED_SELECTIVE_MODE];
 const MODE_CONSTRAINTS = new Map([
   ["diagnostic-hosted-paid-r1", { totalCapUsd: 5, perRunCapUsd: 1, sentinelScope: "global", minTargets: 4, maxTargets: 4, maxCells: 15 }],
   ["diagnostic-candidate-paid-r1", { totalCapUsd: 6, perRunCapUsd: 0.75, sentinelScope: "per-model", minTargets: 4, maxTargets: 4, maxCells: 16 }],
   ["diagnostic-broad-paid-r1", { totalCapUsd: 12, perRunCapUsd: 2, sentinelScope: "per-model", minTargets: 1, maxTargets: 24, maxCells: 96 }],
   [SELECTIVE_MODE, { totalCapUsd: 2, perRunCapUsd: 0.5, sentinelScope: "per-model", minTargets: 1, maxTargets: 1, maxCells: 4 }],
+  [BOUNDED_SELECTIVE_MODE, { totalCapUsd: 2, perRunCapUsd: 0.5, sentinelScope: "per-model", minTargets: 1, maxTargets: 1, maxCells: 4 }],
 ]);
+/** @param {string} mode */
+const isSelectiveMode = (mode) => mode === SELECTIVE_MODE || mode === BOUNDED_SELECTIVE_MODE;
 /** @param {any} policy */
 function cellsForPolicy(policy) {
-  if (policy.pass.mode === SELECTIVE_MODE) {
+  if (isSelectiveMode(policy.pass.mode)) {
     return policy.pass.selectedCells.map((/** @type {any} */ cell) => ({
       target: cell.target,
       benchmark: cell.benchmark,
       sentinel: cell.sentinelKind === "live",
+      maxTokens: policy.pass.mode === BOUNDED_SELECTIVE_MODE ? cell.maxTokens : BENCHMARKS.get(cell.benchmark)?.maxTokens,
     }));
   }
   const targets = policy.pass.targets.map((/** @type {any} */ target) => target.slug);
   if (policy.pass.mode === "diagnostic-hosted-paid-r1") {
-    const cells = [{ target: targets[0], benchmark: OIDC_BENCHMARK, sentinel: true }];
+    const cells = [{ target: targets[0], benchmark: OIDC_BENCHMARK, sentinel: true, maxTokens: BENCHMARKS.get(OIDC_BENCHMARK)?.maxTokens }];
     for (const target of targets) {
       for (const benchmark of BENCHMARK_ORDER) {
         if (target === targets[1] && benchmark === OIDC_BENCHMARK) continue;
         if (target === targets[0] && benchmark === OIDC_BENCHMARK) continue;
-        cells.push({ target, benchmark, sentinel: false });
+        cells.push({ target, benchmark, sentinel: false, maxTokens: BENCHMARKS.get(benchmark)?.maxTokens });
       }
     }
     return cells;
   }
   const cells = [];
   for (const target of targets) {
-    cells.push({ target, benchmark: OIDC_BENCHMARK, sentinel: true });
+    cells.push({ target, benchmark: OIDC_BENCHMARK, sentinel: true, maxTokens: BENCHMARKS.get(OIDC_BENCHMARK)?.maxTokens });
     for (const benchmark of BENCHMARK_ORDER) {
-      if (benchmark !== OIDC_BENCHMARK) cells.push({ target, benchmark, sentinel: false });
+      if (benchmark !== OIDC_BENCHMARK) cells.push({ target, benchmark, sentinel: false, maxTokens: BENCHMARKS.get(benchmark)?.maxTokens });
     }
   }
   return cells;
+}
+
+/** @param {any[]} cells @param {string} mode */
+function selectionCells(cells, mode) {
+  return cells.map((cell) => ({
+    target: cell.target,
+    benchmark: cell.benchmark,
+    sentinelKind: cell.sentinel ? "live" : "none",
+    ...(mode === BOUNDED_SELECTIVE_MODE ? { maxTokens: cell.maxTokens } : {}),
+  }));
 }
 
 /** @param {Buffer | Uint8Array | string} body */
@@ -239,7 +259,9 @@ export function parseCampaignPolicy(body) {
   const policy = JSON.parse(body.toString("utf-8"));
   if (Buffer.from(`${JSON.stringify(policy, null, 2)}\n`, "utf-8").compare(body) !== 0) throw new Error("policy_noncanonical");
   if (!exactKeys(policy, ["schemaVersion", "policyType", "policyId", "issuedAtUtc", "catalogObservedAtUtc", "expiresAtUtc", "requiredSignerFingerprint", "pass"])) throw new Error("policy_fields");
-  const selective = policy.schemaVersion === SELECTIVE_CAMPAIGN_POLICY_SCHEMA_VERSION && policy.policyType === SELECTIVE_CAMPAIGN_POLICY_TYPE;
+  const selectiveR1 = policy.schemaVersion === SELECTIVE_CAMPAIGN_POLICY_SCHEMA_VERSION && policy.policyType === SELECTIVE_CAMPAIGN_POLICY_TYPE;
+  const selectiveR2 = policy.schemaVersion === BOUNDED_SELECTIVE_CAMPAIGN_POLICY_SCHEMA_VERSION && policy.policyType === BOUNDED_SELECTIVE_CAMPAIGN_POLICY_TYPE;
+  const selective = selectiveR1 || selectiveR2;
   const legacy = policy.schemaVersion === CAMPAIGN_POLICY_SCHEMA_VERSION && policy.policyType === CAMPAIGN_POLICY_TYPE;
   if ((!legacy && !selective) || policy.requiredSignerFingerprint !== PINNED_SIGNER) throw new Error("policy_identity");
   if (typeof policy.policyId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(policy.policyId)) throw new Error("policy_id");
@@ -252,7 +274,7 @@ export function parseCampaignPolicy(body) {
     ? ["mode", "campaignId", "stageId", "budget", "targets", "sentinelScope", "selectedCells", "historicalSentinel"]
     : ["mode", "campaignId", "stageId", "budget", "targets", "sentinelScope"];
   if (!exactKeys(pass, passFields)) throw new Error("policy_pass_fields");
-  if (selective !== (pass.mode === SELECTIVE_MODE)) throw new Error("policy_mode_identity");
+  if (selectiveR1 !== (pass.mode === SELECTIVE_MODE) || selectiveR2 !== (pass.mode === BOUNDED_SELECTIVE_MODE)) throw new Error("policy_mode_identity");
   if (typeof pass.campaignId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,127}$/.test(pass.campaignId) || typeof pass.stageId !== "string" || !/^[a-z0-9][a-z0-9._-]{7,159}$/.test(pass.stageId)) throw new Error("policy_pass_identity");
   const caps = MODE_CONSTRAINTS.get(pass.mode);
   if (caps == null || pass.sentinelScope !== caps.sentinelScope) throw new Error("policy_mode");
@@ -292,8 +314,11 @@ export function parseCampaignPolicy(body) {
     if (!Array.isArray(pass.selectedCells) || pass.selectedCells.length < 1 || pass.selectedCells.length > caps.maxCells) throw new Error("policy_selective_cells");
     const selected = new Set();
     for (const [index, cell] of pass.selectedCells.entries()) {
-      if (!exactKeys(cell, ["target", "benchmark", "sentinelKind"])) throw new Error("policy_selective_cell_fields");
+      const cellFields = selectiveR2 ? ["target", "benchmark", "sentinelKind", "maxTokens"] : ["target", "benchmark", "sentinelKind"];
+      if (!exactKeys(cell, cellFields)) throw new Error("policy_selective_cell_fields");
       if (cell.target !== pass.targets[0].slug || !BENCHMARKS.has(cell.benchmark) || (cell.sentinelKind !== "live" && cell.sentinelKind !== "none")) throw new Error("policy_selective_cell");
+      const baselineMaxTokens = BENCHMARKS.get(cell.benchmark)?.maxTokens;
+      if (selectiveR2 && (baselineMaxTokens == null || !Number.isSafeInteger(cell.maxTokens) || cell.maxTokens < baselineMaxTokens || cell.maxTokens > BOUNDED_SELECTIVE_MAX_TOKENS)) throw new Error("policy_selective_max_tokens");
       const key = `${cell.target}\u0000${cell.benchmark}`;
       if (selected.has(key)) throw new Error("policy_selective_cell_duplicate");
       selected.add(key);
@@ -335,7 +360,7 @@ export function parseCampaignPolicy(body) {
     cells,
     historicalSentinel,
     parentInputs,
-    identity: { campaignId: pass.campaignId, stageId: pass.stageId, policyId: policy.policyId, mode: pass.mode, totalCells: cells.length, totalCapUsd: pass.budget.totalCapUsd, perRunCapUsd: pass.budget.perRunCapUsd, issued, expires, parentInputCount: parentInputs.length, evidenceSchemaVersion: selective ? EVIDENCE_SCHEMA_VERSION : LEGACY_EVIDENCE_SCHEMA_VERSION },
+    identity: { campaignId: pass.campaignId, stageId: pass.stageId, policyId: policy.policyId, mode: pass.mode, totalCells: cells.length, totalCapUsd: pass.budget.totalCapUsd, perRunCapUsd: pass.budget.perRunCapUsd, issued, expires, parentInputCount: parentInputs.length, evidenceSchemaVersion: selectiveR2 ? BOUNDED_EVIDENCE_SCHEMA_VERSION : selectiveR1 ? EVIDENCE_SCHEMA_VERSION : LEGACY_EVIDENCE_SCHEMA_VERSION },
   };
 }
 
@@ -442,7 +467,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
     const manifestBytes = readFileSync(manifestPath);
     require("manifest_content_address", manifestFile.endsWith(`${sha256(manifestBytes).slice(7)}.json`));
     const manifest = JSON.parse(manifestBytes.toString("utf-8"));
-    require("manifest_schema", manifest.manifestSchemaVersion === EVIDENCE_SCHEMA_VERSION || manifest.manifestSchemaVersion === LEGACY_EVIDENCE_SCHEMA_VERSION);
+    require("manifest_schema", manifest.manifestSchemaVersion === BOUNDED_EVIDENCE_SCHEMA_VERSION || manifest.manifestSchemaVersion === EVIDENCE_SCHEMA_VERSION || manifest.manifestSchemaVersion === LEGACY_EVIDENCE_SCHEMA_VERSION);
     let identity = null;
     let policyDocument = null;
     let policyTargets = new Map();
@@ -509,7 +534,8 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       require("execution_manifest_signer", executionManifest.requiredSignerFingerprint === PINNED_SIGNER);
       require("execution_manifest_source", /^[0-9a-f]{40}$/.test(executionManifest.source?.commit ?? "") && /^[0-9a-f]{40}$/.test(executionManifest.source?.tree ?? ""));
       require("execution_manifest_entrypoints", executionManifest.launcher === "qualification-paid-launch.mjs" && executionManifest.runner === "qualification-driver.mjs" && executionManifest.verifier === "qualification-paid-verify.mjs");
-      require("execution_manifest_mode", Array.isArray(executionManifest.allowedModes) && json([...executionManifest.allowedModes].sort()) === json([...ALLOWED_MODES].sort()));
+      const allowedModeSet = Array.isArray(executionManifest.allowedModes) ? json([...executionManifest.allowedModes].sort()) : "";
+      require("execution_manifest_mode", allowedModeSet === json([...ALLOWED_MODES].sort()) || allowedModeSet === json([...LEGACY_ALLOWED_MODES].sort()));
       require("execution_manifest_files", Array.isArray(executionManifest.files) && executionManifest.files.some((/** @type {any} */ file) => file.path === "qualification-paid-launch.mjs" && file.role === "launcher") && executionManifest.files.some((/** @type {any} */ file) => file.path === "qualification-driver.mjs" && file.role === "runner") && executionManifest.files.some((/** @type {any} */ file) => file.path === "qualification-paid-verify.mjs" && file.role === "verifier"));
       const executionPaths = new Set();
       for (const file of executionManifest.files ?? []) {
@@ -541,9 +567,10 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       require("manifest_policy", manifest.policyId === identity.policyId);
       require("manifest_stage", manifest.stageId === identity.stageId);
       require("manifest_campaign", manifest.campaignId === identity.campaignId);
-      if (identity.mode === SELECTIVE_MODE) {
+      require("execution_manifest_policy_mode", Array.isArray(executionManifest?.allowedModes) && executionManifest.allowedModes.includes(identity.mode));
+      if (isSelectiveMode(identity.mode)) {
         const expectedSelection = {
-          cells: parsed.cells.map((/** @type {any} */ cell) => ({ target: cell.target, benchmark: cell.benchmark, sentinelKind: cell.sentinel ? "live" : "none" })),
+          cells: selectionCells(parsed.cells, identity.mode),
           historicalSentinel: parsed.historicalSentinel,
         };
         require("manifest_selection", json(manifest.selection) === json(expectedSelection));
@@ -572,7 +599,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       reasons.push(`execution_attestation_parse:${error instanceof Error ? error.message : String(error)}`);
     }
     const parsedPolicy = parseCampaignPolicy(campaignPolicyInner ?? Buffer.alloc(0));
-    const expectedParentInputs = identity.mode === SELECTIVE_MODE
+    const expectedParentInputs = isSelectiveMode(identity.mode)
       ? parsedPolicy.parentInputs
       : (options.parentDigests ?? HISTORICAL_PARENT_DIGESTS).map((sha256, index) => ({ file: `legacy-parent-${index}`, sha256 }));
     require("parent_digest_policy", expectedParentInputs.length === identity.parentInputCount);
@@ -587,12 +614,12 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
         const decoded = decodeEnvelope(body);
         parentInnerBodies.push(decoded.inner);
         require(`parent_digest:${index}`, decoded.envelope.sha256 === expectedParentInputs[index].sha256);
-        if (identity.mode === SELECTIVE_MODE) require(`parent_basename:${index}`, decoded.envelope.sourceBasename === basename(expectedParentInputs[index].file));
+        if (isSelectiveMode(identity.mode)) require(`parent_basename:${index}`, decoded.envelope.sourceBasename === basename(expectedParentInputs[index].file));
       } catch (error) {
         reasons.push(`parent_envelope:${index}:${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    if (identity.mode === SELECTIVE_MODE && parsedPolicy.historicalSentinel != null && parentInnerBodies.length === expectedParentInputs.length) {
+    if (isSelectiveMode(identity.mode) && parsedPolicy.historicalSentinel != null && parentInnerBodies.length === expectedParentInputs.length) {
       reasons.push(...verifyHistoricalSentinelParents(parsedPolicy.historicalSentinel, policyTargets.get(parsedPolicy.historicalSentinel.target), parentInnerBodies));
     }
 
@@ -647,7 +674,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
         require(`catalog_provider_display:${slug}`, display.length > 0 && display === target.providerDisplay);
         if (display.length > 0) providerDisplay[slug] = display;
         const maxPrompt = Math.max(...passCells.filter((cell) => cell.target === slug).map((cell) => BENCHMARKS.get(cell.benchmark)?.promptTokens ?? Number.POSITIVE_INFINITY));
-        const maxTokens = Math.max(...passCells.filter((cell) => cell.target === slug).map((cell) => BENCHMARKS.get(cell.benchmark)?.maxTokens ?? Number.POSITIVE_INFINITY));
+        const maxTokens = Math.max(...passCells.filter((cell) => cell.target === slug).map((cell) => cell.maxTokens ?? Number.POSITIVE_INFINITY));
         require(`catalog_context:${slug}`, Number.isFinite(endpoint.context_length) && endpoint.context_length >= maxPrompt + maxTokens);
         require(`catalog_completion:${slug}`, endpoint.max_completion_tokens == null || (Number.isFinite(endpoint.max_completion_tokens) && endpoint.max_completion_tokens >= maxTokens));
         const supported = new Set(Array.isArray(endpoint.supported_parameters) ? endpoint.supported_parameters : []);
@@ -663,12 +690,12 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       const totalCeiling = passCells.reduce((sum, cell) => {
         const target = policyTargets.get(cell.target);
         const benchmark = BENCHMARKS.get(cell.benchmark);
-        return target && benchmark ? sum + (benchmark.promptTokens * target.prompt + benchmark.maxTokens * target.completion) / 1_000_000 : Number.POSITIVE_INFINITY;
+        return target && benchmark && Number.isSafeInteger(cell.maxTokens) ? sum + (benchmark.promptTokens * target.prompt + cell.maxTokens * target.completion) / 1_000_000 : Number.POSITIVE_INFINITY;
       }, 0);
       require("catalog_budget_ceiling", Number.isFinite(totalCeiling) && totalCeiling <= identity.totalCapUsd && passCells.every((cell) => {
         const target = policyTargets.get(cell.target);
         const benchmark = BENCHMARKS.get(cell.benchmark);
-        return target != null && benchmark != null && (benchmark.promptTokens * target.prompt + benchmark.maxTokens * target.completion) / 1_000_000 <= identity.perRunCapUsd;
+        return target != null && benchmark != null && Number.isSafeInteger(cell.maxTokens) && (benchmark.promptTokens * target.prompt + cell.maxTokens * target.completion) / 1_000_000 <= identity.perRunCapUsd;
       }));
       if (catalog.totalCeilingUsd !== undefined) {
         require("catalog_total_ceiling", finiteNonnegative(catalog.totalCeilingUsd) && Math.abs(catalog.totalCeilingUsd - totalCeiling) < 1e-12);
@@ -756,7 +783,7 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
           if (target.seed !== null) expectedKeys.push("seed");
           require(`request_keys:${runId}`, json(Object.keys(request).sort()) === json(expectedKeys.sort()));
           require(`request_model:${runId}`, request.model === record.requestedSlug && requests[0]?.url === "https://openrouter.ai/api/v1/chat/completions" && requests[0]?.method === "POST" && request.stream === false);
-          require(`request_sampling:${runId}`, (request.temperature ?? null) === target.temperature && (request.top_p ?? null) === target.topP && (request.seed ?? null) === target.seed && request.max_tokens === record.sampling?.maxTokens);
+          require(`request_sampling:${runId}`, (request.temperature ?? null) === target.temperature && (request.top_p ?? null) === target.topP && (request.seed ?? null) === target.seed && request.max_tokens === expectedCell?.maxTokens && request.max_tokens === record.sampling?.maxTokens);
           require(`request_messages:${runId}`, json(request.messages) === json([{ role: "system", content: record.promptSnapshot?.systemPrompt }, { role: "user", content: record.promptSnapshot?.userPrompt }]));
           require(`request_routing:${runId}`, json(request.provider) === json({ order: [target.route], allow_fallbacks: false, require_parameters: true, max_price: { prompt: target.prompt, completion: target.completion } }));
         }
@@ -829,9 +856,9 @@ export function verifyPaidEvidence(evidenceRoot, options = {}) {
       require("summary_budget", summary.budget?.totalCapUsd === identity.totalCapUsd && summary.budget?.perRunCapUsd === identity.perRunCapUsd);
       require("summary_counts", summary.totalCells === identity.totalCells && summary.dispatched === records.size && summary.passed === passed && summary.failed === failed && summary.dispatched === summary.passed + summary.failed);
       require("summary_skipped", Number.isSafeInteger(summary.skipped) && summary.skipped >= 0 && summary.dispatched + summary.skipped <= identity.totalCells);
-      if (identity.mode === SELECTIVE_MODE) {
+      if (isSelectiveMode(identity.mode)) {
         const expectedSelection = {
-          cells: passCells.map((cell) => ({ target: cell.target, benchmark: cell.benchmark, sentinelKind: cell.sentinel ? "live" : "none" })),
+          cells: selectionCells(passCells, identity.mode),
           historicalSentinel: parsedPolicy.historicalSentinel,
         };
         require("summary_selection", json(summary.selection) === json(expectedSelection));

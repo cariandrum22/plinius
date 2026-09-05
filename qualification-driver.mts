@@ -108,7 +108,7 @@ import {
   buildProviderRouting,
   parsePaidCampaignPolicy,
   paidUsedParams,
-  paidCellMaxTokens,
+  paidCellMaxTokensForPass,
   estimateCellCeilingUsd,
   checkBudgetBeforeDispatch,
   validatePaidActualCost,
@@ -120,7 +120,6 @@ import {
   verifyContentAddressedName,
   tokenUpperBound,
   PAID_BENCHMARKS,
-  PAID_REASONING_BUDGET,
   HISTORICAL_SENTINEL_PARENT_ORDER,
   historicalSentinelParentFiles,
   verifyHistoricalSentinelEvidence,
@@ -2641,7 +2640,7 @@ export async function paidPlanCell(pass: PaidPassDefinition, cell: PaidCell, ord
     userPrompt: l.userPrompt,
     rubric: rubric.canonicalString,
   });
-  const maxTokens = paidCellMaxTokens(cell.benchmark);
+  const maxTokens = paidCellMaxTokensForPass(pass, cell);
   // A GUARANTEED token upper bound: every token encodes at least one UTF-8 byte, so
   // the token count never exceeds the byte length (correct for non-ASCII too). Plus
   // a chat-template margin. Over-estimating is the fail-closed budget direction.
@@ -2744,8 +2743,9 @@ export function verifyPaidCatalog(
   const targetBySlug = new Map(pass.targets.map((t) => [t.slug, t]));
   const maxPromptBound = Math.max(0, ...[...promptTokensByBenchmark.values()]);
   for (const target of pass.targets) {
+    const targetCells = cells.filter((cell) => cell.target === target.slug);
     const need: CatalogVerifyNeed = {
-      maxTokens: Math.max(...PAID_BENCHMARKS.map((b) => b.finalBudget)) + PAID_REASONING_BUDGET,
+      maxTokens: Math.max(...targetCells.map((cell) => paidCellMaxTokensForPass(pass, cell))),
       promptTokens: maxPromptBound,
       usedParams: paidUsedParams(target),
     };
@@ -2768,7 +2768,7 @@ export function verifyPaidCatalog(
       reasons.push(`budget:no_prompt_bound:${cell.benchmark}`);
       continue;
     }
-    const est = estimateCellCeilingUsd(target, promptBound, paidCellMaxTokens(cell.benchmark));
+    const est = estimateCellCeilingUsd(target, promptBound, paidCellMaxTokensForPass(pass, cell));
     if (est > pass.budget.perRunCapUsd) reasons.push(`budget:per_run_ceiling_exceeded:${cell.target}x${cell.benchmark}`);
     totalCeiling += est;
   }
@@ -3103,7 +3103,9 @@ class PaidPermitPool {
  * pass; a per-model sentinel failure skips only that model's remaining cells.
  */
 export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPassResult> {
-  if (opts.pass.mode === "diagnostic-selective-paid-r1") {
+  const selective = opts.pass.mode === "diagnostic-selective-paid-r1" || opts.pass.mode === "diagnostic-selective-paid-r2";
+  const boundedSelective = opts.pass.mode === "diagnostic-selective-paid-r2";
+  if (selective) {
     const expected = buildSelectivePaidCells(
       opts.pass.targets,
       opts.pass.selectedCells ?? [],
@@ -3577,13 +3579,14 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       policyId: opts.pass.policyId,
       skippedGroups: orderedSkippedGroups,
       execution,
-      ...(opts.pass.mode === "diagnostic-selective-paid-r1"
+      ...(selective
         ? {
             selection: {
               cells: opts.cells.map((cell) => ({
                 target: cell.target,
                 benchmark: cell.benchmark,
                 sentinelKind: cell.sentinel ? "live" : "none",
+                ...(boundedSelective ? { maxTokens: paidCellMaxTokensForPass(opts.pass, cell) } : {}),
               })),
               historicalSentinel: opts.pass.historicalSentinel ?? null,
             },
@@ -3627,17 +3630,18 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       summary: { file: summaryHandle.file, sha256: summaryHandle.sha256, bytes: summaryHandle.bytes },
     };
     const candidateManifest = {
-      manifestSchemaVersion: opts.pass.mode === "diagnostic-selective-paid-r1" ? 9 : 8,
+      manifestSchemaVersion: boundedSelective ? 10 : selective ? 9 : 8,
       campaignId: opts.pass.campaignId,
       stageId: opts.pass.stageId,
       policyId: opts.pass.policyId,
-      ...(opts.pass.mode === "diagnostic-selective-paid-r1"
+      ...(selective
         ? {
             selection: {
               cells: opts.cells.map((cell) => ({
                 target: cell.target,
                 benchmark: cell.benchmark,
                 sentinelKind: cell.sentinel ? "live" : "none",
+                ...(boundedSelective ? { maxTokens: paidCellMaxTokensForPass(opts.pass, cell) } : {}),
               })),
               historicalSentinel: opts.pass.historicalSentinel ?? null,
             },
@@ -3684,7 +3688,7 @@ export async function runPaidPass(opts: RunPaidPassOptions): Promise<RunPaidPass
       diskFiles: diskFilesAcc,
       statFile: statForVerify,
       executingUid: typeof process.getuid === "function" ? process.getuid() : undefined,
-      expectedSchemaVersion: opts.pass.mode === "diagnostic-selective-paid-r1" ? 9 : 8,
+      expectedSchemaVersion: boundedSelective ? 10 : selective ? 9 : 8,
       expectedCampaignId: opts.pass.campaignId,
       expectedStageId: opts.pass.stageId,
       expectedParentInputCount: opts.parentInputExpectedSha256?.length ?? 0,
@@ -3800,7 +3804,7 @@ async function paidMain(
   let parentInputPaths: string[];
   let parentInputExpectedSha256: string[];
   let verifyParentEvidence: () => { ok: boolean };
-  if (mode === "diagnostic-selective-paid-r1") {
+  if (mode === "diagnostic-selective-paid-r1" || mode === "diagnostic-selective-paid-r2") {
     const historical = loadedPolicy.pass.historicalSentinel ?? null;
     if (historical == null) {
       parentInputPaths = [];
@@ -4095,8 +4099,9 @@ export function resolveDriverMode(
   if (raw === "diagnostic-candidate-paid-r1") return "diagnostic-candidate-paid-r1";
   if (raw === "diagnostic-broad-paid-r1") return "diagnostic-broad-paid-r1";
   if (raw === "diagnostic-selective-paid-r1") return "diagnostic-selective-paid-r1";
+  if (raw === "diagnostic-selective-paid-r2") return "diagnostic-selective-paid-r2";
   throw new Error(
-    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default, diagnostic-one-shot-r1, diagnostic-hosted-paid-r1, diagnostic-candidate-paid-r1, diagnostic-broad-paid-r1 or diagnostic-selective-paid-r1`,
+    `unknown or absent driver mode ${JSON.stringify(raw)}; set PLINIUS_DRIVER_MODE=default, diagnostic-one-shot-r1, diagnostic-hosted-paid-r1, diagnostic-candidate-paid-r1, diagnostic-broad-paid-r1, diagnostic-selective-paid-r1 or diagnostic-selective-paid-r2`,
   );
 }
 
@@ -4120,7 +4125,7 @@ if (typeof __PLINIUS_PAID_BUNDLE__ === "undefined" && invokedDirectly()) {
   const mode = resolveDriverMode(process.env.PLINIUS_DRIVER_MODE);
   // A paid bundle is imported by the externally verified artifact launcher. Executing
   // the source or bundle directly never reaches the paid entrypoint.
-  if (mode === "diagnostic-hosted-paid-r1" || mode === "diagnostic-candidate-paid-r1" || mode === "diagnostic-broad-paid-r1" || mode === "diagnostic-selective-paid-r1") {
+  if (mode === "diagnostic-hosted-paid-r1" || mode === "diagnostic-candidate-paid-r1" || mode === "diagnostic-broad-paid-r1" || mode === "diagnostic-selective-paid-r1" || mode === "diagnostic-selective-paid-r2") {
     console.error(`DRIVER ERROR: paid mode ${mode} must be launched through qualification-paid-launch.mjs, not the driver directly`);
     process.exit(1);
   }

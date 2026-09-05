@@ -23,7 +23,8 @@ export type PaidArtifactMode =
   | "diagnostic-hosted-paid-r1"
   | "diagnostic-candidate-paid-r1"
   | "diagnostic-broad-paid-r1"
-  | "diagnostic-selective-paid-r1";
+  | "diagnostic-selective-paid-r1"
+  | "diagnostic-selective-paid-r2";
 
 export interface PaidExecutionFile {
   path: string;

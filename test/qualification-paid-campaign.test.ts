@@ -65,6 +65,7 @@ import {
   BROAD_PAID_MAX_CELLS,
   BROAD_PAID_MAX_TARGETS,
   buildSelectivePaidCells,
+  paidCellMaxTokensForPass,
   verifyHistoricalSentinelEvidence,
 } from "../src/qualification/paid-campaign.js";
 import type {
@@ -87,7 +88,7 @@ import type { FetchFn } from "../src/backends/openai-compatible.js";
 const OR_BASE = "https://openrouter.ai/api/v1";
 const CHAT_URL = `${OR_BASE}/chat/completions`;
 const DISPLAY = "TestProvider";
-const ALL_PAID_MODES = ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1", "diagnostic-selective-paid-r1"] as const;
+const ALL_PAID_MODES = ["diagnostic-hosted-paid-r1", "diagnostic-candidate-paid-r1", "diagnostic-broad-paid-r1", "diagnostic-selective-paid-r1", "diagnostic-selective-paid-r2"] as const;
 
 // --- helpers -----------------------------------------------------------------
 
@@ -321,10 +322,11 @@ const fileSha = async (p: string) => "sha256:" + createHash("sha256").update(awa
 
 function policyBodyFor(pass: any): string {
   const { policyId, ...unsignedPass } = pass;
-  const selective = pass.mode === "diagnostic-selective-paid-r1";
+  const selectiveR1 = pass.mode === "diagnostic-selective-paid-r1";
+  const selectiveR2 = pass.mode === "diagnostic-selective-paid-r2";
   return `${JSON.stringify({
-    schemaVersion: selective ? 3 : 2,
-    policyType: selective ? "plinius-paid-campaign-policy-v3" : "plinius-paid-campaign-policy-v2",
+    schemaVersion: selectiveR2 ? 4 : selectiveR1 ? 3 : 2,
+    policyType: selectiveR2 ? "plinius-paid-campaign-policy-v4" : selectiveR1 ? "plinius-paid-campaign-policy-v3" : "plinius-paid-campaign-policy-v2",
     policyId,
     issuedAtUtc: "2026-08-28T00:00:00Z",
     catalogObservedAtUtc: "2026-08-28T00:00:00Z",
@@ -374,6 +376,20 @@ function selectivePass(
     selectedCells,
     historicalSentinel,
     policyId: "plinius-selective-paid-test-r1",
+  };
+}
+
+function boundedSelectivePass(
+  target: PaidTarget,
+  selectedCells: Array<{ target: string; benchmark: string; sentinelKind: "live" | "none"; maxTokens: number }>,
+  historicalSentinel: HistoricalSentinelRequirement | null,
+): any {
+  return {
+    ...selectivePass(target, selectedCells, historicalSentinel),
+    mode: "diagnostic-selective-paid-r2",
+    campaignId: "plinius-qualification-selective-bounded-test-r1",
+    stageId: "plinius-qualification-diagnostic-selective-bounded-test-r1",
+    policyId: "plinius-selective-bounded-paid-test-r1",
   };
 }
 
@@ -530,7 +546,7 @@ async function setupPaidRun(
   ]);
   const totalCeilingUsd = cells.reduce((sum, cell) => {
     const target = pass.targets.find((item: PaidTarget) => item.slug === cell.target) as PaidTarget;
-    const maxTokens = cell.benchmark === "arch-exactly-once-003" ? 28672 : 24576;
+    const maxTokens = paidCellMaxTokensForPass(pass, cell);
     return sum + ((promptBounds.get(cell.benchmark) ?? Number.POSITIVE_INFINITY) * target.priceCeiling.inputPerMTokens + maxTokens * target.priceCeiling.outputPerMTokens) / 1_000_000;
   }, 0);
   const catalogBody = JSON.stringify({
@@ -565,7 +581,8 @@ async function setupPaidRun(
     campaignPolicySignerFingerprint: PAID_CAMPAIGN_POLICY_SIGNER,
   });
   const att = finalizeArtifact(root, `paid-execution-attestation-${sha256Hex(attBody)}.json`, attBody, lock);
-  const parentInputPaths = parentInputPathsOverride ?? (pass.mode === "diagnostic-selective-paid-r1" ? [] : anchorPaths.parentInputPaths);
+  const selective = pass.mode === "diagnostic-selective-paid-r1" || pass.mode === "diagnostic-selective-paid-r2";
+  const parentInputPaths = parentInputPathsOverride ?? (selective ? [] : anchorPaths.parentInputPaths);
   const parentInputExpectedSha256 = await Promise.all(parentInputPaths.map(fileSha));
   // Mirror the bootstrap: COPY + digest-verify the anchors into the root before the run.
   const anchors = copyPaidAnchorsIntoRoot(lock, root, {
@@ -632,6 +649,7 @@ describe("paid pass fixed definitions", () => {
     expect(resolveDriverMode("diagnostic-candidate-paid-r1")).toBe("diagnostic-candidate-paid-r1");
     expect(resolveDriverMode("diagnostic-broad-paid-r1")).toBe("diagnostic-broad-paid-r1");
     expect(resolveDriverMode("diagnostic-selective-paid-r1")).toBe("diagnostic-selective-paid-r1");
+    expect(resolveDriverMode("diagnostic-selective-paid-r2")).toBe("diagnostic-selective-paid-r2");
     expect(() => resolveDriverMode(undefined)).toThrow();
   });
 });
@@ -792,6 +810,70 @@ describe("detached-signature campaign policy", () => {
       })),
     };
     expect(() => parsePaidCampaignPolicy(Buffer.from(policyBodyFor(accidentalBroadExpansion)), "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/target count/);
+  });
+
+  it("keeps policy-v3 request ceilings byte-compatible and rejects a v4 field", async () => {
+    const target = broadTarget(31);
+    const selectedCells = [
+      { target: target.slug, benchmark: OIDC_BENCHMARK_ID, sentinelKind: "live" as const },
+      { target: target.slug, benchmark: "formal-spec-idempotent-api-003", sentinelKind: "none" as const },
+    ];
+    const pass = selectivePass(target, selectedCells, null);
+    const loaded = parsePaidCampaignPolicy(Buffer.from(policyBodyFor(pass)), "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z");
+    const formalPlan = await paidPlanCell(loaded.pass, loaded.cells[1], 2);
+    expect(formalPlan.maxTokens).toBe(24576);
+    expect(formalPlan.req.maxTokens).toBe(24576);
+    expect(loaded.pass.selectedCells).toEqual(selectedCells);
+
+    const drifted = selectivePass(target, selectedCells.map((cell) => ({ ...cell, maxTokens: 49152 })), null);
+    expect(() => parsePaidCampaignPolicy(Buffer.from(policyBodyFor(drifted)), "diagnostic-selective-paid-r1", "2026-08-29T00:00:00Z")).toThrow(/field set/);
+    expect(() => parseCampaignPolicy(Buffer.from(policyBodyFor(drifted)))).toThrow(/cell_fields/);
+  });
+
+  it("binds policy-v4 per-cell maxTokens and rejects absent, low, high, or fractional ceilings", async () => {
+    const target = broadTarget(32);
+    const selectedCells = [
+      { target: target.slug, benchmark: OIDC_BENCHMARK_ID, sentinelKind: "live" as const, maxTokens: 24576 },
+      { target: target.slug, benchmark: "formal-spec-idempotent-api-003", sentinelKind: "none" as const, maxTokens: 49152 },
+    ];
+    const pass = boundedSelectivePass(target, selectedCells, null);
+    const bytes = Buffer.from(policyBodyFor(pass));
+    const loaded = parsePaidCampaignPolicy(bytes, "diagnostic-selective-paid-r2", "2026-08-29T00:00:00Z");
+    const independent = parseCampaignPolicy(bytes);
+    expect(loaded.cells).toHaveLength(2);
+    expect(loaded.pass.selectedCells).toEqual(selectedCells);
+    expect(independent.identity).toMatchObject({ totalCells: 2, parentInputCount: 0, evidenceSchemaVersion: 10 });
+    expect(independent.cells.map((cell: any) => cell.maxTokens)).toEqual([24576, 49152]);
+    const formalPlan = await paidPlanCell(loaded.pass, loaded.cells[1], 2);
+    expect(formalPlan.maxTokens).toBe(49152);
+    expect(formalPlan.req.maxTokens).toBe(49152);
+
+    const encode = (cells: any[]) => Buffer.from(policyBodyFor(boundedSelectivePass(target, cells, null)));
+    expect(() => parsePaidCampaignPolicy(encode([{ ...selectedCells[0], maxTokens: undefined }]), "diagnostic-selective-paid-r2", "2026-08-29T00:00:00Z")).toThrow(/field set/);
+    expect(() => parsePaidCampaignPolicy(encode([{ ...selectedCells[0], maxTokens: 24575 }]), "diagnostic-selective-paid-r2", "2026-08-29T00:00:00Z")).toThrow(/maxTokens/);
+    expect(() => parsePaidCampaignPolicy(encode([{ ...selectedCells[0], maxTokens: 65537 }]), "diagnostic-selective-paid-r2", "2026-08-29T00:00:00Z")).toThrow(/maxTokens/);
+    expect(() => parsePaidCampaignPolicy(encode([{ ...selectedCells[0], maxTokens: 24576.5 }]), "diagnostic-selective-paid-r2", "2026-08-29T00:00:00Z")).toThrow(/maxTokens/);
+    expect(() => parseCampaignPolicy(encode([{ ...selectedCells[0], maxTokens: 24575 }]))).toThrow(/max_tokens/);
+
+    const catalog = goodCatalog([target]);
+    catalog.get(target.slug)!.endpoints[0].maxCompletionTokens = 48_000;
+    const checked = verifyPaidCatalog(loaded.pass, loaded.cells, catalog, promptMap(loaded.cells));
+    expect(checked.ok).toBe(false);
+    expect(checked.reasons).toContain(`${target.slug}:max_completion_insufficient`);
+  });
+
+  it("loads the checked-in Gate J DeepSeek Flash recovery as exactly two bounded cells", async () => {
+    const bytes = await readFile(join(process.cwd(), "policy", "qualification-selective-gatej-r1a-paid-2026-09-05-r1.json"));
+    const loaded = parsePaidCampaignPolicy(bytes, "diagnostic-selective-paid-r2", "2026-09-05T09:00:00Z");
+    expect(loaded.pass.policyId).toBe("plinius-selective-paid-gatej-r1a-2026-09-05-r1");
+    expect(loaded.pass.targets.map((target) => target.slug)).toEqual(["deepseek/deepseek-v4-flash-20260731"]);
+    expect(loaded.pass.budget).toEqual({ totalCapUsd: 0.1, perRunCapUsd: 0.05 });
+    expect(loaded.pass.historicalSentinel).toBeNull();
+    expect(loaded.pass.selectedCells).toEqual([
+      { target: "deepseek/deepseek-v4-flash-20260731", benchmark: OIDC_BENCHMARK_ID, sentinelKind: "live", maxTokens: 24576 },
+      { target: "deepseek/deepseek-v4-flash-20260731", benchmark: "formal-spec-idempotent-api-003", sentinelKind: "none", maxTokens: 65536 },
+    ]);
+    expect(parseCampaignPolicy(bytes).identity).toMatchObject({ totalCells: 2, parentInputCount: 0, evidenceSchemaVersion: 10 });
   });
 
   it("re-derives historical sentinel integrity and rejects digest or verdict tampering", async () => {
@@ -1690,6 +1772,33 @@ describe("runPaidPass orchestration", () => {
     const manifest = JSON.parse(await readFile(join(root, result.manifestFile!), "utf-8"));
     expect(manifest.manifestSchemaVersion).toBe(9);
     expect(manifest.selection.cells).toEqual(selectedCells);
+    const independent = verifyPaidEvidence(root, { verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER });
+    expect(independent.ok, independent.reasons.join("\n")).toBe(true);
+  }, 20_000);
+
+  it("runs a policy-v4 live sentinel plus expanded formal cell and verifies schema-10 Evidence", async () => {
+    const target = broadTarget(44);
+    const selectedCells = [
+      { target: target.slug, benchmark: OIDC_BENCHMARK_ID, sentinelKind: "live" as const, maxTokens: 24576 },
+      { target: target.slug, benchmark: "formal-spec-idempotent-api-003", sentinelKind: "none" as const, maxTokens: 49152 },
+    ];
+    const pass = boundedSelectivePass(target, selectedCells, null);
+    const loaded = parsePaidCampaignPolicy(Buffer.from(policyBodyFor(pass)), "diagnostic-selective-paid-r2", "2026-08-29T00:00:00Z");
+    const root = freshRoot("selective-bounded-live-formal");
+    const result = await runPaidPass(await setupPaidRun(
+      loaded.pass,
+      loaded.cells,
+      root,
+      withWire((_cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 0.01, genId: `gen-${plan.runId}` })),
+    ));
+    expect(result.stopped).toBeNull();
+    expect(result.dispatchedRunIds).toHaveLength(2);
+    expect(result.passed).toBe(2);
+    const manifest = JSON.parse(await readFile(join(root, result.manifestFile!), "utf-8"));
+    expect(manifest.manifestSchemaVersion).toBe(10);
+    expect(manifest.selection.cells).toEqual(selectedCells);
+    const records = await Promise.all(manifest.records.map((ref: any) => readFile(join(root, ref.file), "utf-8").then(JSON.parse)));
+    expect(records.map((record: any) => record.sampling.maxTokens)).toEqual([24576, 49152]);
     const independent = verifyPaidEvidence(root, { verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER });
     expect(independent.ok, independent.reasons.join("\n")).toBe(true);
   }, 20_000);

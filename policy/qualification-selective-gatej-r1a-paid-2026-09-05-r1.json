@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 4,
+  "policyType": "plinius-paid-campaign-policy-v4",
+  "policyId": "plinius-selective-paid-gatej-r1a-2026-09-05-r1",
+  "issuedAtUtc": "2026-09-05T08:37:16Z",
+  "catalogObservedAtUtc": "2026-09-05T08:37:07.387Z",
+  "expiresAtUtc": "2026-09-12T08:30:00Z",
+  "requiredSignerFingerprint": "435C9CF0DE7A2C3900FB24357E622B43290C285E",
+  "pass": {
+    "mode": "diagnostic-selective-paid-r2",
+    "campaignId": "plinius-qualification-gatej-diversity-r1a-2026-09-05",
+    "stageId": "plinius-qualification-diagnostic-selective-gatej-r1a-2026-09-05",
+    "budget": {
+      "totalCapUsd": 0.1,
+      "perRunCapUsd": 0.05
+    },
+    "targets": [
+      {
+        "slug": "deepseek/deepseek-v4-flash-20260731",
+        "catalogModelId": "deepseek/deepseek-v4-flash-0731",
+        "responseModelId": "deepseek/deepseek-v4-flash-0731",
+        "lookupModelId": "deepseek/deepseek-v4-flash-20260731",
+        "providerRoute": "deepinfra/fp8",
+        "providerDisplay": "DeepInfra",
+        "priceCeiling": {
+          "inputPerMTokens": 0.08,
+          "outputPerMTokens": 0.18
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": 1,
+          "seed": 1
+        }
+      }
+    ],
+    "sentinelScope": "per-model",
+    "selectedCells": [
+      {
+        "target": "deepseek/deepseek-v4-flash-20260731",
+        "benchmark": "sec-oidc-id-token-validation-001",
+        "sentinelKind": "live",
+        "maxTokens": 24576
+      },
+      {
+        "target": "deepseek/deepseek-v4-flash-20260731",
+        "benchmark": "formal-spec-idempotent-api-003",
+        "sentinelKind": "none",
+        "maxTokens": 65536
+      }
+    ],
+    "historicalSentinel": null
+  }
+}

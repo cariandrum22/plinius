@@ -192,7 +192,8 @@ export type PaidPassMode =
   | "diagnostic-hosted-paid-r1"
   | "diagnostic-candidate-paid-r1"
   | "diagnostic-broad-paid-r1"
-  | "diagnostic-selective-paid-r1";
+  | "diagnostic-selective-paid-r1"
+  | "diagnostic-selective-paid-r2";
 
 export const BROAD_PAID_MAX_TARGETS = 24;
 export const BROAD_PAID_MAX_CELLS = 96;
@@ -239,6 +240,14 @@ const PAID_MODE_CONSTRAINTS: Record<PaidPassMode, PaidModeConstraints> = {
     maxTargets: 1,
     maxCells: 4,
   },
+  "diagnostic-selective-paid-r2": {
+    totalCapUsd: 2,
+    perRunCapUsd: 0.5,
+    sentinelScope: "per-model",
+    minTargets: 1,
+    maxTargets: 1,
+    maxCells: 4,
+  },
 };
 
 export type SelectiveSentinelKind = "live" | "none";
@@ -247,6 +256,11 @@ export interface SelectivePaidCell {
   target: string;
   benchmark: string;
   sentinelKind: SelectiveSentinelKind;
+}
+
+export interface BoundedSelectivePaidCell extends SelectivePaidCell {
+  /** Exact signed value sent as OpenRouter `max_tokens`. */
+  maxTokens: number;
 }
 
 export interface HistoricalEvidenceFile {
@@ -283,8 +297,8 @@ export interface PaidPassDefinition {
   sentinelScope: SentinelScope;
   /** Detached-signature policy identity bound into all resulting Evidence. */
   policyId: string;
-  /** Present only for policy-v3 selective campaigns. Order is authoritative. */
-  selectedCells?: SelectivePaidCell[];
+  /** Present only for selective campaigns. Order and optional v4 bounds are authoritative. */
+  selectedCells?: Array<SelectivePaidCell | BoundedSelectivePaidCell>;
   /** A verified prior sentinel may replace a live sentinel only in selective mode. */
   historicalSentinel?: HistoricalSentinelRequirement | null;
 }
@@ -293,6 +307,8 @@ export const PAID_CAMPAIGN_POLICY_SCHEMA_VERSION = 2;
 export const PAID_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v2";
 export const SELECTIVE_PAID_CAMPAIGN_POLICY_SCHEMA_VERSION = 3;
 export const SELECTIVE_PAID_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v3";
+export const BOUNDED_SELECTIVE_PAID_CAMPAIGN_POLICY_SCHEMA_VERSION = 4;
+export const BOUNDED_SELECTIVE_PAID_CAMPAIGN_POLICY_TYPE = "plinius-paid-campaign-policy-v4";
 export const PAID_CAMPAIGN_POLICY_SIGNER = "435C9CF0DE7A2C3900FB24357E622B43290C285E";
 const PAID_POLICY_MAX_VALIDITY_MS = 7 * 24 * 60 * 60 * 1000;
 const PAID_POLICY_MAX_CATALOG_AGE_AT_ISSUE_MS = 24 * 60 * 60 * 1000;
@@ -323,7 +339,25 @@ export interface SelectivePaidCampaignPolicyDocument {
   };
 }
 
-export type PaidCampaignPolicyDocument = LegacyPaidCampaignPolicyDocument | SelectivePaidCampaignPolicyDocument;
+export interface BoundedSelectivePaidCampaignPolicyDocument {
+  schemaVersion: 4;
+  policyType: typeof BOUNDED_SELECTIVE_PAID_CAMPAIGN_POLICY_TYPE;
+  policyId: string;
+  issuedAtUtc: string;
+  catalogObservedAtUtc: string;
+  expiresAtUtc: string;
+  requiredSignerFingerprint: typeof PAID_CAMPAIGN_POLICY_SIGNER;
+  pass: Omit<PaidPassDefinition, "policyId"> & {
+    mode: "diagnostic-selective-paid-r2";
+    selectedCells: BoundedSelectivePaidCell[];
+    historicalSentinel: HistoricalSentinelRequirement | null;
+  };
+}
+
+export type PaidCampaignPolicyDocument =
+  | LegacyPaidCampaignPolicyDocument
+  | SelectivePaidCampaignPolicyDocument
+  | BoundedSelectivePaidCampaignPolicyDocument;
 
 export interface LoadedPaidCampaignPolicy {
   document: PaidCampaignPolicyDocument;
@@ -385,10 +419,14 @@ export function parsePaidCampaignPolicy(
   if (!exactObjectKeys(value, ["schemaVersion", "policyType", "policyId", "issuedAtUtc", "catalogObservedAtUtc", "expiresAtUtc", "requiredSignerFingerprint", "pass"])) {
     throw new Error("paid campaign policy field set mismatch");
   }
-  const selective = expectedMode === "diagnostic-selective-paid-r1";
-  const policyIdentityOk = selective
+  const selectiveR1 = expectedMode === "diagnostic-selective-paid-r1";
+  const selectiveR2 = expectedMode === "diagnostic-selective-paid-r2";
+  const selective = selectiveR1 || selectiveR2;
+  const policyIdentityOk = selectiveR1
     ? value.schemaVersion === SELECTIVE_PAID_CAMPAIGN_POLICY_SCHEMA_VERSION && value.policyType === SELECTIVE_PAID_CAMPAIGN_POLICY_TYPE
-    : value.schemaVersion === PAID_CAMPAIGN_POLICY_SCHEMA_VERSION && value.policyType === PAID_CAMPAIGN_POLICY_TYPE;
+    : selectiveR2
+      ? value.schemaVersion === BOUNDED_SELECTIVE_PAID_CAMPAIGN_POLICY_SCHEMA_VERSION && value.policyType === BOUNDED_SELECTIVE_PAID_CAMPAIGN_POLICY_TYPE
+      : value.schemaVersion === PAID_CAMPAIGN_POLICY_SCHEMA_VERSION && value.policyType === PAID_CAMPAIGN_POLICY_TYPE;
   if (!policyIdentityOk) {
     throw new Error("paid campaign policy identity mismatch");
   }
@@ -474,10 +512,18 @@ export function parsePaidCampaignPolicy(
   let cells: PaidCell[];
   if (selective) {
     if (!Array.isArray(passValue.selectedCells)) throw new Error("paid selective cells missing");
-    const selectedCells: SelectivePaidCell[] = passValue.selectedCells.map((raw, index) => {
-      if (!exactObjectKeys(raw, ["target", "benchmark", "sentinelKind"])) throw new Error(`paid selective cell ${index} field set mismatch`);
+    const selectedCells: Array<SelectivePaidCell | BoundedSelectivePaidCell> = passValue.selectedCells.map((raw, index) => {
+      const expectedFields = selectiveR2 ? ["target", "benchmark", "sentinelKind", "maxTokens"] : ["target", "benchmark", "sentinelKind"];
+      if (!exactObjectKeys(raw, expectedFields)) throw new Error(`paid selective cell ${index} field set mismatch`);
       if (typeof raw.target !== "string" || typeof raw.benchmark !== "string" || (raw.sentinelKind !== "live" && raw.sentinelKind !== "none")) {
         throw new Error(`paid selective cell ${index} invalid`);
+      }
+      if (selectiveR2) {
+        const baseline = paidCellMaxTokens(raw.benchmark);
+        if (!Number.isSafeInteger(raw.maxTokens) || Number(raw.maxTokens) < baseline || Number(raw.maxTokens) > BOUNDED_SELECTIVE_MAX_TOKENS) {
+          throw new Error(`paid selective cell ${index} maxTokens invalid`);
+        }
+        return { target: raw.target, benchmark: raw.benchmark, sentinelKind: raw.sentinelKind, maxTokens: Number(raw.maxTokens) };
       }
       return { target: raw.target, benchmark: raw.benchmark, sentinelKind: raw.sentinelKind };
     });
@@ -553,6 +599,7 @@ export const PAID_BENCHMARKS = [
 ] as const;
 
 export const PAID_REASONING_BUDGET = 16384;
+export const BOUNDED_SELECTIVE_MAX_TOKENS = 65536;
 export const OIDC_BENCHMARK_ID = "sec-oidc-id-token-validation-001";
 
 /** Deterministic benchmark order used to lay out cells. */
@@ -563,6 +610,14 @@ export function paidCellMaxTokens(benchmarkId: string): number {
   const b = PAID_BENCHMARKS.find((x) => x.id === benchmarkId);
   if (!b) throw new Error(`unknown paid benchmark ${benchmarkId}`);
   return b.finalBudget + PAID_REASONING_BUDGET;
+}
+
+/** Resolve the exact request ceiling without changing any pre-v4 policy behavior. */
+export function paidCellMaxTokensForPass(pass: PaidPassDefinition, cell: PaidCell): number {
+  if (pass.mode !== "diagnostic-selective-paid-r2") return paidCellMaxTokens(cell.benchmark);
+  const selected = pass.selectedCells?.find((candidate) => candidate.target === cell.target && candidate.benchmark === cell.benchmark);
+  if (selected == null || !("maxTokens" in selected)) throw new Error(`bounded selective maxTokens missing for ${cell.target} x ${cell.benchmark}`);
+  return selected.maxTokens;
 }
 
 // Hosted Pass A — same frozen campaign, hosted targets only. Provider routes and
@@ -684,7 +739,7 @@ export function buildPerModelPaidCells(targets: PaidTarget[]): PaidCell[] {
  */
 export function buildSelectivePaidCells(
   targets: PaidTarget[],
-  selectedCells: SelectivePaidCell[],
+  selectedCells: Array<SelectivePaidCell | BoundedSelectivePaidCell>,
   historicalSentinel: HistoricalSentinelRequirement | null,
 ): PaidCell[] {
   if (targets.length !== 1) throw new Error("selective paid policy must define exactly one target");
@@ -833,6 +888,7 @@ export function paidPassFor(mode: PaidPassDefinition["mode"]): { pass: PaidPassD
   if (mode === "diagnostic-candidate-paid-r1") return { pass: CANDIDATE_PAID_PASS, cells: buildCandidatePaidCells(CANDIDATE_PAID_TARGETS) };
   if (mode === "diagnostic-broad-paid-r1") throw new Error("broad paid mode requires a signed campaign policy");
   if (mode === "diagnostic-selective-paid-r1") throw new Error("selective paid mode requires a signed campaign policy");
+  if (mode === "diagnostic-selective-paid-r2") throw new Error("bounded selective paid mode requires a signed campaign policy");
   throw new Error(`unknown paid mode ${mode}`);
 }
 
