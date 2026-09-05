@@ -876,6 +876,40 @@ describe("detached-signature campaign policy", () => {
     expect(parseCampaignPolicy(bytes).identity).toMatchObject({ totalCells: 2, parentInputCount: 0, evidenceSchemaVersion: 10 });
   });
 
+  it("loads the isolated Gate J DeepSeek Pro formal recovery with its H2 sentinel binding", async () => {
+    const j1aBytes = await readFile(join(process.cwd(), "policy", "qualification-selective-gatej-r1a-paid-2026-09-05-r1.json"));
+    const bytes = await readFile(join(process.cwd(), "policy", "qualification-selective-gatej-r1b-paid-2026-09-05-r1.json"));
+    const j1a = parsePaidCampaignPolicy(j1aBytes, "diagnostic-selective-paid-r2", "2026-09-05T10:00:00Z");
+    const loaded = parsePaidCampaignPolicy(bytes, "diagnostic-selective-paid-r2", "2026-09-05T10:00:00Z");
+    const independent = parseCampaignPolicy(bytes);
+
+    expect(loaded.pass.policyId).toBe("plinius-selective-paid-gatej-r1b-2026-09-05-r1");
+    expect(loaded.pass.campaignId).not.toBe(j1a.pass.campaignId);
+    expect(loaded.pass.stageId).not.toBe(j1a.pass.stageId);
+    expect(loaded.pass.targets.map((target) => target.slug)).toEqual(["deepseek/deepseek-v4-pro-20260813"]);
+    expect(loaded.pass.budget).toEqual({ totalCapUsd: 0.3, perRunCapUsd: 0.3 });
+    expect(loaded.pass.selectedCells).toEqual([
+      { target: "deepseek/deepseek-v4-pro-20260813", benchmark: "formal-spec-idempotent-api-003", sentinelKind: "none", maxTokens: 65536 },
+    ]);
+    expect(loaded.cells).toEqual([
+      { target: "deepseek/deepseek-v4-pro-20260813", group: "deepseek/deepseek-v4-pro-20260813", benchmark: "formal-spec-idempotent-api-003", sentinel: false },
+    ]);
+    expect(loaded.pass.historicalSentinel).toMatchObject({
+      target: "deepseek/deepseek-v4-pro-20260813",
+      runId: "run-43f76c108aa0587d",
+      generationId: "gen-1788259242-T9or60qYU5xj7FQk997Z",
+      settledCostUsd: 0.067954629,
+    });
+    expect(independent.identity).toMatchObject({ totalCells: 1, parentInputCount: 5, evidenceSchemaVersion: 10 });
+    expect(independent.parentInputs).toEqual([
+      { file: "diagnostic-broad-paid-r1-evidence.tar.gz", sha256: "sha256:b5ef025393f7e7b16f34ce43cc8cdce68126fd79434ecb943f46218db851598d" },
+      { file: "paid-pass-manifest-b79c87235ab2b646d48d479250a5411f3ebc2fac070320bd4090e480e5eaf9ad.json", sha256: "sha256:b79c87235ab2b646d48d479250a5411f3ebc2fac070320bd4090e480e5eaf9ad" },
+      { file: "runs/run-43f76c108aa0587d.json", sha256: "sha256:bbdcda84aea3bae52c8ca95d75427e60f54c8ca1bb8d53a1af8482d7a0048bd9" },
+      { file: "diagnostic-broad-paid-r1-verify-v3.5.json", sha256: "sha256:43a7b07c5525d878a82cf6c12b3c6391d7ba43b84c0de809ea9259739671323d" },
+      { file: "diagnostic-broad-paid-r1-h2-gateI-ledger.csv", sha256: "sha256:22e45ecf34967bdb180dc095aac302a08e70b3805df68eca348acf015d0ae7e4" },
+    ]);
+  });
+
   it("re-derives historical sentinel integrity and rejects digest or verdict tampering", async () => {
     const target = broadTarget(1);
     const fixture = await historicalSentinelFixture(target);

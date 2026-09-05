@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 4,
+  "policyType": "plinius-paid-campaign-policy-v4",
+  "policyId": "plinius-selective-paid-gatej-r1b-2026-09-05-r1",
+  "issuedAtUtc": "2026-09-05T09:52:52Z",
+  "catalogObservedAtUtc": "2026-09-05T09:52:41Z",
+  "expiresAtUtc": "2026-09-12T09:52:00Z",
+  "requiredSignerFingerprint": "435C9CF0DE7A2C3900FB24357E622B43290C285E",
+  "pass": {
+    "mode": "diagnostic-selective-paid-r2",
+    "campaignId": "plinius-qualification-gatej-diversity-r1b-2026-09-05",
+    "stageId": "plinius-qualification-diagnostic-selective-gatej-r1b-2026-09-05",
+    "budget": {
+      "totalCapUsd": 0.3,
+      "perRunCapUsd": 0.3
+    },
+    "targets": [
+      {
+        "slug": "deepseek/deepseek-v4-pro-20260813",
+        "catalogModelId": "deepseek/deepseek-v4-pro-0813",
+        "responseModelId": "deepseek/deepseek-v4-pro-0813",
+        "lookupModelId": "deepseek/deepseek-v4-pro-20260813",
+        "providerRoute": "streamlake",
+        "providerDisplay": "StreamLake",
+        "priceCeiling": {
+          "inputPerMTokens": 1.12068,
+          "outputPerMTokens": 3.36204
+        },
+        "sampling": {
+          "temperature": 0,
+          "topP": null,
+          "seed": null
+        }
+      }
+    ],
+    "sentinelScope": "per-model",
+    "selectedCells": [
+      {
+        "target": "deepseek/deepseek-v4-pro-20260813",
+        "benchmark": "formal-spec-idempotent-api-003",
+        "sentinelKind": "none",
+        "maxTokens": 65536
+      }
+    ],
+    "historicalSentinel": {
+      "kind": "historical",
+      "target": "deepseek/deepseek-v4-pro-20260813",
+      "benchmark": "sec-oidc-id-token-validation-001",
+      "runId": "run-43f76c108aa0587d",
+      "generationId": "gen-1788259242-T9or60qYU5xj7FQk997Z",
+      "settledCostUsd": 0.067954629,
+      "parentEvidence": {
+        "campaignId": "plinius-qualification-broad-h2-2026-09-01-r1",
+        "stageId": "plinius-qualification-diagnostic-broad-h2-2026-09-01-r1",
+        "evidenceArchive": {
+          "file": "diagnostic-broad-paid-r1-evidence.tar.gz",
+          "sha256": "sha256:b5ef025393f7e7b16f34ce43cc8cdce68126fd79434ecb943f46218db851598d"
+        },
+        "finalManifest": {
+          "file": "paid-pass-manifest-b79c87235ab2b646d48d479250a5411f3ebc2fac070320bd4090e480e5eaf9ad.json",
+          "sha256": "sha256:b79c87235ab2b646d48d479250a5411f3ebc2fac070320bd4090e480e5eaf9ad"
+        },
+        "runRecord": {
+          "file": "runs/run-43f76c108aa0587d.json",
+          "sha256": "sha256:bbdcda84aea3bae52c8ca95d75427e60f54c8ca1bb8d53a1af8482d7a0048bd9"
+        },
+        "verifyReport": {
+          "file": "diagnostic-broad-paid-r1-verify-v3.5.json",
+          "sha256": "sha256:43a7b07c5525d878a82cf6c12b3c6391d7ba43b84c0de809ea9259739671323d"
+        },
+        "gateILedger": {
+          "file": "diagnostic-broad-paid-r1-h2-gateI-ledger.csv",
+          "sha256": "sha256:22e45ecf34967bdb180dc095aac302a08e70b3805df68eca348acf015d0ae7e4"
+        }
+      }
+    }
+  }
+}
