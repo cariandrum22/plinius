@@ -23,7 +23,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtemp, rm, readFile, readdir, realpath, stat, writeFile, mkdir, chmod, symlink } from "fs/promises";
 import { createHash } from "crypto";
 import { tmpdir } from "os";
-import { basename, join } from "path";
+import { basename, dirname, join } from "path";
 
 import { acquireInvocationLock, finalizeArtifact } from "../src/continuation/journal.js";
 import {
@@ -879,13 +879,20 @@ describe("detached-signature campaign policy", () => {
   it("loads the isolated Gate J DeepSeek Pro formal recovery with its H2 sentinel binding", async () => {
     const j1aBytes = await readFile(join(process.cwd(), "policy", "qualification-selective-gatej-r1a-paid-2026-09-05-r1.json"));
     const bytes = await readFile(join(process.cwd(), "policy", "qualification-selective-gatej-r1b-paid-2026-09-05-r1.json"));
+    const j1cBytes = await readFile(join(process.cwd(), "policy", "qualification-selective-gatej-r1c-paid-2026-09-06-r1.json"));
     const j1a = parsePaidCampaignPolicy(j1aBytes, "diagnostic-selective-paid-r2", "2026-09-05T10:00:00Z");
     const loaded = parsePaidCampaignPolicy(bytes, "diagnostic-selective-paid-r2", "2026-09-05T10:00:00Z");
+    const j1c = parsePaidCampaignPolicy(j1cBytes, "diagnostic-selective-paid-r2", "2026-09-06T07:00:00Z");
     const independent = parseCampaignPolicy(bytes);
 
     expect(loaded.pass.policyId).toBe("plinius-selective-paid-gatej-r1b-2026-09-05-r1");
     expect(loaded.pass.campaignId).not.toBe(j1a.pass.campaignId);
     expect(loaded.pass.stageId).not.toBe(j1a.pass.stageId);
+    expect(j1c.pass.policyId).toBe("plinius-selective-paid-gatej-r1c-2026-09-06-r1");
+    expect(j1c.pass.campaignId).not.toBe(loaded.pass.campaignId);
+    expect(j1c.pass.stageId).not.toBe(loaded.pass.stageId);
+    expect(j1c.pass.selectedCells).toEqual(loaded.pass.selectedCells);
+    expect(j1c.pass.historicalSentinel).toEqual(loaded.pass.historicalSentinel);
     expect(loaded.pass.targets.map((target) => target.slug)).toEqual(["deepseek/deepseek-v4-pro-20260813"]);
     expect(loaded.pass.budget).toEqual({ totalCapUsd: 0.3, perRunCapUsd: 0.3 });
     expect(loaded.pass.selectedCells).toEqual([
@@ -922,6 +929,42 @@ describe("detached-signature campaign policy", () => {
     const result = verifyHistoricalSentinelEvidence(fixture.requirement, target, verdictTamper);
     expect(result.ok).toBe(false);
     expect(result.reasons).toContain("run_paid_integrity");
+  });
+
+  it("re-derives a historical sentinel from the exact legacy H2 Gate I ledger schema", async () => {
+    const target = broadTarget(1);
+    const fixture = await historicalSentinelFixture(target);
+    const historical = fixture.requirement;
+    const legacyLedger = Buffer.from([
+      "order_index,run_id,model,benchmark_id,sentinel,response_created_utc,openrouter_generation_id,provider,lookup_model,settled_cost_usd,status,finish_reason",
+      `1,${historical.runId},${target.slug},${historical.benchmark},true,2026-09-01T10:40:42.000Z,${historical.generationId},${target.providerDisplay},${target.lookupModelId},${historical.settledCostUsd},pass,stop`,
+      "",
+    ].join("\n"));
+    const requirement = {
+      ...historical,
+      parentEvidence: {
+        ...historical.parentEvidence,
+        gateILedger: {
+          file: "diagnostic-broad-paid-r1-h2-gateI-ledger.csv",
+          sha256: `sha256:${createHash("sha256").update(legacyLedger).digest("hex")}`,
+        },
+      },
+    };
+    const bodies = { ...fixture.bodies, gateILedger: legacyLedger };
+    expect(verifyHistoricalSentinelEvidence(requirement, target, bodies)).toEqual({ ok: true, reasons: [] });
+
+    const wrongProvider = Buffer.from(legacyLedger.toString("utf-8").replace(`,${target.providerDisplay},`, ",Wrong Provider,"));
+    const wrongRequirement = {
+      ...requirement,
+      parentEvidence: {
+        ...requirement.parentEvidence,
+        gateILedger: {
+          ...requirement.parentEvidence.gateILedger,
+          sha256: `sha256:${createHash("sha256").update(wrongProvider).digest("hex")}`,
+        },
+      },
+    };
+    expect(verifyHistoricalSentinelEvidence(wrongRequirement, target, { ...bodies, gateILedger: wrongProvider }).reasons).toContain("gate_i_provider");
   });
 
   it("loads the checked-in H3R2A and H3R2B policies as separate selective campaigns", async () => {
@@ -1806,6 +1849,48 @@ describe("runPaidPass orchestration", () => {
     const manifest = JSON.parse(await readFile(join(root, result.manifestFile!), "utf-8"));
     expect(manifest.manifestSchemaVersion).toBe(9);
     expect(manifest.selection.cells).toEqual(selectedCells);
+    const independent = verifyPaidEvidence(root, { verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER });
+    expect(independent.ok, independent.reasons.join("\n")).toBe(true);
+  }, 20_000);
+
+  it("runs and independently verifies selective Evidence with a legacy H2 Gate I parent", async () => {
+    const target = broadTarget(45);
+    const fixture = await historicalSentinelFixture(target);
+    const historical = fixture.requirement;
+    const legacyLedger = Buffer.from([
+      "order_index,run_id,model,benchmark_id,sentinel,response_created_utc,openrouter_generation_id,provider,lookup_model,settled_cost_usd,status,finish_reason",
+      `1,${historical.runId},${target.slug},${historical.benchmark},true,2026-09-01T10:40:42.000Z,${historical.generationId},${target.providerDisplay},${target.lookupModelId},${historical.settledCostUsd},pass,stop`,
+      "",
+    ].join("\n"));
+    const requirement = {
+      ...historical,
+      parentEvidence: {
+        ...historical.parentEvidence,
+        gateILedger: {
+          file: "diagnostic-broad-paid-r1-h2-gateI-ledger.csv",
+          sha256: `sha256:${createHash("sha256").update(legacyLedger).digest("hex")}`,
+        },
+      },
+    };
+    const legacyLedgerPath = join(dirname(fixture.paths[4]), requirement.parentEvidence.gateILedger.file);
+    await writeFile(legacyLedgerPath, legacyLedger, { mode: 0o600 });
+    const legacyParentPaths = [...fixture.paths.slice(0, 4), legacyLedgerPath];
+    const selectedCells = [
+      { target: target.slug, benchmark: "formal-spec-idempotent-api-003", sentinelKind: "none" as const, maxTokens: 64000 },
+    ];
+    const pass = boundedSelectivePass(target, selectedCells, requirement);
+    const cells = buildSelectivePaidCells(pass.targets, selectedCells, requirement);
+    const root = freshRoot("selective-legacy-h2-parent");
+    const result = await runPaidPass(await setupPaidRun(
+      pass,
+      cells,
+      root,
+      withWire((_cell: any, plan: any) => factsFor(plan, { ok: true, costUsd: 0.01, genId: `gen-${plan.runId}` })),
+      {},
+      legacyParentPaths,
+    ));
+    expect(result.stopped).toBeNull();
+    expect(result.dispatchedRunIds).toHaveLength(1);
     const independent = verifyPaidEvidence(root, { verifySignature: () => PAID_ARTIFACT_PINNED_SIGNER });
     expect(independent.ok, independent.reasons.join("\n")).toBe(true);
   }, 20_000);

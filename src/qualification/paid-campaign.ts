@@ -862,17 +862,41 @@ export function verifyHistoricalSentinelEvidence(
     const lines = bodies.gateILedger.toString("utf-8").trimEnd().split("\n");
     const header = lines.shift()?.replace(/\r$/, "").split(",") ?? [];
     if (header.some((field) => field.includes('"')) || new Set(header).size !== header.length) throw new Error("ledger header");
+    const currentHeader = [
+      "order_index", "run_id", "requested_model", "response_model", "benchmark_id", "sentinel", "response_created_utc",
+      "response_generation_id", "response_provider", "response_http_status", "lookup_generation_id", "lookup_provider", "lookup_model",
+      "cost_state", "settled_cost_usd", "status", "finish_reason", "validation_reasons", "cost_poll_count", "cost_lookup_final_ok",
+    ];
+    const legacyH2Header = [
+      "order_index", "run_id", "model", "benchmark_id", "sentinel", "response_created_utc", "openrouter_generation_id", "provider",
+      "lookup_model", "settled_cost_usd", "status", "finish_reason",
+    ];
+    const hasExactHeader = (expected: string[]): boolean =>
+      header.length === expected.length && header.every((field, index) => field === expected[index]);
+    const schema = hasExactHeader(currentHeader) ? "current" : hasExactHeader(legacyH2Header) ? "legacy-h2" : null;
+    if (schema == null) throw new Error("unsupported ledger schema");
     const rows = lines.map((line) => line.replace(/\r$/, "").split(","));
     if (rows.some((row) => row.length !== header.length || row.some((field) => field.includes('"')))) throw new Error("ledger row");
     const entries = rows.map((row) => Object.fromEntries(header.map((key, index) => [key, row[index]])));
     const matches = entries.filter((entry) => entry.run_id === requirement.runId);
     require("gate_i_unique_run", matches.length === 1);
     const entry = matches[0];
-    require("gate_i_identity", entry?.requested_model === target.slug && entry?.response_model === target.responseModelId && entry?.lookup_model === target.lookupModelId && entry?.benchmark_id === requirement.benchmark && entry?.sentinel === "true");
-    require("gate_i_generation", entry?.response_generation_id === requirement.generationId && entry?.lookup_generation_id === requirement.generationId);
-    require("gate_i_provider", entry?.response_provider === target.providerDisplay && entry?.lookup_provider === target.providerDisplay);
-    require("gate_i_settled", entry?.cost_state === "settled" && Number(entry?.settled_cost_usd) === requirement.settledCostUsd);
-    require("gate_i_verdict", entry?.status === "pass" && entry?.finish_reason === "stop" && entry?.validation_reasons === "" && entry?.cost_lookup_final_ok === "true");
+    if (schema === "current") {
+      require("gate_i_identity", entry?.requested_model === target.slug && entry?.response_model === target.responseModelId && entry?.lookup_model === target.lookupModelId && entry?.benchmark_id === requirement.benchmark && entry?.sentinel === "true");
+      require("gate_i_generation", entry?.response_generation_id === requirement.generationId && entry?.lookup_generation_id === requirement.generationId);
+      require("gate_i_provider", entry?.response_provider === target.providerDisplay && entry?.lookup_provider === target.providerDisplay);
+      require("gate_i_settled", entry?.cost_state === "settled" && Number(entry?.settled_cost_usd) === requirement.settledCostUsd);
+      require("gate_i_verdict", entry?.status === "pass" && entry?.finish_reason === "stop" && entry?.validation_reasons === "" && entry?.cost_lookup_final_ok === "true");
+    } else {
+      // H2's pinned Gate I extractor predates the expanded route columns. Its
+      // exact schema still binds the requested model, lookup model, generation,
+      // provider, settled cost, and clean pass verdict needed for re-derivation.
+      require("gate_i_identity", entry?.model === target.slug && entry?.lookup_model === target.lookupModelId && entry?.benchmark_id === requirement.benchmark && entry?.sentinel === "true");
+      require("gate_i_generation", entry?.openrouter_generation_id === requirement.generationId);
+      require("gate_i_provider", entry?.provider === target.providerDisplay);
+      require("gate_i_settled", Number(entry?.settled_cost_usd) === requirement.settledCostUsd);
+      require("gate_i_verdict", entry?.status === "pass" && entry?.finish_reason === "stop");
+    }
   } catch {
     reasons.push("gate_i_ledger_parse");
   }

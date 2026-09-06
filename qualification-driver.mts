@@ -2852,7 +2852,7 @@ export interface PaidBootstrapDeps {
    * the bootstrap can bind it durably into the final Evidence. */
   verifyExecution: () => { ok: boolean; reasons: string[]; attestation?: Record<string, unknown> };
   /** Gates 2-3 — parent Evidence bundle + frozen definition + historical run. Required. */
-  verifyParentEvidence: () => { ok: boolean };
+  verifyParentEvidence: () => { ok: boolean; reasons?: string[] };
   /** Gate 4 — campaign definition + benchmark content hashes. Required. */
   verifyCampaignBenchmarks: (pass: PaidPassDefinition, cells: PaidCell[]) => Promise<{ ok: boolean; reasons: string[] }>;
   /** Gates 6-10 — anonymous public catalog fetch + verification (NO credential). Required. */
@@ -2929,7 +2929,10 @@ export async function preparePaidBootstrap(deps: PaidBootstrapDeps): Promise<Pai
   const executionAttestationBody = JSON.stringify({ schemaVersion: 1, campaignId: pass.campaignId, stageId: pass.stageId, ...(src.attestation ?? {}) }, null, 2);
 
   const pe = deps.verifyParentEvidence();
-  if (!pe.ok) throw new Error("parent evidence / historical digest mismatch");
+  if (!pe.ok) {
+    const detail = pe.reasons?.length ? `: ${pe.reasons.join(",")}` : "";
+    throw new Error(`parent evidence / historical digest mismatch${detail}`);
+  }
 
   const cb = await deps.verifyCampaignBenchmarks(pass, cells);
   if (!cb.ok) throw new Error(`campaign/benchmark verification failed: ${cb.reasons.join(",")}`);
@@ -3803,7 +3806,7 @@ async function paidMain(
   const manifestPath = launchGrant.executionManifestPath;
   let parentInputPaths: string[];
   let parentInputExpectedSha256: string[];
-  let verifyParentEvidence: () => { ok: boolean };
+  let verifyParentEvidence: () => { ok: boolean; reasons?: string[] };
   if (mode === "diagnostic-selective-paid-r1" || mode === "diagnostic-selective-paid-r2") {
     const historical = loadedPolicy.pass.historicalSentinel ?? null;
     if (historical == null) {
