@@ -30,7 +30,7 @@
 		"@openrouter/sdk": "^0.1.11",
 		"dotenv": "^17.2.3",
 		"yaml": "^2.9.0",
-		"zod": "^4.4.3"
+		"zod": "^4.6.6"
 	},
 	"devDependencies": {
 		"@types/node": "^24.10.1",
